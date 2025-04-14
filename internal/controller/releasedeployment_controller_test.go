@@ -18,7 +18,17 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net/http/httptest"
+	"strings"
 
+	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/registry"
+	registryv1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/static"
+	cranev1 "github.com/google/go-containerregistry/pkg/v1/types"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -27,7 +37,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
+	releasev1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
 )
 
 var _ = Describe("ReleaseDeployment Controller", func() {
@@ -40,18 +50,38 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		releasedeployment := &kuberikcomv1alpha1.ReleaseDeployment{}
+		releaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+		var registryServer *httptest.Server
+		var registryEndpoint string
+		var releasesRepository string
+		var targetRepository string
 
 		BeforeEach(func() {
+			By("setting up the test environment")
+
+			registry := registry.New()
+			registryServer = httptest.NewServer(registry)
+			registryEndpoint = strings.TrimPrefix(registryServer.URL, "http://")
+			releasesRepository = fmt.Sprintf("%s/my-app/kubernetes-manifests/my-env/release", registryEndpoint)
+			targetRepository = fmt.Sprintf("%s/my-app/kubernetes-manifests/my-env/deploy", registryEndpoint)
+
 			By("creating the custom resource for the Kind ReleaseDeployment")
-			err := k8sClient.Get(ctx, typeNamespacedName, releasedeployment)
+			err := k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &kuberikcomv1alpha1.ReleaseDeployment{
+				resource := &releasev1alpha1.ReleaseDeployment{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: releasev1alpha1.ReleaseDeploymentSpec{
+						Protocol: "oci",
+						ReleasesRepository: releasev1alpha1.Repository{
+							URL: releasesRepository,
+						},
+						TargetRepository: releasev1alpha1.Repository{
+							URL: targetRepository,
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -59,26 +89,74 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &kuberikcomv1alpha1.ReleaseDeployment{}
+			resource := &releasev1alpha1.ReleaseDeployment{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Cleanup the specific resource instance ReleaseDeployment")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
+		It("should deploye the image immediatelly when there are no constraints", func() {
+			By("Creating a test deployment image")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
 			By("Reconciling the created resource")
 			controllerReconciler := &ReleaseDeploymentReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })
+
+func pushFakeDeploymentImage(repository, version string) registryv1.Image {
+	image, err := mutate.AppendLayers(empty.Image, static.NewLayer(fmt.Appendf(nil, "%s/%s", repository, version), cranev1.MediaType("fake")))
+	Expect(err).ShouldNot(HaveOccurred())
+	Expect(err).ShouldNot(HaveOccurred())
+	pushImage(image, repository, version)
+	return image
+}
+
+func pushImage(image registryv1.Image, repository, tag string) {
+	imageURL := fmt.Sprintf("%s:%s", repository, tag)
+	Expect(
+		crane.Push(image, imageURL),
+	).To(Succeed())
+}
+
+func pullImage(repository, tag string) (registryv1.Image, error) {
+	imageURL := fmt.Sprintf("%s:%s", repository, tag)
+	image, err := crane.Pull(imageURL)
+	if err != nil {
+		return nil, err
+	}
+	return image, nil
+}
+
+func assertEqualDigests(image1, image2 registryv1.Image) bool {
+	digest1, err := image1.Digest()
+	if err != nil {
+		return false
+	}
+	digest2, err := image2.Digest()
+	if err != nil {
+		return false
+	}
+	return digest1.String() == digest2.String()
+}

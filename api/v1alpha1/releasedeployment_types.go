@@ -33,7 +33,7 @@ type ReleaseDeploymentSpec struct {
 	// +required
 	ReleasesRepository Repository `json:"releasesRepository,omitempty"`
 
-	// TargetRepository specifies the path where releases should be promoted to
+	// TargetRepository specifies the path where releases should be deployed to
 	// +kubebuilder:validation:Required
 	// +required
 	TargetRepository Repository `json:"targetRepository,omitempty"`
@@ -52,7 +52,7 @@ type Repository struct {
 
 // ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
 type ReleaseDeploymentStatus struct {
-	// Conditions represents the current state of the release promotion process.
+	// Conditions represents the current state of the release deployment process.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge

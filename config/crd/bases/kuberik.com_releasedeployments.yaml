@@ -73,7 +73,7 @@ spec:
                 type: object
               targetRepository:
                 description: TargetRepository specifies the path where releases should
-                  be promoted to
+                  be deployed to
                 properties:
                   secretRef:
                     description: The secret name containing the authentication credentials
@@ -104,7 +104,7 @@ spec:
             properties:
               conditions:
                 description: Conditions represents the current state of the release
-                  promotion process.
+                  deployment process.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
