@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
@@ -40,18 +41,45 @@ var _ = Describe("ReleaseConstraint Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
+		releaseDeployment := &kuberikcomv1alpha1.ReleaseDeployment{}
 		releaseconstraint := &kuberikcomv1alpha1.ReleaseConstraint{}
 
 		BeforeEach(func() {
+			By("setting up the test environment")
+
+			By("creating the custom resource for the Kind ReleaseDeployment")
+			err := k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
+			if err != nil && errors.IsNotFound(err) {
+				resource := &kuberikcomv1alpha1.ReleaseDeployment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      resourceName,
+						Namespace: "default",
+					},
+					Spec: kuberikcomv1alpha1.ReleaseDeploymentSpec{
+						ReleasesRepository: kuberikcomv1alpha1.Repository{
+							URL: "foo",
+						},
+						TargetRepository: kuberikcomv1alpha1.Repository{
+							URL: "bar",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+
 			By("creating the custom resource for the Kind ReleaseConstraint")
-			err := k8sClient.Get(ctx, typeNamespacedName, releaseconstraint)
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseconstraint)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &kuberikcomv1alpha1.ReleaseConstraint{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: kuberikcomv1alpha1.ReleaseConstraintSpec{
+						ReleaseDeploymentRef: &corev1.LocalObjectReference{
+							Name: resourceName,
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -65,8 +93,14 @@ var _ = Describe("ReleaseConstraint Controller", func() {
 
 			By("Cleanup the specific resource instance ReleaseConstraint")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			By("Cleanup the specific resource instance ReleaseDeployment")
+			releaseDeployment := &kuberikcomv1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Delete(ctx, releaseDeployment)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
+		It("should register the release constraint to the release deployment", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &ReleaseConstraintReconciler{
 				Client: k8sClient,
@@ -77,8 +111,13 @@ var _ = Describe("ReleaseConstraint Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("Checking the status of the release deployment")
+			releaseDeployment := &kuberikcomv1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(releaseDeployment.Status.ConstraintRefs).To(HaveLen(1))
+			Expect(releaseDeployment.Status.ConstraintRefs[0].Name).To(Equal(resourceName))
 		})
 	})
 })

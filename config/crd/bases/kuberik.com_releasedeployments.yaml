@@ -103,8 +103,9 @@ spec:
             description: ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
             properties:
               conditions:
-                description: Conditions represents the current state of the release
-                  deployment process.
+                description: |-
+                  Conditions represents the current state of the release deployment process.
+                  Conditions represents the current state of the release deployment process.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -162,6 +163,29 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
+                x-kubernetes-list-type: map
+              constraintRefs:
+                description: ConstraintRefs is a list of references to the ReleaseConstraint
+                  objects that are affecting this deployment.
+                items:
+                  description: |-
+                    LocalObjectReference contains enough information to let you locate the
+                    referenced object inside the same namespace.
+                  properties:
+                    name:
+                      default: ""
+                      description: |-
+                        Name of the referent.
+                        This field is effectively required, but due to backwards compatibility is
+                        allowed to be empty. Instances of this type with an empty value here are
+                        almost certainly wrong.
+                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      type: string
+                  type: object
+                  x-kubernetes-map-type: atomic
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
                 x-kubernetes-list-type: map
             type: object
         type: object

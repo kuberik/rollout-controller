@@ -46,9 +46,9 @@ spec:
                   The default value is 0.
                 minimum: 0
                 type: integer
-              releaseRef:
+              releaseDeploymentRef:
                 description: |-
-                  ReleaseRef is a reference to the Release object that this constraint applies to.
+                  ReleaseDeploymentRef is a reference to the Release object that this constraint applies to.
                   It must be in the same namespace as the ReleaseConstraint.
                 properties:
                   name:
@@ -63,7 +63,7 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
             required:
-            - releaseRef
+            - releaseDeploymentRef
             type: object
           status:
             description: ReleaseConstraintStatus defines the observed state of ReleaseConstraint.

@@ -23,11 +23,11 @@ import (
 
 // ReleaseConstraintSpec defines the desired state of ReleaseConstraint.
 type ReleaseConstraintSpec struct {
-	// ReleaseRef is a reference to the Release object that this constraint applies to.
+	// ReleaseDeploymentRef is a reference to the Release object that this constraint applies to.
 	// It must be in the same namespace as the ReleaseConstraint.
 	// +kubebuilder:validation:Required
 	// +required
-	ReleaseRef *corev1.LocalObjectReference `json:"releaseRef,omitempty"`
+	ReleaseDeploymentRef *corev1.LocalObjectReference `json:"releaseDeploymentRef,omitempty"`
 
 	// The priority of this constraint. Higher values indicate higher priority.
 	// The default value is 0.

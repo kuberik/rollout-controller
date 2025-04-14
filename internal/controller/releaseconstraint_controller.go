@@ -20,11 +20,13 @@ import (
 	"context"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // ReleaseConstraintReconciler reconciles a ReleaseConstraint object
@@ -49,7 +51,27 @@ type ReleaseConstraintReconciler struct {
 func (r *ReleaseConstraintReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	releaseConstraint := &kuberikcomv1alpha1.ReleaseConstraint{}
+	if err := r.Get(ctx, req.NamespacedName, releaseConstraint); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	releaseDeployment := &kuberikcomv1alpha1.ReleaseDeployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: releaseConstraint.Spec.ReleaseDeploymentRef.Name, Namespace: releaseConstraint.Namespace}, releaseDeployment); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	releaseDeployment.Status.ConstraintRefs = append(releaseDeployment.Status.ConstraintRefs, corev1.LocalObjectReference{
+		Name: releaseConstraint.Name,
+	})
+	if err := r.Status().Update(ctx, releaseDeployment); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }

@@ -52,6 +52,15 @@ type Repository struct {
 
 // ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
 type ReleaseDeploymentStatus struct {
+	// ConstraintRefs is a list of references to the ReleaseConstraint objects that are affecting this deployment.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	ConstraintRefs []corev1.LocalObjectReference `json:"constraintRefs,omitempty"`
+
+	// Conditions represents the current state of the release deployment process.
 	// Conditions represents the current state of the release deployment process.
 	// +optional
 	// +patchMergeKey=type
