@@ -4,24 +4,23 @@
 # More info: https://book.kubebuilder.io/reference/project-config.html
 domain: kuberik.com
 layout:
-- go.kubebuilder.io/v4
+  - go.kubebuilder.io/v4
 projectName: release-controller
 repo: github.com/kuberik/release-controller
 resources:
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: kuberik.com
-  kind: ReleaseDeployment
-  path: github.com/kuberik/release-controller/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: kuberik.com
-  kind: ReleaseConstraint
-  path: github.com/kuberik/release-controller/api/v1alpha1
-  version: v1alpha1
+  - api:
+      crdVersion: v1
+      namespaced: true
+    controller: true
+    domain: kuberik.com
+    kind: ReleaseDeployment
+    path: github.com/kuberik/release-controller/api/v1alpha1
+    version: v1alpha1
+  - api:
+      crdVersion: v1
+      namespaced: true
+    domain: kuberik.com
+    kind: ReleaseNomination
+    path: github.com/kuberik/release-controller/api/v1alpha1
+    version: v1alpha1
 version: "3"

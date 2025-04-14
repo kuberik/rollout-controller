@@ -209,13 +209,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ReleaseDeployment")
 		os.Exit(1)
 	}
-	if err = (&controller.ReleaseConstraintReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ReleaseConstraint")
-		os.Exit(1)
-	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

@@ -1,13 +1,16 @@
----
+# permissions for end users to edit releasenominations.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  labels:
+    app.kubernetes.io/name: release-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: releasenomination-editor-role
 rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - releasedeployments
+  - releasenominations
   verbs:
   - create
   - delete
@@ -19,14 +22,6 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - releasedeployments/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - releasedeployments/status
+  - releasenominations/status
   verbs:
   - get
-  - patch
-  - update

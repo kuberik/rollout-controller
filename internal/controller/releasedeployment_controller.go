@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -62,14 +64,14 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	releases, err := crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, releaseDeployment)
 	if err != nil {
-		log.Error(err, "Failed to list tags from releases repository")
+		log.Error(err, "Failed to find release to deploy")
 		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
 			Type:               "Available",
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
-			Reason:             "ListTagsFailed",
+			Reason:             "ReleaseDeploymentFailed",
 			Message:            err.Error(),
 		})
 		if changed {
@@ -77,10 +79,24 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		return ctrl.Result{}, err
 	}
+	if releaseToDeploy == nil {
+		log.Info("No release nomination, skipping deployment")
+		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+			Type:               "Available",
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "NoReleaseNominated",
+			Message:            "No release nominated",
+		})
+		if changed {
+			r.Status().Update(ctx, &releaseDeployment)
+		}
+		return ctrl.Result{}, nil
+	}
 
 	if releaseDeployment.Spec.Protocol == "oci" {
 		err = crane.Copy(
-			fmt.Sprintf("%s:%s", releaseDeployment.Spec.ReleasesRepository.URL, releases[0]),
+			fmt.Sprintf("%s:%s", releaseDeployment.Spec.ReleasesRepository.URL, *releaseToDeploy),
 			fmt.Sprintf("%s:latest", releaseDeployment.Spec.TargetRepository.URL),
 		)
 		if err != nil {
@@ -110,4 +126,51 @@ func (r *ReleaseDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kuberikcomv1alpha1.ReleaseDeployment{}).
 		Named("releasedeployment").
 		Complete(r)
+}
+
+func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx context.Context, releaseDeployment releasev1alpha1.ReleaseDeployment) (*string, error) {
+	releases, err := crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+	if err != nil {
+		log.Error(err, "Failed to list tags from releases repository")
+		return nil, err
+	}
+
+	// list all release nominations for this release deployment
+	releaseNominations := releasev1alpha1.ReleaseNominationList{}
+	if err := r.Client.List(ctx, &releaseNominations, client.InNamespace(releaseDeployment.Namespace)); err != nil {
+		return nil, err
+	}
+
+	// filter out nominations that are not matching the release deployment
+	matchingNominations := []releasev1alpha1.ReleaseNomination{}
+	for _, nomination := range releaseNominations.Items {
+		if nomination.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
+			matchingNominations = append(matchingNominations, nomination)
+		}
+	}
+
+	// group the matching nominations by priority
+	priorityGroups := map[int][]releasev1alpha1.ReleaseNomination{}
+	for _, nomination := range matchingNominations {
+		priorityGroups[nomination.Spec.Priority] = append(priorityGroups[nomination.Spec.Priority], nomination)
+	}
+
+	// iterate over the priority groups and find the release that satisfies all nominations
+	for _, priorityGroup := range priorityGroups {
+		// check if all the nominations in the priority group are nominating the same release
+		for _, nomination := range priorityGroup {
+			if nomination.Status.NominatedRelease != priorityGroup[0].Status.NominatedRelease {
+				return nil, fmt.Errorf("release %s is nominated by %s, but %s is nominated by %s", *priorityGroup[0].Status.NominatedRelease, priorityGroup[0].Name, *nomination.Status.NominatedRelease, nomination.Name)
+			}
+		}
+		// if all the nominations are nominating the same release and the release is not nil, return the release
+		if priorityGroup[0].Status.NominatedRelease != nil {
+			if slices.Contains(releases, *priorityGroup[0].Status.NominatedRelease) {
+				return priorityGroup[0].Status.NominatedRelease, nil
+			} else {
+				return nil, fmt.Errorf("release %s is not a valid release", *priorityGroup[0].Status.NominatedRelease)
+			}
+		}
+	}
+	return nil, nil
 }

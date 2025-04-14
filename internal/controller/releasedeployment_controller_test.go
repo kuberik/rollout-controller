@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	releasev1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
@@ -51,6 +52,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Namespace: "default", // TODO(user):Modify as needed
 		}
 		releaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+		releaseNomination := &releasev1alpha1.ReleaseNomination{}
 		var registryServer *httptest.Server
 		var registryEndpoint string
 		var releasesRepository string
@@ -85,6 +87,23 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
+
+			By("Creating a test release nomination")
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			if err != nil && errors.IsNotFound(err) {
+				resource := &releasev1alpha1.ReleaseNomination{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      resourceName,
+						Namespace: "default",
+					},
+					Spec: releasev1alpha1.ReleaseNominationSpec{
+						ReleaseDeploymentRef: &corev1.LocalObjectReference{
+							Name: resourceName,
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
 		})
 
 		AfterEach(func() {
@@ -95,8 +114,13 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 
 			By("Cleanup the specific resource instance ReleaseDeployment")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			releaseNomination := &releasev1alpha1.ReleaseNomination{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Delete(ctx, releaseNomination)).To(Succeed())
 		})
-		It("should deploye the image immediatelly when there are no constraints", func() {
+		It("should deploy the image when it's nominated", func() {
 			By("Creating a test deployment image")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			_, err := pullImage(releasesRepository, "0.1.0")
@@ -104,7 +128,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Reconciling the created resource")
+			By("Reconciling the created resources without accepting any release")
 			controllerReconciler := &ReleaseDeploymentReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -116,11 +140,24 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Nominating a release")
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			Expect(err).NotTo(HaveOccurred())
+			nominatedRelease := "0.1.0"
+			releaseNomination.Status.NominatedRelease = &nominatedRelease
+			Expect(k8sClient.Status().Update(ctx, releaseNomination)).To(Succeed())
+
+			By("Reconciling the created resources with an accepted release")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			targetImage, err = pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_1_0_image, targetImage)
-
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })
