@@ -1,0 +1,87 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: releaseconstraints.kuberik.com
+spec:
+  group: kuberik.com
+  names:
+    kind: ReleaseConstraint
+    listKind: ReleaseConstraintList
+    plural: releaseconstraints
+    singular: releaseconstraint
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ReleaseConstraint is the Schema for the releaseconstraints API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ReleaseConstraintSpec defines the desired state of ReleaseConstraint.
+            properties:
+              priority:
+                default: 0
+                description: |-
+                  The priority of this constraint. Higher values indicate higher priority.
+                  The default value is 0.
+                minimum: 0
+                type: integer
+              releaseRef:
+                description: |-
+                  ReleaseRef is a reference to the Release object that this constraint applies to.
+                  It must be in the same namespace as the ReleaseConstraint.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - releaseRef
+            type: object
+          status:
+            description: ReleaseConstraintStatus defines the observed state of ReleaseConstraint.
+            properties:
+              acceptedReleases:
+                description: |-
+                  AcceptedReleases lists the specific release versions explicitly allowed by this constraint.
+                  The ReleaseDeployment controller selects a release based on constraint priority.
+                  It chooses the first release listed in `AcceptedReleases` from the highest priority constraint.
+                  If multiple constraints share the highest priority, the controller selects the first release
+                  common to the intersection of their `AcceptedReleases` lists.
+                  Inconsistent ordering of releases within this intersection across constraints can cause the deployment to stall.
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

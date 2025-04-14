@@ -7,6 +7,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - releaseconstraints
   - releasedeployments
   verbs:
   - create
@@ -19,12 +20,14 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - releaseconstraints/finalizers
   - releasedeployments/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
+  - releaseconstraints/status
   - releasedeployments/status
   verbs:
   - get
