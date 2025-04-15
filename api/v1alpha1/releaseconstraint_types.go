@@ -49,6 +49,12 @@ type ReleaseConstraintStatus struct {
 	// only if all such constraints refer to the identical release.
 	// +optional
 	WantedRelease *string `json:"wantedRelease,omitempty"`
+
+	// Active indicates whether this constraint is currently active.
+	// Inactive constraints are ignored by the ReleaseDeployment controller.
+	// +kubebuilder:default=true
+	// +optional
+	Active bool `json:"active,omitempty"`
 }
 
 // +kubebuilder:object:root=true

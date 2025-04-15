@@ -68,6 +68,12 @@ spec:
           status:
             description: ReleaseConstraintStatus defines the observed state of ReleaseConstraint.
             properties:
+              active:
+                default: true
+                description: |-
+                  Active indicates whether this constraint is currently active.
+                  Inactive constraints are ignored by the ReleaseDeployment controller.
+                type: boolean
               wantedRelease:
                 description: |-
                   WantedRelease indicates the release wanted by this constraint.

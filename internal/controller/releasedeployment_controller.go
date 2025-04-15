@@ -144,7 +144,7 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 	// filter out constraints that are not matching the release deployment
 	matchingConstraints := []releasev1alpha1.ReleaseConstraint{}
 	for _, constraint := range releaseConstraints.Items {
-		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
+		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name && constraint.Status.Active {
 			matchingConstraints = append(matchingConstraints, constraint)
 		}
 	}
