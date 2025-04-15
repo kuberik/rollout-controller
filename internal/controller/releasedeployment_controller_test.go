@@ -373,6 +373,85 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
 		})
+
+		It("should wait for all same priority constraints to be active and agree", func() {
+			By("Creating a test deployment image")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Creating two constraints with same priority but different active states")
+			constraint1 := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "active-constraint1",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
+			wantedRelease := "0.1.0"
+			constraint1.Status.WantedRelease = &wantedRelease
+			constraint1.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
+
+			constraint2 := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "inactive-constraint2",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
+			constraint2.Status.Active = false
+			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Verifying that no deployment occurred")
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Activating the second constraint")
+			wantedRelease = "0.1.0"
+			constraint2.Status.WantedRelease = &wantedRelease
+			constraint2.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+
+			By("Reconciling the resources again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Verifying that deployment occurred")
+			targetImage, err = pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
+			By("Cleaning up the additional constraints")
+			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
+		})
 	})
 })
 
@@ -410,4 +489,8 @@ func assertEqualDigests(image1, image2 registryv1.Image) bool {
 		return false
 	}
 	return digest1.String() == digest2.String()
+}
+
+func stringPtr(s string) *string {
+	return &s
 }

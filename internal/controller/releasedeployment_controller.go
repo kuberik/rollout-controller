@@ -144,7 +144,7 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 	// filter out constraints that are not matching the release deployment
 	matchingConstraints := []releasev1alpha1.ReleaseConstraint{}
 	for _, constraint := range releaseConstraints.Items {
-		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name && constraint.Status.Active {
+		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
 			matchingConstraints = append(matchingConstraints, constraint)
 		}
 	}
@@ -157,8 +157,23 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 
 	// iterate over the priority groups and find the release that satisfies all constraints
 	for _, priorityGroup := range priorityGroups {
+		// if all the constraints in the priority group are inactive, skip it
+		active := false
+		for _, constraint := range priorityGroup {
+			if constraint.Status.Active {
+				active = true
+				break
+			}
+		}
+		if !active {
+			continue
+		}
+
 		// check if all the constraints in the priority group are wanting the same release
 		for _, constraint := range priorityGroup {
+			if constraint.Status.WantedRelease == nil {
+				return nil, nil
+			}
 			if *constraint.Status.WantedRelease != *priorityGroup[0].Status.WantedRelease {
 				return nil, fmt.Errorf("conflicting releases wanted by highest priority constraints: release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
 			}
