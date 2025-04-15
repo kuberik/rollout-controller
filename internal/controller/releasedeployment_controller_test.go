@@ -291,6 +291,88 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Delete(ctx, highPriorityConstraint)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, lowPriorityConstraint)).To(Succeed())
 		})
+
+		It("should not deploy when same priority constraints want different versions", func() {
+			By("Creating test deployment images")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Creating two constraints with same priority but different wanted versions")
+			constraint1 := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "constraint1",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 10,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
+			wantedRelease := "0.1.0"
+			constraint1.Status.WantedRelease = &wantedRelease
+			constraint1.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
+
+			constraint2 := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "constraint2",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 10,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
+			wantedRelease = "0.2.0"
+			constraint2.Status.WantedRelease = &wantedRelease
+			constraint2.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("conflicting releases wanted by highest priority constraints"))
+
+			By("Verifying that no deployment happened")
+			_, err = pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Updating constraint2 to want the same version as constraint1")
+			wantedRelease = "0.1.0"
+			constraint2.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+
+			By("Reconciling the resources again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the deployment happened with the agreed version")
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
+			By("Cleaning up the additional constraints")
+			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
+		})
 	})
 })
 

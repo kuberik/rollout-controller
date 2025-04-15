@@ -159,8 +159,8 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 	for _, priorityGroup := range priorityGroups {
 		// check if all the constraints in the priority group are wanting the same release
 		for _, constraint := range priorityGroup {
-			if constraint.Status.WantedRelease != priorityGroup[0].Status.WantedRelease {
-				return nil, fmt.Errorf("release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
+			if *constraint.Status.WantedRelease != *priorityGroup[0].Status.WantedRelease {
+				return nil, fmt.Errorf("conflicting releases wanted by highest priority constraints: release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
 			}
 		}
 		// if all the constraints are wanting the same release and the release is not nil, return the release
