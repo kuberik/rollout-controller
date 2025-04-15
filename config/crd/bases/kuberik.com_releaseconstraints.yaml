@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: releasenominations.kuberik.com
+  name: releaseconstraints.kuberik.com
 spec:
   group: kuberik.com
   names:
-    kind: ReleaseNomination
-    listKind: ReleaseNominationList
-    plural: releasenominations
-    singular: releasenomination
+    kind: ReleaseConstraint
+    listKind: ReleaseConstraintList
+    plural: releaseconstraints
+    singular: releaseconstraint
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ReleaseNomination is the Schema for the releasenominations API.
+        description: ReleaseConstraint is the Schema for the releaseconstraints API.
         properties:
           apiVersion:
             description: |-
@@ -37,19 +37,19 @@ spec:
           metadata:
             type: object
           spec:
-            description: ReleaseNominationSpec defines the desired state of ReleaseNomination.
+            description: ReleaseConstraintSpec defines the desired state of ReleaseConstraint.
             properties:
               priority:
                 default: 0
                 description: |-
-                  The priority of this nomination. Higher values indicate higher priority.
+                  The priority of this constraint. Higher values indicate higher priority.
                   The default value is 0.
                 minimum: 0
                 type: integer
               releaseDeploymentRef:
                 description: |-
-                  ReleaseDeploymentRef is a reference to the ReleaseDeployment object that this nomination applies to.
-                  It must be in the same namespace as the ReleaseNomination.
+                  ReleaseDeploymentRef is a reference to the ReleaseDeployment object that this constraint applies to.
+                  It must be in the same namespace as the ReleaseConstraint.
                 properties:
                   name:
                     default: ""
@@ -66,15 +66,15 @@ spec:
             - releaseDeploymentRef
             type: object
           status:
-            description: ReleaseNominationStatus defines the observed state of ReleaseNomination.
+            description: ReleaseConstraintStatus defines the observed state of ReleaseConstraint.
             properties:
-              nominatedRelease:
+              wantedRelease:
                 description: |-
-                  NominatedRelease indicates the release proposed by this resource.
-                  The ReleaseDeployment controller determines which release to deploy by evaluating the priority of ReleaseNominations.
-                  It favors the release nominated by the ReleaseNomination with the highest priority.
-                  In cases where multiple ReleaseNominations have the same highest priority, the controller will proceed with deployment
-                  only if all such nominations refer to the identical release.
+                  WantedRelease indicates the release wanted by this constraint.
+                  The ReleaseDeployment controller determines which release to deploy by evaluating the priority of ReleaseConstraints.
+                  It favors the release wanted by the ReleaseConstraint with the highest priority.
+                  In cases where multiple ReleaseConstraints have the same highest priority, the controller will proceed with deployment
+                  only if all such constraints refer to the identical release.
                 type: string
             type: object
         type: object

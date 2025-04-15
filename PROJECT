@@ -20,7 +20,7 @@ resources:
       crdVersion: v1
       namespaced: true
     domain: kuberik.com
-    kind: ReleaseNomination
+    kind: ReleaseConstraint
     path: github.com/kuberik/release-controller/api/v1alpha1
     version: v1alpha1
 version: "3"

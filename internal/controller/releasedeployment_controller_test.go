@@ -52,7 +52,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Namespace: "default", // TODO(user):Modify as needed
 		}
 		releaseDeployment := &releasev1alpha1.ReleaseDeployment{}
-		releaseNomination := &releasev1alpha1.ReleaseNomination{}
+		releaseConstraint := &releasev1alpha1.ReleaseConstraint{}
 		var registryServer *httptest.Server
 		var registryEndpoint string
 		var releasesRepository string
@@ -88,15 +88,15 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 
-			By("Creating a test release nomination")
-			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			By("Creating a test release constraint")
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseConstraint)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &releasev1alpha1.ReleaseNomination{
+				resource := &releasev1alpha1.ReleaseConstraint{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: releasev1alpha1.ReleaseNominationSpec{
+					Spec: releasev1alpha1.ReleaseConstraintSpec{
 						ReleaseDeploymentRef: &corev1.LocalObjectReference{
 							Name: resourceName,
 						},
@@ -115,12 +115,12 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			By("Cleanup the specific resource instance ReleaseDeployment")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
-			releaseNomination := &releasev1alpha1.ReleaseNomination{}
-			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			releaseConstraint := &releasev1alpha1.ReleaseConstraint{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseConstraint)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Delete(ctx, releaseNomination)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, releaseConstraint)).To(Succeed())
 		})
-		It("should deploy the image when it's nominated", func() {
+		It("should deploy the image when the constraint is satisfied", func() {
 			By("Creating a test deployment image")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			_, err := pullImage(releasesRepository, "0.1.0")
@@ -142,12 +142,12 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Nominating a release")
-			err = k8sClient.Get(ctx, typeNamespacedName, releaseNomination)
+			By("Configuring a constraint for the release")
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseConstraint)
 			Expect(err).NotTo(HaveOccurred())
-			nominatedRelease := "0.1.0"
-			releaseNomination.Status.NominatedRelease = &nominatedRelease
-			Expect(k8sClient.Status().Update(ctx, releaseNomination)).To(Succeed())
+			wantedRelease := "0.1.0"
+			releaseConstraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, releaseConstraint)).To(Succeed())
 
 			By("Reconciling the created resources with an accepted release")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{

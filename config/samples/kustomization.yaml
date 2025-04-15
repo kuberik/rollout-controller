@@ -1,5 +1,5 @@
 ## Append samples of your project ##
 resources:
   - v1alpha1_releasedeployment.yaml
-  - v1alpha1_releasenomination.yaml
+  - v1alpha1_releaseconstraint.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

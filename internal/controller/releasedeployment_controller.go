@@ -80,13 +80,13 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 	if releaseToDeploy == nil {
-		log.Info("No release nomination, skipping deployment")
+		log.Info("No release constraint, skipping deployment")
 		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
 			Type:               "Available",
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
-			Reason:             "NoReleaseNominated",
-			Message:            "No release nominated",
+			Reason:             "NoReleaseWanted",
+			Message:            "No release wanted",
 		})
 		if changed {
 			r.Status().Update(ctx, &releaseDeployment)
@@ -135,40 +135,40 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 		return nil, err
 	}
 
-	// list all release nominations for this release deployment
-	releaseNominations := releasev1alpha1.ReleaseNominationList{}
-	if err := r.Client.List(ctx, &releaseNominations, client.InNamespace(releaseDeployment.Namespace)); err != nil {
+	// list all release constraints for this release deployment
+	releaseConstraints := releasev1alpha1.ReleaseConstraintList{}
+	if err := r.Client.List(ctx, &releaseConstraints, client.InNamespace(releaseDeployment.Namespace)); err != nil {
 		return nil, err
 	}
 
-	// filter out nominations that are not matching the release deployment
-	matchingNominations := []releasev1alpha1.ReleaseNomination{}
-	for _, nomination := range releaseNominations.Items {
-		if nomination.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
-			matchingNominations = append(matchingNominations, nomination)
+	// filter out constraints that are not matching the release deployment
+	matchingConstraints := []releasev1alpha1.ReleaseConstraint{}
+	for _, constraint := range releaseConstraints.Items {
+		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
+			matchingConstraints = append(matchingConstraints, constraint)
 		}
 	}
 
-	// group the matching nominations by priority
-	priorityGroups := map[int][]releasev1alpha1.ReleaseNomination{}
-	for _, nomination := range matchingNominations {
-		priorityGroups[nomination.Spec.Priority] = append(priorityGroups[nomination.Spec.Priority], nomination)
+	// group the matching constraints by priority
+	priorityGroups := map[int][]releasev1alpha1.ReleaseConstraint{}
+	for _, constraint := range matchingConstraints {
+		priorityGroups[constraint.Spec.Priority] = append(priorityGroups[constraint.Spec.Priority], constraint)
 	}
 
-	// iterate over the priority groups and find the release that satisfies all nominations
+	// iterate over the priority groups and find the release that satisfies all constraints
 	for _, priorityGroup := range priorityGroups {
-		// check if all the nominations in the priority group are nominating the same release
-		for _, nomination := range priorityGroup {
-			if nomination.Status.NominatedRelease != priorityGroup[0].Status.NominatedRelease {
-				return nil, fmt.Errorf("release %s is nominated by %s, but %s is nominated by %s", *priorityGroup[0].Status.NominatedRelease, priorityGroup[0].Name, *nomination.Status.NominatedRelease, nomination.Name)
+		// check if all the constraints in the priority group are wanting the same release
+		for _, constraint := range priorityGroup {
+			if constraint.Status.WantedRelease != priorityGroup[0].Status.WantedRelease {
+				return nil, fmt.Errorf("release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
 			}
 		}
-		// if all the nominations are nominating the same release and the release is not nil, return the release
-		if priorityGroup[0].Status.NominatedRelease != nil {
-			if slices.Contains(releases, *priorityGroup[0].Status.NominatedRelease) {
-				return priorityGroup[0].Status.NominatedRelease, nil
+		// if all the constraints are wanting the same release and the release is not nil, return the release
+		if priorityGroup[0].Status.WantedRelease != nil {
+			if slices.Contains(releases, *priorityGroup[0].Status.WantedRelease) {
+				return priorityGroup[0].Status.WantedRelease, nil
 			} else {
-				return nil, fmt.Errorf("release %s is not a valid release", *priorityGroup[0].Status.NominatedRelease)
+				return nil, fmt.Errorf("release %s is not a valid release", *priorityGroup[0].Status.WantedRelease)
 			}
 		}
 	}
