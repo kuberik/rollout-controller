@@ -159,6 +159,71 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_1_0_image, targetImage)
 		})
+
+		It("should deploy the release from the highest priority constraint", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Creating a high priority constraint wanting version 0.2.0")
+			highPriorityConstraint := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "high-priority-constraint",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 10,
+				},
+			}
+			Expect(k8sClient.Create(ctx, highPriorityConstraint)).To(Succeed())
+			wantedRelease := "0.2.0"
+			highPriorityConstraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, highPriorityConstraint)).To(Succeed())
+
+			By("Creating a low priority constraint wanting version 0.1.0")
+			lowPriorityConstraint := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "low-priority-constraint",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 5,
+				},
+			}
+			Expect(k8sClient.Create(ctx, lowPriorityConstraint)).To(Succeed())
+			wantedRelease = "0.1.0"
+			lowPriorityConstraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, lowPriorityConstraint)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the high priority constraint's release was deployed")
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_2_0_image, targetImage)
+
+			By("Cleaning up the additional constraints")
+			Expect(k8sClient.Delete(ctx, highPriorityConstraint)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, lowPriorityConstraint)).To(Succeed())
+		})
 	})
 })
 
