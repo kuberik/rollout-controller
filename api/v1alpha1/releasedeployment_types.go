@@ -60,6 +60,26 @@ type ReleaseDeploymentStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// History tracks the deployment history of this ReleaseDeployment.
+	// Each entry contains the version deployed and the timestamp of the deployment.
+	// +optional
+	// +listType=map
+	// +listMapKey=version
+	History []DeploymentHistoryEntry `json:"history,omitempty"`
+}
+
+// DeploymentHistoryEntry represents a single entry in the deployment history.
+type DeploymentHistoryEntry struct {
+	// Version is the version that was deployed.
+	// +kubebuilder:validation:Required
+	// +required
+	Version string `json:"version"`
+
+	// Timestamp is the time when the deployment occurred.
+	// +kubebuilder:validation:Required
+	// +required
+	Timestamp metav1.Time `json:"timestamp"`
 }
 
 // +kubebuilder:object:root=true

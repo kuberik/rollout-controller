@@ -99,19 +99,38 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			fmt.Sprintf("%s:%s", releaseDeployment.Spec.ReleasesRepository.URL, *releaseToDeploy),
 			fmt.Sprintf("%s:latest", releaseDeployment.Spec.TargetRepository.URL),
 		)
+		var changed bool
 		if err != nil {
 			log.Error(err, "Failed to copy artifact from releases to target repository")
-			changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
 				Type:               "Available",
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
 				Reason:             "ReleaseDeploymentFailed",
 				Message:            err.Error(),
 			})
-			if changed {
-				r.Status().Update(ctx, &releaseDeployment)
+		} else {
+			if releaseDeployment.Status.History == nil || releaseDeployment.Status.History[0].Version != *releaseToDeploy {
+				releaseDeployment.Status.History = append([]releasev1alpha1.DeploymentHistoryEntry{{
+					Version:   *releaseToDeploy,
+					Timestamp: metav1.Now(),
+				}}, releaseDeployment.Status.History...)
+				changed = true
 			}
-			return ctrl.Result{}, err
+			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+				Type:               "Available",
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "ReleaseDeploymentSucceeded",
+				Message:            "Release deployed successfully",
+			})
+		}
+		if changed {
+			err := r.Status().Update(ctx, &releaseDeployment)
+			if err != nil {
+				log.Error(err, "Failed to update release deployment status")
+				return ctrl.Result{}, err
+			}
 		}
 	} else {
 		// TODO(user): implement s3 protocol

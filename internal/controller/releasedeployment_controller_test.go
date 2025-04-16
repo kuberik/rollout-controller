@@ -374,6 +374,114 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
 		})
 
+		It("should update deployment history after successful deployment", func() {
+			By("Creating a test deployment image")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Creating a constraint to trigger deployment")
+			constraint := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "history-test-constraint",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
+			wantedRelease := "0.1.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			constraint.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the deployment happened")
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
+			By("Verifying that deployment history was updated")
+			updatedReleaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedReleaseDeployment.Status.History)).To(Equal(1))
+			Expect(updatedReleaseDeployment.Status.History[0].Version).To(Equal("0.1.0"))
+			Expect(updatedReleaseDeployment.Status.History[0].Timestamp.IsZero()).To(BeFalse())
+
+			By("Creating a second deployment with a new version")
+			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Updating the constraint to want the new version")
+			wantedRelease = "0.2.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+
+			By("Reconciling the resources again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the new deployment happened")
+			targetImage, err = pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_2_0_image, targetImage)
+
+			By("Verifying that deployment history was updated with both versions")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedReleaseDeployment.Status.History)).To(Equal(2))
+
+			// The newest entry should be first in the history
+			Expect(updatedReleaseDeployment.Status.History[0].Version).To(Equal("0.2.0"))
+			Expect(updatedReleaseDeployment.Status.History[0].Timestamp.IsZero()).To(BeFalse())
+
+			Expect(updatedReleaseDeployment.Status.History[1].Version).To(Equal("0.1.0"))
+			Expect(updatedReleaseDeployment.Status.History[1].Timestamp.IsZero()).To(BeFalse())
+
+			By("Reconciling the resources again without changing the wanted version")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that deployment history was not updated with duplicate version")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedReleaseDeployment.Status.History)).To(Equal(2), "History should still have only 2 entries")
+
+			// Verify the history entries remain the same
+			Expect(updatedReleaseDeployment.Status.History[0].Version).To(Equal("0.2.0"))
+			Expect(updatedReleaseDeployment.Status.History[1].Version).To(Equal("0.1.0"))
+
+			By("Cleaning up the constraint")
+			Expect(k8sClient.Delete(ctx, constraint)).To(Succeed())
+		})
+
 		It("should wait for all same priority constraints to be active and agree", func() {
 			By("Creating a test deployment image")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
