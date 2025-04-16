@@ -122,8 +122,8 @@ type ReleaseDeploymentList struct {
 }
 
 const (
-	// ReleaseDeploymentAvailable means the release deployment is available and ready to serve requests.
-	ReleaseDeploymentAvailable = "Available"
+	// ReleaseDeploymentReady means the release deployment is ready to serve requests.
+	ReleaseDeploymentReady = "Ready"
 	// ReleaseDeploymentReleasesUpdated means the available releases were updated.
 	ReleaseDeploymentReleasesUpdated = "ReleasesUpdated"
 )

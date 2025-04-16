@@ -89,7 +89,7 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err != nil {
 			log.Error(err, "Failed to list tags from releases repository")
 			changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               releasev1alpha1.ReleaseDeploymentAvailable,
+				Type:               releasev1alpha1.ReleaseDeploymentReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
 				Reason:             "ReleaseDeploymentFailed",
@@ -124,7 +124,7 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		log.Error(err, "Failed to find release to deploy")
 		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               releasev1alpha1.ReleaseDeploymentReady,
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "ReleaseDeploymentFailed",
@@ -138,7 +138,7 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if releaseToDeploy == nil {
 		log.Info("No release constraint, skipping deployment")
 		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               releasev1alpha1.ReleaseDeploymentReady,
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "NoReleaseWanted",
@@ -159,7 +159,7 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err != nil {
 			log.Error(err, "Failed to copy artifact from releases to target repository")
 			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               "Available",
+				Type:               releasev1alpha1.ReleaseDeploymentReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
 				Reason:             "ReleaseDeploymentFailed",
@@ -184,7 +184,7 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				changed = true
 			}
 			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               "Available",
+				Type:               releasev1alpha1.ReleaseDeploymentReady,
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
 				Reason:             "ReleaseDeploymentSucceeded",
