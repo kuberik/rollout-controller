@@ -654,6 +654,35 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			By("Cleaning up the constraint")
 			Expect(k8sClient.Delete(ctx, constraint)).To(Succeed())
 		})
+
+		It("should update available releases in status", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that available releases are updated in status")
+			updatedReleaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).NotTo(BeEmpty())
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.1.0"))
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.2.0"))
+		})
 	})
 })
 

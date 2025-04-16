@@ -109,6 +109,13 @@ spec:
           status:
             description: ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
             properties:
+              availableReleases:
+                description: AvailableReleases is a list of all releases available
+                  in the releases repository.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               conditions:
                 description: |-
                   Conditions represents the current state of the release deployment process.

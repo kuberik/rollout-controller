@@ -73,6 +73,11 @@ type ReleaseDeploymentStatus struct {
 	// +listType=map
 	// +listMapKey=version
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
+
+	// AvailableReleases is a list of all releases available in the releases repository.
+	// +optional
+	// +listType=set
+	AvailableReleases []string `json:"availableReleases,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.

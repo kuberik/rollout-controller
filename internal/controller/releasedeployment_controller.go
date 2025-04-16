@@ -64,6 +64,30 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
+	// Fetch available releases from the repository
+	releases, err := crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+	if err != nil {
+		log.Error(err, "Failed to list tags from releases repository")
+		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+			Type:               "Available",
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "ReleaseDeploymentFailed",
+			Message:            err.Error(),
+		})
+		if changed {
+			r.Status().Update(ctx, &releaseDeployment)
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Update available releases in status
+	releaseDeployment.Status.AvailableReleases = releases
+	if err := r.Status().Update(ctx, &releaseDeployment); err != nil {
+		log.Error(err, "Failed to update available releases in status")
+		return ctrl.Result{}, err
+	}
+
 	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, releaseDeployment)
 	if err != nil {
 		log.Error(err, "Failed to find release to deploy")
