@@ -47,6 +47,12 @@ spec:
                 - oci
                 - s3
                 type: string
+              releaseUpdateInterval:
+                default: 1m
+                description: ReleaseUpdateInterval defines how often the available
+                  releases should be updated
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
               releasesRepository:
                 description: ReleasesRepository specifies the path to the releases
                   repository

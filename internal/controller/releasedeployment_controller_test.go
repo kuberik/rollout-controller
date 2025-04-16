@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -32,6 +33,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -682,6 +684,65 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(updatedReleaseDeployment.Status.AvailableReleases).NotTo(BeEmpty())
 			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.1.0"))
 			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.2.0"))
+		})
+
+		It("should respect the release update interval", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Setting a custom update interval of 5 minutes")
+			releaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+			updateInterval := metav1.Duration{Duration: 5 * time.Minute}
+			releaseDeployment.Spec.ReleaseUpdateInterval = &updateInterval
+			Expect(k8sClient.Update(ctx, releaseDeployment)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that available releases are updated in status")
+			updatedReleaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).NotTo(BeEmpty())
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.1.0"))
+			Expect(updatedReleaseDeployment.Status.AvailableReleases).To(ContainElement("0.2.0"))
+
+			By("Verifying that the releases updated condition is set")
+			releasesUpdatedCondition := meta.FindStatusCondition(updatedReleaseDeployment.Status.Conditions, releasev1alpha1.ReleaseDeploymentReleasesUpdated)
+			Expect(releasesUpdatedCondition).NotTo(BeNil())
+			Expect(releasesUpdatedCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(releasesUpdatedCondition.Reason).To(Equal("ReleasesUpdated"))
+
+			By("Reconciling again immediately")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the releases were not updated again")
+			updatedReleaseDeployment = &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The condition should still have the same timestamp
+			releasesUpdatedCondition2 := meta.FindStatusCondition(updatedReleaseDeployment.Status.Conditions, releasev1alpha1.ReleaseDeploymentReleasesUpdated)
+			Expect(releasesUpdatedCondition2).NotTo(BeNil())
+			Expect(releasesUpdatedCondition2.LastTransitionTime).To(Equal(releasesUpdatedCondition.LastTransitionTime))
 		})
 	})
 })

@@ -43,6 +43,13 @@ type ReleaseDeploymentSpec struct {
 	// +kubebuilder:default=5
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
+
+	// ReleaseUpdateInterval defines how often the available releases should be updated
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +kubebuilder:default="1m"
+	// +optional
+	ReleaseUpdateInterval *metav1.Duration `json:"releaseUpdateInterval,omitempty"`
 }
 
 type Repository struct {
@@ -113,6 +120,13 @@ type ReleaseDeploymentList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ReleaseDeployment `json:"items"`
 }
+
+const (
+	// ReleaseDeploymentAvailable means the release deployment is available and ready to serve requests.
+	ReleaseDeploymentAvailable = "Available"
+	// ReleaseDeploymentReleasesUpdated means the available releases were updated.
+	ReleaseDeploymentReleasesUpdated = "ReleasesUpdated"
+)
 
 func init() {
 	SchemeBuilder.Register(&ReleaseDeployment{}, &ReleaseDeploymentList{})

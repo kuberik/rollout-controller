@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -64,28 +65,59 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	// Fetch available releases from the repository
-	releases, err := crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
-	if err != nil {
-		log.Error(err, "Failed to list tags from releases repository")
-		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               "Available",
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "ReleaseDeploymentFailed",
-			Message:            err.Error(),
-		})
-		if changed {
-			r.Status().Update(ctx, &releaseDeployment)
-		}
-		return ctrl.Result{}, err
+	// Check if we need to update the available releases
+	updateInterval := metav1.Duration{Duration: time.Minute} // default to 1 minute
+	if releaseDeployment.Spec.ReleaseUpdateInterval != nil {
+		updateInterval = *releaseDeployment.Spec.ReleaseUpdateInterval
 	}
 
-	// Update available releases in status
-	releaseDeployment.Status.AvailableReleases = releases
-	if err := r.Status().Update(ctx, &releaseDeployment); err != nil {
-		log.Error(err, "Failed to update available releases in status")
-		return ctrl.Result{}, err
+	releasesUpdatedCondition := meta.FindStatusCondition(releaseDeployment.Status.Conditions, releasev1alpha1.ReleaseDeploymentReleasesUpdated)
+	shouldUpdateReleases := true
+	if releasesUpdatedCondition != nil && releasesUpdatedCondition.Status == metav1.ConditionTrue {
+		lastUpdateTime := releasesUpdatedCondition.LastTransitionTime
+		if time.Since(lastUpdateTime.Time) < updateInterval.Duration {
+			shouldUpdateReleases = false
+			log.Info("Skipping release update as it was updated recently", "lastUpdate", lastUpdateTime, "updateInterval", updateInterval.Duration)
+		}
+	}
+
+	var releases []string
+	if shouldUpdateReleases {
+		// Fetch available releases from the repository
+		var err error
+		releases, err = crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+		if err != nil {
+			log.Error(err, "Failed to list tags from releases repository")
+			changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+				Type:               releasev1alpha1.ReleaseDeploymentAvailable,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "ReleaseDeploymentFailed",
+				Message:            err.Error(),
+			})
+			if changed {
+				r.Status().Update(ctx, &releaseDeployment)
+			}
+			return ctrl.Result{}, err
+		}
+
+		// Update available releases in status
+		releaseDeployment.Status.AvailableReleases = releases
+		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
+			Type:               releasev1alpha1.ReleaseDeploymentReleasesUpdated,
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "ReleasesUpdated",
+			Message:            "Available releases were updated successfully",
+		})
+		if changed {
+			if err := r.Status().Update(ctx, &releaseDeployment); err != nil {
+				log.Error(err, "Failed to update available releases in status")
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		releases = releaseDeployment.Status.AvailableReleases
 	}
 
 	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, releaseDeployment)
