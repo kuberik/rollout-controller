@@ -41,6 +41,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	releasev1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
+	"k8s.io/utils/ptr"
 )
 
 var _ = Describe("ReleaseDeployment Controller", func() {
@@ -187,6 +188,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, highPriorityConstraint)).To(Succeed())
 			wantedRelease := "0.2.0"
 			highPriorityConstraint.Status.WantedRelease = &wantedRelease
+			highPriorityConstraint.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, highPriorityConstraint)).To(Succeed())
 
 			By("Creating a low priority constraint wanting version 0.1.0")
@@ -205,6 +207,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, lowPriorityConstraint)).To(Succeed())
 			wantedRelease = "0.1.0"
 			lowPriorityConstraint.Status.WantedRelease = &wantedRelease
+			lowPriorityConstraint.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, lowPriorityConstraint)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -252,7 +255,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, highPriorityConstraint)).To(Succeed())
 			wantedRelease := "0.2.0"
 			highPriorityConstraint.Status.WantedRelease = &wantedRelease
-			highPriorityConstraint.Status.Active = false
+			highPriorityConstraint.Status.Active = ptr.To(false)
 			Expect(k8sClient.Status().Update(ctx, highPriorityConstraint)).To(Succeed())
 
 			By("Creating an active low priority constraint wanting version 0.1.0")
@@ -271,7 +274,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, lowPriorityConstraint)).To(Succeed())
 			wantedRelease = "0.1.0"
 			lowPriorityConstraint.Status.WantedRelease = &wantedRelease
-			lowPriorityConstraint.Status.Active = true
+			lowPriorityConstraint.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, lowPriorityConstraint)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -319,7 +322,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
 			wantedRelease := "0.1.0"
 			constraint1.Status.WantedRelease = &wantedRelease
-			constraint1.Status.Active = true
+			constraint1.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
 
 			constraint2 := &releasev1alpha1.ReleaseConstraint{
@@ -337,7 +340,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
 			wantedRelease = "0.2.0"
 			constraint2.Status.WantedRelease = &wantedRelease
-			constraint2.Status.Active = true
+			constraint2.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -400,7 +403,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
 			wantedRelease := "0.1.0"
 			constraint.Status.WantedRelease = &wantedRelease
-			constraint.Status.Active = true
+			constraint.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -508,7 +511,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
 			wantedRelease := "0.1.0"
 			constraint1.Status.WantedRelease = &wantedRelease
-			constraint1.Status.Active = true
+			constraint1.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
 
 			constraint2 := &releasev1alpha1.ReleaseConstraint{
@@ -524,7 +527,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
-			constraint2.Status.Active = false
+			constraint2.Status.Active = ptr.To(false)
 			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -544,7 +547,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			By("Activating the second constraint")
 			wantedRelease = "0.1.0"
 			constraint2.Status.WantedRelease = &wantedRelease
-			constraint2.Status.Active = true
+			constraint2.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
 
 			By("Reconciling the resources again")
@@ -587,7 +590,7 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
 			wantedRelease := "0.1.0"
 			constraint.Status.WantedRelease = &wantedRelease
-			constraint.Status.Active = true
+			constraint.Status.Active = ptr.To(true)
 			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
 
 			By("Setting a custom history limit of 3")

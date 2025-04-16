@@ -245,7 +245,7 @@ func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx co
 		// if all the constraints in the priority group are inactive, skip it
 		active := false
 		for _, constraint := range priorityGroup {
-			if constraint.Status.Active {
+			if constraint.Status.Active != nil && *constraint.Status.Active {
 				active = true
 				break
 			}

@@ -54,7 +54,7 @@ type ReleaseConstraintStatus struct {
 	// Inactive constraints are ignored by the ReleaseDeployment controller.
 	// +kubebuilder:default=true
 	// +optional
-	Active bool `json:"active,omitempty"`
+	Active *bool `json:"active,omitempty"`
 }
 
 // +kubebuilder:object:root=true
