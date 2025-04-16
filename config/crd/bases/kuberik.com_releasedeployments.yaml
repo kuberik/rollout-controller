@@ -95,6 +95,13 @@ spec:
                 required:
                 - url
                 type: object
+              versionHistoryLimit:
+                default: 5
+                description: VersionHistoryLimit defines the maximum number of entries
+                  to keep in the deployment history
+                format: int32
+                minimum: 1
+                type: integer
             required:
             - releasesRepository
             - targetRepository

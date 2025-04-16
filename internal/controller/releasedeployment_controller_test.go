@@ -560,6 +560,100 @@ var _ = Describe("ReleaseDeployment Controller", func() {
 			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
 		})
+
+		It("should respect the history limit", func() {
+			By("Creating a test deployment image")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(targetRepository, "latest")
+			Expect(err).Should(HaveOccurred())
+
+			By("Creating a constraint to trigger deployment")
+			constraint := &releasev1alpha1.ReleaseConstraint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "history-limit-test-constraint",
+					Namespace: "default",
+				},
+				Spec: releasev1alpha1.ReleaseConstraintSpec{
+					ReleaseDeploymentRef: &corev1.LocalObjectReference{
+						Name: resourceName,
+					},
+					Priority: 1,
+				},
+			}
+			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
+			wantedRelease := "0.1.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			constraint.Status.Active = true
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+
+			By("Setting a custom history limit of 3")
+			releaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, releaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+			historyLimit := int32(3)
+			releaseDeployment.Spec.VersionHistoryLimit = &historyLimit
+			Expect(k8sClient.Update(ctx, releaseDeployment)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &ReleaseDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Deploy version 0.1.0
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deploy version 0.2.0
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			wantedRelease = "0.2.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deploy version 0.3.0
+			pushFakeDeploymentImage(releasesRepository, "0.3.0")
+			wantedRelease = "0.3.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deploy version 0.4.0
+			pushFakeDeploymentImage(releasesRepository, "0.4.0")
+			wantedRelease = "0.4.0"
+			constraint.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that only the 3 most recent versions are in the history")
+			updatedReleaseDeployment := &releasev1alpha1.ReleaseDeployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedReleaseDeployment)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedReleaseDeployment.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedReleaseDeployment.Status.History)).To(Equal(3), "History should be limited to 3 entries")
+
+			// Verify the most recent versions are present
+			Expect(updatedReleaseDeployment.Status.History[0].Version).To(Equal("0.4.0"))
+			Expect(updatedReleaseDeployment.Status.History[1].Version).To(Equal("0.3.0"))
+			Expect(updatedReleaseDeployment.Status.History[2].Version).To(Equal("0.2.0"))
+
+			By("Cleaning up the constraint")
+			Expect(k8sClient.Delete(ctx, constraint)).To(Succeed())
+		})
 	})
 })
 

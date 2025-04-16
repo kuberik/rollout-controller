@@ -37,6 +37,12 @@ type ReleaseDeploymentSpec struct {
 	// +kubebuilder:validation:Required
 	// +required
 	TargetRepository Repository `json:"targetRepository,omitempty"`
+
+	// VersionHistoryLimit defines the maximum number of entries to keep in the deployment history
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5
+	// +optional
+	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 }
 
 type Repository struct {

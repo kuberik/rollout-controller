@@ -111,10 +111,20 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			})
 		} else {
 			if releaseDeployment.Status.History == nil || releaseDeployment.Status.History[0].Version != *releaseToDeploy {
+				// Add new entry to history
 				releaseDeployment.Status.History = append([]releasev1alpha1.DeploymentHistoryEntry{{
 					Version:   *releaseToDeploy,
 					Timestamp: metav1.Now(),
 				}}, releaseDeployment.Status.History...)
+
+				// Limit history size if specified
+				versionHistoryLimit := int32(5) // default value
+				if releaseDeployment.Spec.VersionHistoryLimit != nil {
+					versionHistoryLimit = *releaseDeployment.Spec.VersionHistoryLimit
+				}
+				if int32(len(releaseDeployment.Status.History)) > versionHistoryLimit {
+					releaseDeployment.Status.History = releaseDeployment.Status.History[:versionHistoryLimit]
+				}
 				changed = true
 			}
 			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
