@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: releasedeployments.kuberik.com
+  name: rollouts.kuberik.com
 spec:
   group: kuberik.com
   names:
-    kind: ReleaseDeployment
-    listKind: ReleaseDeploymentList
-    plural: releasedeployments
-    singular: releasedeployment
+    kind: Rollout
+    listKind: RolloutList
+    plural: rollouts
+    singular: rollout
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ReleaseDeployment is the Schema for the releasedeployments API.
+        description: Rollout is the Schema for the rollouts API.
         properties:
           apiVersion:
             description: |-
@@ -37,7 +37,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: ReleaseDeploymentSpec defines the desired state of ReleaseDeployment.
+            description: RolloutSpec defines the desired state of Rollout.
             properties:
               protocol:
                 default: oci
@@ -113,7 +113,7 @@ spec:
             - targetRepository
             type: object
           status:
-            description: ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
+            description: RolloutStatus defines the observed state of Rollout.
             properties:
               availableReleases:
                 description: AvailableReleases is a list of all releases available
@@ -123,9 +123,8 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               conditions:
-                description: |-
-                  Conditions represents the current state of the release deployment process.
-                  Conditions represents the current state of the release deployment process.
+                description: Conditions represents the current state of the rollout
+                  process.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -186,7 +185,7 @@ spec:
                 x-kubernetes-list-type: map
               history:
                 description: |-
-                  History tracks the deployment history of this ReleaseDeployment.
+                  History tracks the deployment history of this Rollout.
                   Each entry contains the version deployed and the timestamp of the deployment.
                 items:
                   description: DeploymentHistoryEntry represents a single entry in

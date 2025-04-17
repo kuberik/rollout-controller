@@ -21,8 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ReleaseDeploymentSpec defines the desired state of ReleaseDeployment.
-type ReleaseDeploymentSpec struct {
+// RolloutSpec defines the desired state of Rollout.
+type RolloutSpec struct {
 	// Protocol defines the type of repository protocol to use (e.g. oci, s3)
 	// +kubebuilder:validation:Enum=oci;s3
 	// +kubebuilder:default=oci
@@ -63,10 +63,9 @@ type Repository struct {
 	Auth *corev1.LocalObjectReference `json:"secretRef,omitempty"`
 }
 
-// ReleaseDeploymentStatus defines the observed state of ReleaseDeployment.
-type ReleaseDeploymentStatus struct {
-	// Conditions represents the current state of the release deployment process.
-	// Conditions represents the current state of the release deployment process.
+// RolloutStatus defines the observed state of Rollout.
+type RolloutStatus struct {
+	// Conditions represents the current state of the rollout process.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -74,7 +73,7 @@ type ReleaseDeploymentStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// History tracks the deployment history of this ReleaseDeployment.
+	// History tracks the deployment history of this Rollout.
 	// Each entry contains the version deployed and the timestamp of the deployment.
 	// +optional
 	// +listType=map
@@ -103,31 +102,31 @@ type DeploymentHistoryEntry struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// ReleaseDeployment is the Schema for the releasedeployments API.
-type ReleaseDeployment struct {
+// Rollout is the Schema for the rollouts API.
+type Rollout struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ReleaseDeploymentSpec   `json:"spec,omitempty"`
-	Status ReleaseDeploymentStatus `json:"status,omitempty"`
+	Spec   RolloutSpec   `json:"spec,omitempty"`
+	Status RolloutStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// ReleaseDeploymentList contains a list of ReleaseDeployment.
-type ReleaseDeploymentList struct {
+// RolloutList contains a list of Rollout.
+type RolloutList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ReleaseDeployment `json:"items"`
+	Items           []Rollout `json:"items"`
 }
 
 const (
-	// ReleaseDeploymentReady means the release deployment is ready to serve requests.
-	ReleaseDeploymentReady = "Ready"
-	// ReleaseDeploymentReleasesUpdated means the available releases were updated.
-	ReleaseDeploymentReleasesUpdated = "ReleasesUpdated"
+	// RolloutReady means the rollout is ready to serve requests.
+	RolloutReady = "Ready"
+	// RolloutReleasesUpdated means the available releases were updated.
+	RolloutReleasesUpdated = "ReleasesUpdated"
 )
 
 func init() {
-	SchemeBuilder.Register(&ReleaseDeployment{}, &ReleaseDeploymentList{})
+	SchemeBuilder.Register(&Rollout{}, &RolloutList{})
 }

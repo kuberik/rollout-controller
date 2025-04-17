@@ -37,8 +37,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
-	"github.com/kuberik/release-controller/internal/controller"
+	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -202,11 +202,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.ReleaseDeploymentReconciler{
+	if err = (&controller.RolloutReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ReleaseDeployment")
+		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

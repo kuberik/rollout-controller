@@ -30,35 +30,35 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/google/go-containerregistry/pkg/crane"
-	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
-	releasev1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
+	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ReleaseDeploymentReconciler reconciles a ReleaseDeployment object
-type ReleaseDeploymentReconciler struct {
+// RolloutReconciler reconciles a Rollout object
+type RolloutReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=kuberik.com,resources=releasedeployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kuberik.com,resources=releasedeployments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kuberik.com,resources=releasedeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
-// the ReleaseDeployment object against the actual cluster state, and then
+// the Rollout object against the actual cluster state, and then
 // perform operations to make the cluster state reflect the state specified by
 // the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
-func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	releaseDeployment := releasev1alpha1.ReleaseDeployment{}
-	if err := r.Client.Get(ctx, req.NamespacedName, &releaseDeployment); err != nil {
+	rollout := rolloutv1alpha1.Rollout{}
+	if err := r.Client.Get(ctx, req.NamespacedName, &rollout); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, err
 		}
@@ -67,11 +67,11 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Check if we need to update the available releases
 	updateInterval := metav1.Duration{Duration: time.Minute} // default to 1 minute
-	if releaseDeployment.Spec.ReleaseUpdateInterval != nil {
-		updateInterval = *releaseDeployment.Spec.ReleaseUpdateInterval
+	if rollout.Spec.ReleaseUpdateInterval != nil {
+		updateInterval = *rollout.Spec.ReleaseUpdateInterval
 	}
 
-	releasesUpdatedCondition := meta.FindStatusCondition(releaseDeployment.Status.Conditions, releasev1alpha1.ReleaseDeploymentReleasesUpdated)
+	releasesUpdatedCondition := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
 	shouldUpdateReleases := true
 	if releasesUpdatedCondition != nil && releasesUpdatedCondition.Status == metav1.ConditionTrue {
 		lastUpdateTime := releasesUpdatedCondition.LastTransitionTime
@@ -85,116 +85,116 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if shouldUpdateReleases {
 		// Fetch available releases from the repository
 		var err error
-		releases, err = crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+		releases, err = crane.ListTags(rollout.Spec.ReleasesRepository.URL)
 		if err != nil {
 			log.Error(err, "Failed to list tags from releases repository")
-			changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               releasev1alpha1.ReleaseDeploymentReady,
+			changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "ReleaseDeploymentFailed",
+				Reason:             "RolloutFailed",
 				Message:            err.Error(),
 			})
 			if changed {
-				r.Status().Update(ctx, &releaseDeployment)
+				r.Status().Update(ctx, &rollout)
 			}
 			return ctrl.Result{}, err
 		}
 
 		// Update available releases in status
-		releaseDeployment.Status.AvailableReleases = releases
-		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               releasev1alpha1.ReleaseDeploymentReleasesUpdated,
+		rollout.Status.AvailableReleases = releases
+		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReleasesUpdated,
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "ReleasesUpdated",
 			Message:            "Available releases were updated successfully",
 		})
 		if changed {
-			if err := r.Status().Update(ctx, &releaseDeployment); err != nil {
+			if err := r.Status().Update(ctx, &rollout); err != nil {
 				log.Error(err, "Failed to update available releases in status")
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
-		releases = releaseDeployment.Status.AvailableReleases
+		releases = rollout.Status.AvailableReleases
 	}
 
-	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, releaseDeployment)
+	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, rollout)
 	if err != nil {
 		log.Error(err, "Failed to find release to deploy")
-		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               releasev1alpha1.ReleaseDeploymentReady,
+		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
-			Reason:             "ReleaseDeploymentFailed",
+			Reason:             "RolloutFailed",
 			Message:            err.Error(),
 		})
 		if changed {
-			r.Status().Update(ctx, &releaseDeployment)
+			r.Status().Update(ctx, &rollout)
 		}
 		return ctrl.Result{}, err
 	}
 	if releaseToDeploy == nil {
-		log.Info("No release constraint, skipping deployment")
-		changed := meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-			Type:               releasev1alpha1.ReleaseDeploymentReady,
+		log.Info("No rollout constraint, skipping deployment")
+		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "NoReleaseWanted",
 			Message:            "No release wanted",
 		})
 		if changed {
-			r.Status().Update(ctx, &releaseDeployment)
+			r.Status().Update(ctx, &rollout)
 		}
 		return ctrl.Result{}, nil
 	}
 
-	if releaseDeployment.Spec.Protocol == "oci" {
+	if rollout.Spec.Protocol == "oci" {
 		err = crane.Copy(
-			fmt.Sprintf("%s:%s", releaseDeployment.Spec.ReleasesRepository.URL, *releaseToDeploy),
-			fmt.Sprintf("%s:latest", releaseDeployment.Spec.TargetRepository.URL),
+			fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, *releaseToDeploy),
+			fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
 		)
 		var changed bool
 		if err != nil {
 			log.Error(err, "Failed to copy artifact from releases to target repository")
-			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               releasev1alpha1.ReleaseDeploymentReady,
+			changed = changed || meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "ReleaseDeploymentFailed",
+				Reason:             "RolloutFailed",
 				Message:            err.Error(),
 			})
 		} else {
-			if releaseDeployment.Status.History == nil || releaseDeployment.Status.History[0].Version != *releaseToDeploy {
+			if rollout.Status.History == nil || rollout.Status.History[0].Version != *releaseToDeploy {
 				// Add new entry to history
-				releaseDeployment.Status.History = append([]releasev1alpha1.DeploymentHistoryEntry{{
+				rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
 					Version:   *releaseToDeploy,
 					Timestamp: metav1.Now(),
-				}}, releaseDeployment.Status.History...)
+				}}, rollout.Status.History...)
 
 				// Limit history size if specified
 				versionHistoryLimit := int32(5) // default value
-				if releaseDeployment.Spec.VersionHistoryLimit != nil {
-					versionHistoryLimit = *releaseDeployment.Spec.VersionHistoryLimit
+				if rollout.Spec.VersionHistoryLimit != nil {
+					versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
 				}
-				if int32(len(releaseDeployment.Status.History)) > versionHistoryLimit {
-					releaseDeployment.Status.History = releaseDeployment.Status.History[:versionHistoryLimit]
+				if int32(len(rollout.Status.History)) > versionHistoryLimit {
+					rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
 				}
 				changed = true
 			}
-			changed = changed || meta.SetStatusCondition(&releaseDeployment.Status.Conditions, metav1.Condition{
-				Type:               releasev1alpha1.ReleaseDeploymentReady,
+			changed = changed || meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "ReleaseDeploymentSucceeded",
+				Reason:             "RolloutSucceeded",
 				Message:            "Release deployed successfully",
 			})
 		}
 		if changed {
-			err := r.Status().Update(ctx, &releaseDeployment)
+			err := r.Status().Update(ctx, &rollout)
 			if err != nil {
-				log.Error(err, "Failed to update release deployment status")
+				log.Error(err, "Failed to update rollout status")
 				return ctrl.Result{}, err
 			}
 		}
@@ -206,36 +206,36 @@ func (r *ReleaseDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *ReleaseDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kuberikcomv1alpha1.ReleaseDeployment{}).
-		Named("releasedeployment").
+		For(&kuberikcomv1alpha1.Rollout{}).
+		Named("rollout").
 		Complete(r)
 }
 
-func (r *ReleaseDeploymentReconciler) getReleaseToDeploy(log logr.Logger, ctx context.Context, releaseDeployment releasev1alpha1.ReleaseDeployment) (*string, error) {
-	releases, err := crane.ListTags(releaseDeployment.Spec.ReleasesRepository.URL)
+func (r *RolloutReconciler) getReleaseToDeploy(log logr.Logger, ctx context.Context, rollout rolloutv1alpha1.Rollout) (*string, error) {
+	releases, err := crane.ListTags(rollout.Spec.ReleasesRepository.URL)
 	if err != nil {
 		log.Error(err, "Failed to list tags from releases repository")
 		return nil, err
 	}
 
-	// list all release constraints for this release deployment
-	releaseConstraints := releasev1alpha1.ReleaseConstraintList{}
-	if err := r.Client.List(ctx, &releaseConstraints, client.InNamespace(releaseDeployment.Namespace)); err != nil {
+	// list all rollout constraints for this rollout
+	rolloutConstraints := rolloutv1alpha1.RolloutConstraintList{}
+	if err := r.Client.List(ctx, &rolloutConstraints, client.InNamespace(rollout.Namespace)); err != nil {
 		return nil, err
 	}
 
-	// filter out constraints that are not matching the release deployment
-	matchingConstraints := []releasev1alpha1.ReleaseConstraint{}
-	for _, constraint := range releaseConstraints.Items {
-		if constraint.Spec.ReleaseDeploymentRef.Name == releaseDeployment.Name {
+	// filter out constraints that are not matching the rollout
+	matchingConstraints := []rolloutv1alpha1.RolloutConstraint{}
+	for _, constraint := range rolloutConstraints.Items {
+		if constraint.Spec.RolloutRef.Name == rollout.Name {
 			matchingConstraints = append(matchingConstraints, constraint)
 		}
 	}
 
 	// group the matching constraints by priority
-	priorityGroups := map[int][]releasev1alpha1.ReleaseConstraint{}
+	priorityGroups := map[int][]rolloutv1alpha1.RolloutConstraint{}
 	for _, constraint := range matchingConstraints {
 		priorityGroups[constraint.Spec.Priority] = append(priorityGroups[constraint.Spec.Priority], constraint)
 	}

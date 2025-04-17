@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: releaseconstraints.kuberik.com
+  name: rolloutconstraints.kuberik.com
 spec:
   group: kuberik.com
   names:
-    kind: ReleaseConstraint
-    listKind: ReleaseConstraintList
-    plural: releaseconstraints
-    singular: releaseconstraint
+    kind: RolloutConstraint
+    listKind: RolloutConstraintList
+    plural: rolloutconstraints
+    singular: rolloutconstraint
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ReleaseConstraint is the Schema for the releaseconstraints API.
+        description: RolloutConstraint is the Schema for the rolloutconstraints API.
         properties:
           apiVersion:
             description: |-
@@ -37,7 +37,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: ReleaseConstraintSpec defines the desired state of ReleaseConstraint.
+            description: RolloutConstraintSpec defines the desired state of RolloutConstraint.
             properties:
               priority:
                 default: 0
@@ -46,10 +46,10 @@ spec:
                   The default value is 0.
                 minimum: 0
                 type: integer
-              releaseDeploymentRef:
+              rolloutRef:
                 description: |-
-                  ReleaseDeploymentRef is a reference to the ReleaseDeployment object that this constraint applies to.
-                  It must be in the same namespace as the ReleaseConstraint.
+                  RolloutRef is a reference to the Rollout object that this constraint applies to.
+                  It must be in the same namespace as the RolloutConstraint.
                 properties:
                   name:
                     default: ""
@@ -63,23 +63,23 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
             required:
-            - releaseDeploymentRef
+            - rolloutRef
             type: object
           status:
-            description: ReleaseConstraintStatus defines the observed state of ReleaseConstraint.
+            description: RolloutConstraintStatus defines the observed state of RolloutConstraint.
             properties:
               active:
                 default: true
                 description: |-
                   Active indicates whether this constraint is currently active.
-                  Inactive constraints are ignored by the ReleaseDeployment controller.
+                  Inactive constraints are ignored by the Rollout controller.
                 type: boolean
               wantedRelease:
                 description: |-
                   WantedRelease indicates the release wanted by this constraint.
-                  The ReleaseDeployment controller determines which release to deploy by evaluating the priority of ReleaseConstraints.
-                  It favors the release wanted by the ReleaseConstraint with the highest priority.
-                  In cases where multiple ReleaseConstraints have the same highest priority, the controller will proceed with deployment
+                  The Rollout controller determines which release to deploy by evaluating the priority of RolloutConstraints.
+                  It favors the release wanted by the RolloutConstraint with the highest priority.
+                  In cases where multiple RolloutConstraints have the same highest priority, the controller will proceed with deployment
                   only if all such constraints refer to the identical release.
                 type: string
             type: object

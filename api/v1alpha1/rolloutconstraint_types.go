@@ -24,13 +24,13 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// ReleaseConstraintSpec defines the desired state of ReleaseConstraint.
-type ReleaseConstraintSpec struct {
-	// ReleaseDeploymentRef is a reference to the ReleaseDeployment object that this constraint applies to.
-	// It must be in the same namespace as the ReleaseConstraint.
+// RolloutConstraintSpec defines the desired state of RolloutConstraint.
+type RolloutConstraintSpec struct {
+	// RolloutRef is a reference to the Rollout object that this constraint applies to.
+	// It must be in the same namespace as the RolloutConstraint.
 	// +kubebuilder:validation:Required
 	// +required
-	ReleaseDeploymentRef *corev1.LocalObjectReference `json:"releaseDeploymentRef,omitempty"`
+	RolloutRef *corev1.LocalObjectReference `json:"rolloutRef,omitempty"`
 
 	// The priority of this constraint. Higher values indicate higher priority.
 	// The default value is 0.
@@ -40,18 +40,18 @@ type ReleaseConstraintSpec struct {
 	Priority int `json:"priority,omitempty"`
 }
 
-// ReleaseConstraintStatus defines the observed state of ReleaseConstraint.
-type ReleaseConstraintStatus struct {
+// RolloutConstraintStatus defines the observed state of RolloutConstraint.
+type RolloutConstraintStatus struct {
 	// WantedRelease indicates the release wanted by this constraint.
-	// The ReleaseDeployment controller determines which release to deploy by evaluating the priority of ReleaseConstraints.
-	// It favors the release wanted by the ReleaseConstraint with the highest priority.
-	// In cases where multiple ReleaseConstraints have the same highest priority, the controller will proceed with deployment
+	// The Rollout controller determines which release to deploy by evaluating the priority of RolloutConstraints.
+	// It favors the release wanted by the RolloutConstraint with the highest priority.
+	// In cases where multiple RolloutConstraints have the same highest priority, the controller will proceed with deployment
 	// only if all such constraints refer to the identical release.
 	// +optional
 	WantedRelease *string `json:"wantedRelease,omitempty"`
 
 	// Active indicates whether this constraint is currently active.
-	// Inactive constraints are ignored by the ReleaseDeployment controller.
+	// Inactive constraints are ignored by the Rollout controller.
 	// +kubebuilder:default=true
 	// +optional
 	Active *bool `json:"active,omitempty"`
@@ -60,24 +60,24 @@ type ReleaseConstraintStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// ReleaseConstraint is the Schema for the releaseconstraints API.
-type ReleaseConstraint struct {
+// RolloutConstraint is the Schema for the rolloutconstraints API.
+type RolloutConstraint struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ReleaseConstraintSpec   `json:"spec,omitempty"`
-	Status ReleaseConstraintStatus `json:"status,omitempty"`
+	Spec   RolloutConstraintSpec   `json:"spec,omitempty"`
+	Status RolloutConstraintStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// ReleaseConstraintList contains a list of ReleaseConstraint.
-type ReleaseConstraintList struct {
+// RolloutConstraintList contains a list of RolloutConstraint.
+type RolloutConstraintList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ReleaseConstraint `json:"items"`
+	Items           []RolloutConstraint `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&ReleaseConstraint{}, &ReleaseConstraintList{})
+	SchemeBuilder.Register(&RolloutConstraint{}, &RolloutConstraintList{})
 }

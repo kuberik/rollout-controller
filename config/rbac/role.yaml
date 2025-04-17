@@ -7,7 +7,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - releasedeployments
+  - rollouts
   verbs:
   - create
   - delete
@@ -19,13 +19,13 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - releasedeployments/finalizers
+  - rollouts/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
-  - releasedeployments/status
+  - rollouts/status
   verbs:
   - get
   - patch

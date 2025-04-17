@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	kuberikcomv1alpha1 "github.com/kuberik/release-controller/api/v1alpha1"
+	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

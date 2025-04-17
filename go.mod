@@ -1,4 +1,4 @@
-module github.com/kuberik/release-controller
+module github.com/kuberik/rollout-controller
 
 go 1.23.0
 

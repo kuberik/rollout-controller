@@ -1,9 +1,9 @@
 apiVersion: kuberik.com/v1alpha1
-kind: ReleaseDeployment
+kind: Rollout
 metadata:
   labels:
-    app.kubernetes.io/name: release-controller
+    app.kubernetes.io/name: rollout-controller
     app.kubernetes.io/managed-by: kustomize
-  name: releasedeployment-sample
+  name: rollout-sample
 spec:
   # TODO(user): Add fields here

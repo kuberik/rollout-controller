@@ -22,13 +22,13 @@ resources:
   # default, aiding admins in cluster management. Those roles are
   # not used by the {{ .ProjectName }} itself. You can comment the following lines
   # if you do not want those helpers be installed with your Project.
-  - releasedeployment_admin_role.yaml
-  - releasedeployment_editor_role.yaml
-  - releasedeployment_viewer_role.yaml
+  - rollout_admin_role.yaml
+  - rollout_editor_role.yaml
+  - rollout_viewer_role.yaml
 
   # For each CRD, "Editor" and "Viewer" roles are scaffolded by
   # default, aiding admins in cluster management. Those roles are
   # not used by the Project itself. You can comment the following lines
   # if you do not want those helpers be installed with your Project.
-  - releaseconstraint_editor_role.yaml
-  - releaseconstraint_viewer_role.yaml
+  - rolloutconstraint_editor_role.yaml
+  - rolloutconstraint_viewer_role.yaml

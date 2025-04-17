@@ -1,16 +1,16 @@
-# permissions for end users to view releaseconstraints.
+# permissions for end users to view rolloutconstraints.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: release-controller
+    app.kubernetes.io/name: rollout-controller
     app.kubernetes.io/managed-by: kustomize
-  name: releaseconstraint-viewer-role
+  name: rolloutconstraint-viewer-role
 rules:
   - apiGroups:
       - kuberik.com
     resources:
-      - releaseconstraints
+      - rolloutconstraints
     verbs:
       - get
       - list
@@ -18,6 +18,6 @@ rules:
   - apiGroups:
       - kuberik.com
     resources:
-      - releaseconstraints/status
+      - rolloutconstraints/status
     verbs:
       - get
