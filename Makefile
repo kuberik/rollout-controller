@@ -41,6 +41,14 @@ help: ## Display this help.
 
 ##@ Development
 
+.PHONY: setup-hooks
+setup-hooks: ## Set up Git hooks for commit message validation
+	@echo "Setting up Git hooks..."
+	@mkdir -p .git/hooks
+	@cp hack/validate-commit-msg.sh .git/hooks/commit-msg
+	@chmod +x .git/hooks/commit-msg
+	@echo "Git hooks set up successfully!"
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
@@ -170,6 +178,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GIT_CLIFF ?= $(LOCALBIN)/git-cliff
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -179,6 +188,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v1.63.4
+GIT_CLIFF_VERSION ?= 2.8.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -208,6 +218,30 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
+.PHONY: git-cliff
+git-cliff: $(GIT_CLIFF) ## Download git-cliff locally if necessary.
+$(GIT_CLIFF): $(LOCALBIN)
+	@[ -f "$(GIT_CLIFF)-$(GIT_CLIFF_VERSION)" ] || { \
+		echo "Downloading git-cliff $(GIT_CLIFF_VERSION)..."; \
+		case "$(shell uname -s)-$(shell uname -m)" in \
+			"Darwin-arm64") \
+				curl -L "https://github.com/orhun/git-cliff/releases/download/v$(GIT_CLIFF_VERSION)/git-cliff-$(GIT_CLIFF_VERSION)-aarch64-apple-darwin.tar.gz" | \
+				tar xz -C $(LOCALBIN) --strip-components=1 git-cliff-$(GIT_CLIFF_VERSION)/git-cliff ;; \
+			"Darwin-x86_64") \
+				curl -L "https://github.com/orhun/git-cliff/releases/download/v$(GIT_CLIFF_VERSION)/git-cliff-$(GIT_CLIFF_VERSION)-x86_64-apple-darwin.tar.gz" | \
+				tar xz -C $(LOCALBIN) --strip-components=1 git-cliff-$(GIT_CLIFF_VERSION)/git-cliff ;; \
+			"Linux-x86_64") \
+				curl -L "https://github.com/orhun/git-cliff/releases/download/v$(GIT_CLIFF_VERSION)/git-cliff-$(GIT_CLIFF_VERSION)-x86_64-unknown-linux-gnu.tar.gz" | \
+				tar xz -C $(LOCALBIN) --strip-components=1 git-cliff-$(GIT_CLIFF_VERSION)/git-cliff ;; \
+			"Linux-aarch64") \
+				curl -L "https://github.com/orhun/git-cliff/releases/download/v$(GIT_CLIFF_VERSION)/git-cliff-$(GIT_CLIFF_VERSION)-aarch64-unknown-linux-gnu.tar.gz" | \
+				tar xz -C $(LOCALBIN) --strip-components=1 git-cliff-$(GIT_CLIFF_VERSION)/git-cliff ;; \
+			*) echo "Unsupported platform: $(shell uname -s)-$(shell uname -m)" && exit 1 ;; \
+		esac; \
+		mv $(GIT_CLIFF) $(GIT_CLIFF)-$(GIT_CLIFF_VERSION); \
+	} ;\
+	ln -sf $(GIT_CLIFF)-$(GIT_CLIFF_VERSION) $(GIT_CLIFF)
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
@@ -223,3 +257,16 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+
+# Release notes generation
+.PHONY: changelog
+changelog: git-cliff ## Generate changelog
+	$(GIT_CLIFF) --output CHANGELOG.md
+
+.PHONY: changelog-unreleased
+changelog-unreleased: git-cliff ## Generate changelog for unreleased changes
+	$(GIT_CLIFF) --unreleased --output CHANGELOG.md
+
+.PHONY: changelog-preview
+changelog-preview: git-cliff ## Preview changelog for the next release
+	$(GIT_CLIFF) --unreleased --preview
