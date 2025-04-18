@@ -39,6 +39,15 @@ spec:
           spec:
             description: RolloutSpec defines the desired state of Rollout.
             properties:
+              controlGroups:
+                description: |-
+                  ControlGroups defines the order of control groups.
+                  The first control group in the list has the highest priority.
+                  When multiple RolloutControls are active, the one belonging to the highest priority control group takes precedence.
+                items:
+                  type: string
+                minItems: 1
+                type: array
               protocol:
                 default: oci
                 description: Protocol defines the type of repository protocol to use
@@ -109,6 +118,7 @@ spec:
                 minimum: 1
                 type: integer
             required:
+            - controlGroups
             - releasesRepository
             - targetRepository
             type: object

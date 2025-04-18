@@ -49,21 +49,33 @@ var _ = Describe("Rollout Controller", func() {
 		const resourceName = "test-resource"
 
 		ctx := context.Background()
-
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
-		}
-		rollout := &rolloutv1alpha1.Rollout{}
-		rolloutConstraint := &rolloutv1alpha1.RolloutConstraint{}
+		var namespace string
 		var registryServer *httptest.Server
 		var registryEndpoint string
 		var releasesRepository string
 		var targetRepository string
+		var typeNamespacedName types.NamespacedName
+		var rollout *rolloutv1alpha1.Rollout
+		var rolloutControl *rolloutv1alpha1.RolloutControl
 
 		BeforeEach(func() {
-			By("setting up the test environment")
+			By("creating a unique test namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-ns-",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			namespace = ns.Name
 
+			typeNamespacedName = types.NamespacedName{
+				Name:      resourceName,
+				Namespace: namespace,
+			}
+			rollout = &rolloutv1alpha1.Rollout{}
+			rolloutControl = &rolloutv1alpha1.RolloutControl{}
+
+			By("setting up the test environment")
 			registry := registry.New()
 			registryServer = httptest.NewServer(registry)
 			registryEndpoint = strings.TrimPrefix(registryServer.URL, "http://")
@@ -76,7 +88,7 @@ var _ = Describe("Rollout Controller", func() {
 				resource := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: namespace,
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
 						Protocol: "oci",
@@ -86,23 +98,25 @@ var _ = Describe("Rollout Controller", func() {
 						TargetRepository: rolloutv1alpha1.Repository{
 							URL: targetRepository,
 						},
+						ControlGroups: []string{"manual", "rollback", "default"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 
-			By("Creating a test rollout constraint")
-			err = k8sClient.Get(ctx, typeNamespacedName, rolloutConstraint)
+			By("Creating a default rollout control")
+			err = k8sClient.Get(ctx, typeNamespacedName, rolloutControl)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &rolloutv1alpha1.RolloutConstraint{
+				resource := &rolloutv1alpha1.RolloutControl{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: namespace,
 					},
-					Spec: rolloutv1alpha1.RolloutConstraintSpec{
+					Spec: rolloutv1alpha1.RolloutControlSpec{
 						RolloutRef: &corev1.LocalObjectReference{
 							Name: resourceName,
 						},
+						ControlGroups: []string{"default"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -110,20 +124,16 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &rolloutv1alpha1.Rollout{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance Rollout")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-
-			rolloutConstraint := &rolloutv1alpha1.RolloutConstraint{}
-			err = k8sClient.Get(ctx, typeNamespacedName, rolloutConstraint)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Delete(ctx, rolloutConstraint)).To(Succeed())
+			By("Cleaning up the test namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
 		})
-		It("should deploy the image when the constraint is satisfied", func() {
+
+		It("should deploy the image when the control is satisfied", func() {
 			By("Creating a test deployment image")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			_, err := pullImage(releasesRepository, "0.1.0")
@@ -145,12 +155,12 @@ var _ = Describe("Rollout Controller", func() {
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Configuring a constraint for the rollout")
-			err = k8sClient.Get(ctx, typeNamespacedName, rolloutConstraint)
+			By("Configuring a control for the rollout")
+			err = k8sClient.Get(ctx, typeNamespacedName, rolloutControl)
 			Expect(err).NotTo(HaveOccurred())
 			wantedRelease := "0.1.0"
-			rolloutConstraint.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, rolloutConstraint)).To(Succeed())
+			rolloutControl.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, rolloutControl)).To(Succeed())
 
 			By("Reconciling the created resources with an accepted release")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -163,7 +173,7 @@ var _ = Describe("Rollout Controller", func() {
 			assertEqualDigests(version_0_1_0_image, targetImage)
 		})
 
-		It("should deploy the release from the highest priority constraint", func() {
+		It("should deploy the release from the highest priority control group", func() {
 			By("Creating test deployment images")
 			pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, "0.2.0")
@@ -172,43 +182,43 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(releasesRepository, "0.2.0")
 			Expect(err).ShouldNot(HaveOccurred())
 
-			By("Creating a high priority constraint wanting version 0.2.0")
-			highPriorityConstraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating a manual control wanting version 0.2.0")
+			manualControl := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "high-priority-constraint",
-					Namespace: "default",
+					Name:      "manual-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 10,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, highPriorityConstraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, manualControl)).To(Succeed())
 			wantedRelease := "0.2.0"
-			highPriorityConstraint.Status.WantedRelease = &wantedRelease
-			highPriorityConstraint.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, highPriorityConstraint)).To(Succeed())
+			manualControl.Status.WantedRelease = &wantedRelease
+			manualControl.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, manualControl)).To(Succeed())
 
-			By("Creating a low priority constraint wanting version 0.1.0")
-			lowPriorityConstraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating a default control wanting version 0.1.0")
+			defaultControl := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "low-priority-constraint",
-					Namespace: "default",
+					Name:      "default-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 5,
+					ControlGroups: []string{"default"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, lowPriorityConstraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, defaultControl)).To(Succeed())
 			wantedRelease = "0.1.0"
-			lowPriorityConstraint.Status.WantedRelease = &wantedRelease
-			lowPriorityConstraint.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, lowPriorityConstraint)).To(Succeed())
+			defaultControl.Status.WantedRelease = &wantedRelease
+			defaultControl.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, defaultControl)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -220,17 +230,17 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that the high priority constraint's release was deployed")
+			By("Verifying that the manual control's release was deployed")
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_2_0_image, targetImage)
 
-			By("Cleaning up the additional constraints")
-			Expect(k8sClient.Delete(ctx, highPriorityConstraint)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, lowPriorityConstraint)).To(Succeed())
+			By("Cleaning up the additional controls")
+			Expect(k8sClient.Delete(ctx, manualControl)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, defaultControl)).To(Succeed())
 		})
 
-		It("should skip inactive higher priority constraints", func() {
+		It("should skip inactive higher priority control groups", func() {
 			By("Creating test deployment images")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			pushFakeDeploymentImage(releasesRepository, "0.2.0")
@@ -239,43 +249,43 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(releasesRepository, "0.2.0")
 			Expect(err).ShouldNot(HaveOccurred())
 
-			By("Creating an inactive high priority constraint wanting version 0.2.0")
-			highPriorityConstraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating an inactive manual control wanting version 0.2.0")
+			inactiveManualControl := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "high-priority-constraint1",
-					Namespace: "default",
+					Name:      "inactive-manual-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 10,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, highPriorityConstraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, inactiveManualControl)).To(Succeed())
 			wantedRelease := "0.2.0"
-			highPriorityConstraint.Status.WantedRelease = &wantedRelease
-			highPriorityConstraint.Status.Active = ptr.To(false)
-			Expect(k8sClient.Status().Update(ctx, highPriorityConstraint)).To(Succeed())
+			inactiveManualControl.Status.WantedRelease = &wantedRelease
+			inactiveManualControl.Status.Active = ptr.To(false)
+			Expect(k8sClient.Status().Update(ctx, inactiveManualControl)).To(Succeed())
 
-			By("Creating an active low priority constraint wanting version 0.1.0")
-			lowPriorityConstraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating an active default control wanting version 0.1.0")
+			defaultControl := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "low-priority-constraint1",
-					Namespace: "default",
+					Name:      "active-default-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 5,
+					ControlGroups: []string{"rollback"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, lowPriorityConstraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, defaultControl)).To(Succeed())
 			wantedRelease = "0.1.0"
-			lowPriorityConstraint.Status.WantedRelease = &wantedRelease
-			lowPriorityConstraint.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, lowPriorityConstraint)).To(Succeed())
+			defaultControl.Status.WantedRelease = &wantedRelease
+			defaultControl.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, defaultControl)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -287,17 +297,17 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that the active low priority constraint's release was deployed")
+			By("Verifying that the default control's release was deployed")
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_1_0_image, targetImage)
 
-			By("Cleaning up the additional constraints")
-			Expect(k8sClient.Delete(ctx, highPriorityConstraint)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, lowPriorityConstraint)).To(Succeed())
+			By("Cleaning up the additional controls")
+			Expect(k8sClient.Delete(ctx, inactiveManualControl)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, defaultControl)).To(Succeed())
 		})
 
-		It("should not deploy when same priority constraints want different versions", func() {
+		It("should not deploy when same priority controls want different versions", func() {
 			By("Creating test deployment images")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			pushFakeDeploymentImage(releasesRepository, "0.2.0")
@@ -306,42 +316,42 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(releasesRepository, "0.2.0")
 			Expect(err).ShouldNot(HaveOccurred())
 
-			By("Creating two constraints with same priority but different wanted versions")
-			constraint1 := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating two controls with same priority but different wanted versions")
+			control1 := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "constraint1",
-					Namespace: "default",
+					Name:      "control1",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 10,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control1)).To(Succeed())
 			wantedRelease := "0.1.0"
-			constraint1.Status.WantedRelease = &wantedRelease
-			constraint1.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
+			control1.Status.WantedRelease = &wantedRelease
+			control1.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control1)).To(Succeed())
 
-			constraint2 := &rolloutv1alpha1.RolloutConstraint{
+			control2 := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "constraint2",
-					Namespace: "default",
+					Name:      "control2",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 10,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control2)).To(Succeed())
 			wantedRelease = "0.2.0"
-			constraint2.Status.WantedRelease = &wantedRelease
-			constraint2.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+			control2.Status.WantedRelease = &wantedRelease
+			control2.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control2)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -352,16 +362,16 @@ var _ = Describe("Rollout Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("conflicting releases wanted by highest priority constraints"))
+			Expect(err.Error()).To(ContainSubstring("conflicting releases wanted by highest priority controls"))
 
 			By("Verifying that no deployment happened")
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Updating constraint2 to want the same version as constraint1")
+			By("Updating control2 to want the same version as control1")
 			wantedRelease = "0.1.0"
-			constraint2.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+			control2.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, control2)).To(Succeed())
 
 			By("Reconciling the resources again")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -374,9 +384,9 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_1_0_image, targetImage)
 
-			By("Cleaning up the additional constraints")
-			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
+			By("Cleaning up the additional controls")
+			Expect(k8sClient.Delete(ctx, control1)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, control2)).To(Succeed())
 		})
 
 		It("should update deployment history after successful deployment", func() {
@@ -387,24 +397,24 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Creating a constraint to trigger deployment")
-			constraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating a control to trigger deployment")
+			control := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "history-test-constraint",
-					Namespace: "default",
+					Name:      "history-test-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 1,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control)).To(Succeed())
 			wantedRelease := "0.1.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			constraint.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			control.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -436,10 +446,10 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(releasesRepository, "0.2.0")
 			Expect(err).ShouldNot(HaveOccurred())
 
-			By("Updating the constraint to want the new version")
+			By("Updating the control to want the new version")
 			wantedRelease = "0.2.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 
 			By("Reconciling the resources again")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -483,11 +493,11 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.2.0"))
 			Expect(updatedRollout.Status.History[1].Version).To(Equal("0.1.0"))
 
-			By("Cleaning up the constraint")
-			Expect(k8sClient.Delete(ctx, constraint)).To(Succeed())
+			By("Cleaning up the control")
+			Expect(k8sClient.Delete(ctx, control)).To(Succeed())
 		})
 
-		It("should wait for all same priority constraints to be active and agree", func() {
+		It("should wait for all same priority controls to be active and agree", func() {
 			By("Creating a test deployment image")
 			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
 			_, err := pullImage(releasesRepository, "0.1.0")
@@ -495,40 +505,40 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Creating two constraints with same priority but different active states")
-			constraint1 := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating two controls with same priority but different active states")
+			control1 := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "active-constraint1",
-					Namespace: "default",
+					Name:      "active-control1",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 1,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint1)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control1)).To(Succeed())
 			wantedRelease := "0.1.0"
-			constraint1.Status.WantedRelease = &wantedRelease
-			constraint1.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint1)).To(Succeed())
+			control1.Status.WantedRelease = &wantedRelease
+			control1.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control1)).To(Succeed())
 
-			constraint2 := &rolloutv1alpha1.RolloutConstraint{
+			control2 := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "inactive-constraint2",
-					Namespace: "default",
+					Name:      "inactive-control2",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 1,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint2)).To(Succeed())
-			constraint2.Status.Active = ptr.To(false)
-			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control2)).To(Succeed())
+			control2.Status.Active = ptr.To(false)
+			Expect(k8sClient.Status().Update(ctx, control2)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -538,32 +548,32 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying that no deployment occurred")
-			targetImage, err := pullImage(targetRepository, "latest")
+			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Activating the second constraint")
+			By("Activating the second control")
 			wantedRelease = "0.1.0"
-			constraint2.Status.WantedRelease = &wantedRelease
-			constraint2.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint2)).To(Succeed())
+			control2.Status.WantedRelease = &wantedRelease
+			control2.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control2)).To(Succeed())
 
 			By("Reconciling the resources again")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying that deployment occurred")
-			targetImage, err = pullImage(targetRepository, "latest")
+			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
 			assertEqualDigests(version_0_1_0_image, targetImage)
 
-			By("Cleaning up the additional constraints")
-			Expect(k8sClient.Delete(ctx, constraint1)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, constraint2)).To(Succeed())
+			By("Cleaning up the additional controls")
+			Expect(k8sClient.Delete(ctx, control1)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, control2)).To(Succeed())
 		})
 
 		It("should respect the history limit", func() {
@@ -574,24 +584,24 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
 
-			By("Creating a constraint to trigger deployment")
-			constraint := &rolloutv1alpha1.RolloutConstraint{
+			By("Creating a control to trigger deployment")
+			control := &rolloutv1alpha1.RolloutControl{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "history-limit-test-constraint",
-					Namespace: "default",
+					Name:      "history-limit-test-control",
+					Namespace: namespace,
 				},
-				Spec: rolloutv1alpha1.RolloutConstraintSpec{
+				Spec: rolloutv1alpha1.RolloutControlSpec{
 					RolloutRef: &corev1.LocalObjectReference{
 						Name: resourceName,
 					},
-					Priority: 1,
+					ControlGroups: []string{"manual"},
 				},
 			}
-			Expect(k8sClient.Create(ctx, constraint)).To(Succeed())
+			Expect(k8sClient.Create(ctx, control)).To(Succeed())
 			wantedRelease := "0.1.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			constraint.Status.Active = ptr.To(true)
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			control.Status.Active = ptr.To(true)
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 
 			By("Setting a custom history limit of 3")
 			rollout := &rolloutv1alpha1.Rollout{}
@@ -616,8 +626,8 @@ var _ = Describe("Rollout Controller", func() {
 			// Deploy version 0.2.0
 			pushFakeDeploymentImage(releasesRepository, "0.2.0")
 			wantedRelease = "0.2.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -626,8 +636,8 @@ var _ = Describe("Rollout Controller", func() {
 			// Deploy version 0.3.0
 			pushFakeDeploymentImage(releasesRepository, "0.3.0")
 			wantedRelease = "0.3.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -636,8 +646,8 @@ var _ = Describe("Rollout Controller", func() {
 			// Deploy version 0.4.0
 			pushFakeDeploymentImage(releasesRepository, "0.4.0")
 			wantedRelease = "0.4.0"
-			constraint.Status.WantedRelease = &wantedRelease
-			Expect(k8sClient.Status().Update(ctx, constraint)).To(Succeed())
+			control.Status.WantedRelease = &wantedRelease
+			Expect(k8sClient.Status().Update(ctx, control)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -656,8 +666,8 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[1].Version).To(Equal("0.3.0"))
 			Expect(updatedRollout.Status.History[2].Version).To(Equal("0.2.0"))
 
-			By("Cleaning up the constraint")
-			Expect(k8sClient.Delete(ctx, constraint)).To(Succeed())
+			By("Cleaning up the control")
+			Expect(k8sClient.Delete(ctx, control)).To(Succeed())
 		})
 
 		It("should update available releases in status", func() {

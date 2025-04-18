@@ -38,6 +38,14 @@ type RolloutSpec struct {
 	// +required
 	TargetRepository Repository `json:"targetRepository,omitempty"`
 
+	// ControlGroups defines the order of control groups.
+	// The first control group in the list has the highest priority.
+	// When multiple RolloutControls are active, the one belonging to the highest priority control group takes precedence.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +required
+	ControlGroups []string `json:"controlGroups,omitempty"`
+
 	// VersionHistoryLimit defines the maximum number of entries to keep in the deployment history
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=5

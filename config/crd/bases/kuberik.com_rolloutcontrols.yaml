@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: rolloutconstraints.kuberik.com
+  name: rolloutcontrols.kuberik.com
 spec:
   group: kuberik.com
   names:
-    kind: RolloutConstraint
-    listKind: RolloutConstraintList
-    plural: rolloutconstraints
-    singular: rolloutconstraint
+    kind: RolloutControl
+    listKind: RolloutControlList
+    plural: rolloutcontrols
+    singular: rolloutcontrol
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: RolloutConstraint is the Schema for the rolloutconstraints API.
+        description: RolloutControl is the Schema for the rolloutcontrols API.
         properties:
           apiVersion:
             description: |-
@@ -37,19 +37,20 @@ spec:
           metadata:
             type: object
           spec:
-            description: RolloutConstraintSpec defines the desired state of RolloutConstraint.
+            description: RolloutControlSpec defines the desired state of RolloutControl.
             properties:
-              priority:
-                default: 0
+              controlGroups:
                 description: |-
-                  The priority of this constraint. Higher values indicate higher priority.
-                  The default value is 0.
-                minimum: 0
-                type: integer
+                  ControlGroups is a list of control groups that this control belongs to.
+                  The order of control groups in the Rollout determines which control group takes precedence.
+                items:
+                  type: string
+                minItems: 1
+                type: array
               rolloutRef:
                 description: |-
-                  RolloutRef is a reference to the Rollout object that this constraint applies to.
-                  It must be in the same namespace as the RolloutConstraint.
+                  RolloutRef is a reference to the Rollout object that this control applies to.
+                  It must be in the same namespace as the RolloutControl.
                 properties:
                   name:
                     default: ""
@@ -63,24 +64,25 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
             required:
+            - controlGroups
             - rolloutRef
             type: object
           status:
-            description: RolloutConstraintStatus defines the observed state of RolloutConstraint.
+            description: RolloutControlStatus defines the observed state of RolloutControl.
             properties:
               active:
                 default: true
                 description: |-
-                  Active indicates whether this constraint is currently active.
-                  Inactive constraints are ignored by the Rollout controller.
+                  Active indicates whether this control is currently active.
+                  Inactive controls are ignored by the Rollout controller.
                 type: boolean
               wantedRelease:
                 description: |-
-                  WantedRelease indicates the release wanted by this constraint.
-                  The Rollout controller determines which release to deploy by evaluating the priority of RolloutConstraints.
-                  It favors the release wanted by the RolloutConstraint with the highest priority.
-                  In cases where multiple RolloutConstraints have the same highest priority, the controller will proceed with deployment
-                  only if all such constraints refer to the identical release.
+                  WantedRelease indicates the release wanted by this control.
+                  The Rollout controller determines which release to deploy by evaluating the control groups.
+                  It favors the release wanted by the RolloutControl in the highest priority control group (as defined in the Rollout).
+                  In cases where multiple RolloutControls belong to the same highest priority control group, the controller will proceed with deployment
+                  only if all such controls refer to the identical release.
                 type: string
             type: object
         type: object

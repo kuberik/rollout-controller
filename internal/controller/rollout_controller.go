@@ -136,7 +136,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if releaseToDeploy == nil {
-		log.Info("No rollout constraint, skipping deployment")
+		log.Info("No rollout control, skipping deployment")
 		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionFalse,
@@ -220,55 +220,52 @@ func (r *RolloutReconciler) getReleaseToDeploy(log logr.Logger, ctx context.Cont
 		return nil, err
 	}
 
-	// list all rollout constraints for this rollout
-	rolloutConstraints := rolloutv1alpha1.RolloutConstraintList{}
-	if err := r.Client.List(ctx, &rolloutConstraints, client.InNamespace(rollout.Namespace)); err != nil {
+	// list all rollout controls for this rollout
+	rolloutControls := rolloutv1alpha1.RolloutControlList{}
+	if err := r.Client.List(ctx, &rolloutControls, client.InNamespace(rollout.Namespace)); err != nil {
 		return nil, err
 	}
 
-	// filter out constraints that are not matching the rollout
-	matchingConstraints := []rolloutv1alpha1.RolloutConstraint{}
-	for _, constraint := range rolloutConstraints.Items {
-		if constraint.Spec.RolloutRef.Name == rollout.Name {
-			matchingConstraints = append(matchingConstraints, constraint)
+	// filter out controls that are not matching the rollout
+	matchingControls := []rolloutv1alpha1.RolloutControl{}
+	for _, control := range rolloutControls.Items {
+		if control.Spec.RolloutRef.Name == rollout.Name {
+			matchingControls = append(matchingControls, control)
 		}
 	}
 
-	// group the matching constraints by priority
-	priorityGroups := map[int][]rolloutv1alpha1.RolloutConstraint{}
-	for _, constraint := range matchingConstraints {
-		priorityGroups[constraint.Spec.Priority] = append(priorityGroups[constraint.Spec.Priority], constraint)
-	}
-
-	// iterate over the priority groups and find the release that satisfies all constraints
-	for _, priorityGroup := range priorityGroups {
-		// if all the constraints in the priority group are inactive, skip it
+	// iterate through control groups in order of priority (first in list = highest priority)
+	for _, controlGroup := range rollout.Spec.ControlGroups {
+		// find all active controls in this group
+		controls := []rolloutv1alpha1.RolloutControl{}
 		active := false
-		for _, constraint := range priorityGroup {
-			if constraint.Status.Active != nil && *constraint.Status.Active {
-				active = true
-				break
+		for _, control := range matchingControls {
+			if slices.Contains(control.Spec.ControlGroups, controlGroup) {
+				controls = append(controls, control)
+				active = active || (control.Status.Active != nil && *control.Status.Active)
 			}
 		}
+
 		if !active {
 			continue
 		}
 
-		// check if all the constraints in the priority group are wanting the same release
-		for _, constraint := range priorityGroup {
-			if constraint.Status.WantedRelease == nil {
+		// check if all the controls in the control group are wanting the same release
+		for _, control := range controls {
+			if control.Status.WantedRelease == nil {
 				return nil, nil
 			}
-			if *constraint.Status.WantedRelease != *priorityGroup[0].Status.WantedRelease {
-				return nil, fmt.Errorf("conflicting releases wanted by highest priority constraints: release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
+			if *control.Status.WantedRelease != *controls[0].Status.WantedRelease {
+				return nil, fmt.Errorf("conflicting releases wanted by highest priority controls: release %s is wanted by %s, but %s is wanted by %s", *controls[0].Status.WantedRelease, controls[0].Name, *control.Status.WantedRelease, control.Name)
 			}
+
 		}
-		// if all the constraints are wanting the same release and the release is not nil, return the release
-		if priorityGroup[0].Status.WantedRelease != nil {
-			if slices.Contains(releases, *priorityGroup[0].Status.WantedRelease) {
-				return priorityGroup[0].Status.WantedRelease, nil
+		// if all the controls are wanting the same release and the release is not nil, return the release
+		if controls[0].Status.WantedRelease != nil {
+			if slices.Contains(releases, *controls[0].Status.WantedRelease) {
+				return controls[0].Status.WantedRelease, nil
 			} else {
-				return nil, fmt.Errorf("release %s is not a valid release", *priorityGroup[0].Status.WantedRelease)
+				return nil, fmt.Errorf("release %s is not a valid release", *controls[0].Status.WantedRelease)
 			}
 		}
 	}

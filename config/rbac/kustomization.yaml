@@ -30,5 +30,5 @@ resources:
   # default, aiding admins in cluster management. Those roles are
   # not used by the Project itself. You can comment the following lines
   # if you do not want those helpers be installed with your Project.
-  - rolloutconstraint_editor_role.yaml
-  - rolloutconstraint_viewer_role.yaml
+  - rolloutcontrol_editor_role.yaml
+  - rolloutcontrol_viewer_role.yaml

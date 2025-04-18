@@ -1,16 +1,16 @@
-# permissions for end users to edit rolloutconstraints.
+# permissions for end users to edit rolloutcontrols.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
     app.kubernetes.io/name: rollout-controller
     app.kubernetes.io/managed-by: kustomize
-  name: rolloutconstraint-editor-role
+  name: rolloutcontrol-editor-role
 rules:
   - apiGroups:
       - kuberik.com
     resources:
-      - rolloutconstraints
+      - rolloutcontrols
     verbs:
       - create
       - delete
@@ -22,6 +22,6 @@ rules:
   - apiGroups:
       - kuberik.com
     resources:
-      - rolloutconstraints/status
+      - rolloutcontrols/status
     verbs:
       - get
