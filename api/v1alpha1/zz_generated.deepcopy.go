@@ -126,6 +126,11 @@ func (in *RolloutSpec) DeepCopyInto(out *RolloutSpec) {
 	*out = *in
 	in.ReleasesRepository.DeepCopyInto(&out.ReleasesRepository)
 	in.TargetRepository.DeepCopyInto(&out.TargetRepository)
+	if in.WantedVersion != nil {
+		in, out := &in.WantedVersion, &out.WantedVersion
+		*out = new(string)
+		**out = **in
+	}
 	if in.VersionHistoryLimit != nil {
 		in, out := &in.VersionHistoryLimit, &out.VersionHistoryLimit
 		*out = new(int32)
@@ -169,6 +174,11 @@ func (in *RolloutStatus) DeepCopyInto(out *RolloutStatus) {
 		in, out := &in.AvailableReleases, &out.AvailableReleases
 		*out = make([]string, len(*in))
 		copy(*out, *in)
+	}
+	if in.WantedVersion != nil {
+		in, out := &in.WantedVersion, &out.WantedVersion
+		*out = new(string)
+		**out = **in
 	}
 }
 

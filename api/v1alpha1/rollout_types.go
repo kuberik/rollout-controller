@@ -33,6 +33,10 @@ type RolloutSpec struct {
 	// +required
 	TargetRepository Repository `json:"targetRepository,omitempty"`
 
+	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection
+	// +optional
+	WantedVersion *string `json:"wantedVersion,omitempty"`
+
 	// VersionHistoryLimit defines the maximum number of entries to keep in the deployment history
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=5
@@ -79,6 +83,11 @@ type RolloutStatus struct {
 	// +optional
 	// +listType=set
 	AvailableReleases []string `json:"availableReleases,omitempty"`
+
+	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection.
+	// This field is overridden by spec.wantedVersion if both are set.
+	// +optional
+	WantedVersion *string `json:"wantedVersion,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.

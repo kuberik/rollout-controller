@@ -100,6 +100,10 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              wantedVersion:
+                description: WantedVersion specifies a specific version to deploy,
+                  overriding the automatic version selection
+                type: string
             required:
             - releasesRepository
             - targetRepository
@@ -198,6 +202,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - version
                 x-kubernetes-list-type: map
+              wantedVersion:
+                description: |-
+                  WantedVersion specifies a specific version to deploy, overriding the automatic version selection.
+                  This field is overridden by spec.wantedVersion if both are set.
+                type: string
             type: object
         type: object
     served: true

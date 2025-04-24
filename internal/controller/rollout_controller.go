@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -127,13 +128,25 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
 	}
 
-	wantedRelease := getWantedRelease(releases)
+	wantedRelease, err := getWantedRelease(releases, &rollout.Spec, &rollout.Status)
+	if err != nil {
+		log.Error(err, "Failed to get wanted release")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "RolloutFailed",
+			Message:            err.Error(),
+		})
+		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+	}
+
 	if len(rollout.Status.History) > 0 && wantedRelease == rollout.Status.History[0].Version {
 		log.V(5).Info("Wanted release is already deployed, skipping deployment")
 		return ctrl.Result{}, nil
 	}
 
-	err := crane.Copy(
+	err = crane.Copy(
 		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
 		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
 	)
@@ -181,7 +194,23 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func getWantedRelease(releases []string) string {
+func getWantedRelease(releases []string, spec *rolloutv1alpha1.RolloutSpec, status *rolloutv1alpha1.RolloutStatus) (string, error) {
+	// If a specific version is wanted in spec, use it if available (spec has precedence)
+	if spec.WantedVersion != nil {
+		if !slices.Contains(releases, *spec.WantedVersion) {
+			return "", fmt.Errorf("wanted version %q from spec not found in available releases", *spec.WantedVersion)
+		}
+		return *spec.WantedVersion, nil
+	}
+
+	// If a specific version is wanted in status, use it if available
+	if status.WantedVersion != nil {
+		if !slices.Contains(releases, *status.WantedVersion) {
+			return "", fmt.Errorf("wanted version %q from status not found in available releases", *status.WantedVersion)
+		}
+		return *status.WantedVersion, nil
+	}
+
 	// Get the latest semver release from releases
 	sort.Slice(releases, func(i, j int) bool {
 		vi, errI := semver.NewVersion(releases[i])
@@ -202,5 +231,5 @@ func getWantedRelease(releases []string) string {
 		return vi.GreaterThan(vj)
 	})
 
-	return releases[0]
+	return releases[0], nil
 }

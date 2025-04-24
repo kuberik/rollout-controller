@@ -256,6 +256,64 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[2].Version).To(Equal("0.2.0"))
 		})
 
+		It("should respect the wanted version override", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			pushFakeDeploymentImage(releasesRepository, "0.3.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.3.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Setting a specific wanted version")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			wantedVersion := "0.1.0"
+			rollout.Spec.WantedVersion = &wantedVersion
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the wanted version was deployed")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+
+			By("Removing the wanted version override")
+			updatedRollout.Spec.WantedVersion = nil
+			Expect(k8sClient.Update(ctx, updatedRollout)).To(Succeed())
+
+			By("Reconciling the resources again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the latest version was deployed")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedRollout.Status.History)).To(Equal(2))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
+		})
+
 		It("should update available releases in status", func() {
 			By("Creating test deployment images")
 			pushFakeDeploymentImage(releasesRepository, "0.1.0")
@@ -342,6 +400,148 @@ var _ = Describe("Rollout Controller", func() {
 			releasesUpdatedCondition2 := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
 			Expect(releasesUpdatedCondition2).NotTo(BeNil())
 			Expect(releasesUpdatedCondition2.LastTransitionTime).To(Equal(releasesUpdatedCondition.LastTransitionTime))
+		})
+
+		It("should respect the wanted version override in status", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			pushFakeDeploymentImage(releasesRepository, "0.3.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.3.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Setting a specific wanted version in status")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			wantedVersion := "0.1.0"
+			rollout.Status.WantedVersion = &wantedVersion
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the wanted version from status was deployed")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+		})
+
+		It("should respect precedence between spec and status wanted versions", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			pushFakeDeploymentImage(releasesRepository, "0.3.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.3.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Setting different wanted versions in spec and status")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			specVersion := "0.2.0"
+			rollout.Spec.WantedVersion = &specVersion
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			statusVersion := "0.1.0"
+			rollout.Status.WantedVersion = &statusVersion
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the spec wanted version takes precedence")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.2.0"))
+
+			By("Removing spec wanted version")
+			updatedRollout.Spec.WantedVersion = nil
+			Expect(k8sClient.Update(ctx, updatedRollout)).To(Succeed())
+
+			By("Reconciling the resources again")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that status wanted version is now used")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(len(updatedRollout.Status.History)).To(Equal(2))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+		})
+
+		It("should fail when wanted version is not available", func() {
+			By("Creating test deployment images")
+			pushFakeDeploymentImage(releasesRepository, "0.1.0")
+			pushFakeDeploymentImage(releasesRepository, "0.2.0")
+			_, err := pullImage(releasesRepository, "0.1.0")
+			Expect(err).ShouldNot(HaveOccurred())
+			_, err = pullImage(releasesRepository, "0.2.0")
+			Expect(err).ShouldNot(HaveOccurred())
+
+			By("Setting a non-existent wanted version in spec")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			nonExistentVersion := "0.3.0"
+			rollout.Spec.WantedVersion = &nonExistentVersion
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the rollout failed with appropriate condition")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
+			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"0.3.0\" from spec not found"))
 		})
 	})
 })
