@@ -39,14 +39,6 @@ spec:
           spec:
             description: RolloutSpec defines the desired state of Rollout.
             properties:
-              protocol:
-                default: oci
-                description: Protocol defines the type of repository protocol to use
-                  (e.g. oci, s3)
-                enum:
-                - oci
-                - s3
-                type: string
               releaseUpdateInterval:
                 default: 1m
                 description: ReleaseUpdateInterval defines how often the available

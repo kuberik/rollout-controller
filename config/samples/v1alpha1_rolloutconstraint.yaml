@@ -1,9 +1,0 @@
-apiVersion: kuberik.com/v1alpha1
-kind: RolloutConstraint
-metadata:
-  labels:
-    app.kubernetes.io/name: rollout-controller
-    app.kubernetes.io/managed-by: kustomize
-  name: rolloutconstraint-sample
-spec:
-  # TODO(user): Add fields here

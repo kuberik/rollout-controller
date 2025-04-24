@@ -23,11 +23,6 @@ import (
 
 // RolloutSpec defines the desired state of Rollout.
 type RolloutSpec struct {
-	// Protocol defines the type of repository protocol to use (e.g. oci, s3)
-	// +kubebuilder:validation:Enum=oci;s3
-	// +kubebuilder:default=oci
-	Protocol string `json:"protocol,omitempty"`
-
 	// ReleasesRepository specifies the path to the releases repository
 	// +kubebuilder:validation:Required
 	// +required

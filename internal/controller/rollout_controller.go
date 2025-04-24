@@ -19,16 +19,16 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
+	"sort"
 	"time"
 
-	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/Masterminds/semver"
 	"github.com/google/go-containerregistry/pkg/crane"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -88,121 +88,89 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		releases, err = crane.ListTags(rollout.Spec.ReleasesRepository.URL)
 		if err != nil {
 			log.Error(err, "Failed to list tags from releases repository")
-			changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
 				Reason:             "RolloutFailed",
 				Message:            err.Error(),
 			})
-			if changed {
-				r.Status().Update(ctx, &rollout)
-			}
-			return ctrl.Result{}, err
+			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
 		}
 
 		// Update available releases in status
 		rollout.Status.AvailableReleases = releases
-		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type:               rolloutv1alpha1.RolloutReleasesUpdated,
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "ReleasesUpdated",
 			Message:            "Available releases were updated successfully",
 		})
-		if changed {
-			if err := r.Status().Update(ctx, &rollout); err != nil {
-				log.Error(err, "Failed to update available releases in status")
-				return ctrl.Result{}, err
-			}
+		if err := r.Status().Update(ctx, &rollout); err != nil {
+			log.Error(err, "Failed to update available releases in status")
+			return ctrl.Result{}, err
 		}
 	} else {
 		releases = rollout.Status.AvailableReleases
 	}
 
-	releaseToDeploy, err := r.getReleaseToDeploy(log, ctx, rollout)
+	if len(releases) == 0 {
+		log.Info("No releases available, skipping deployment")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "NoReleasesAvailable",
+			Message:            "No releases available",
+		})
+		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+	}
+
+	wantedRelease := getWantedRelease(releases)
+	if len(rollout.Status.History) > 0 && wantedRelease == rollout.Status.History[0].Version {
+		log.V(5).Info("Wanted release is already deployed, skipping deployment")
+		return ctrl.Result{}, nil
+	}
+
+	err := crane.Copy(
+		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
+		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
+	)
 	if err != nil {
-		log.Error(err, "Failed to find release to deploy")
-		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		log.Error(err, "Failed to copy artifact from releases to target repository")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "RolloutFailed",
 			Message:            err.Error(),
 		})
-		if changed {
-			r.Status().Update(ctx, &rollout)
-		}
-		return ctrl.Result{}, err
-	}
-	if releaseToDeploy == nil {
-		log.Info("No rollout constraint, skipping deployment")
-		changed := meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "NoReleaseWanted",
-			Message:            "No release wanted",
-		})
-		if changed {
-			r.Status().Update(ctx, &rollout)
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
 	}
 
-	if rollout.Spec.Protocol == "oci" {
-		err = crane.Copy(
-			fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, *releaseToDeploy),
-			fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
-		)
-		var changed bool
-		if err != nil {
-			log.Error(err, "Failed to copy artifact from releases to target repository")
-			changed = changed || meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               rolloutv1alpha1.RolloutReady,
-				Status:             metav1.ConditionFalse,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "RolloutFailed",
-				Message:            err.Error(),
-			})
-		} else {
-			if rollout.Status.History == nil || rollout.Status.History[0].Version != *releaseToDeploy {
-				// Add new entry to history
-				rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
-					Version:   *releaseToDeploy,
-					Timestamp: metav1.Now(),
-				}}, rollout.Status.History...)
+	// Add new entry to history
+	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
+		Version:   wantedRelease,
+		Timestamp: metav1.Now(),
+	}}, rollout.Status.History...)
 
-				// Limit history size if specified
-				versionHistoryLimit := int32(5) // default value
-				if rollout.Spec.VersionHistoryLimit != nil {
-					versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
-				}
-				if int32(len(rollout.Status.History)) > versionHistoryLimit {
-					rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
-				}
-				changed = true
-			}
-			changed = changed || meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               rolloutv1alpha1.RolloutReady,
-				Status:             metav1.ConditionTrue,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "RolloutSucceeded",
-				Message:            "Release deployed successfully",
-			})
-		}
-		if changed {
-			err := r.Status().Update(ctx, &rollout)
-			if err != nil {
-				log.Error(err, "Failed to update rollout status")
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		// TODO(user): implement s3 protocol
+	// Limit history size if specified
+	versionHistoryLimit := int32(5) // default value
+	if rollout.Spec.VersionHistoryLimit != nil {
+		versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
 	}
-
-	return ctrl.Result{}, nil
+	if int32(len(rollout.Status.History)) > versionHistoryLimit {
+		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
+	}
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutReady,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "RolloutSucceeded",
+		Message:            "Release deployed successfully",
+	})
+	return ctrl.Result{}, r.Status().Update(ctx, &rollout)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -213,64 +181,26 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *RolloutReconciler) getReleaseToDeploy(log logr.Logger, ctx context.Context, rollout rolloutv1alpha1.Rollout) (*string, error) {
-	releases, err := crane.ListTags(rollout.Spec.ReleasesRepository.URL)
-	if err != nil {
-		log.Error(err, "Failed to list tags from releases repository")
-		return nil, err
-	}
+func getWantedRelease(releases []string) string {
+	// Get the latest semver release from releases
+	sort.Slice(releases, func(i, j int) bool {
+		vi, errI := semver.NewVersion(releases[i])
+		vj, errJ := semver.NewVersion(releases[j])
 
-	// list all rollout constraints for this rollout
-	rolloutConstraints := rolloutv1alpha1.RolloutConstraintList{}
-	if err := r.Client.List(ctx, &rolloutConstraints, client.InNamespace(rollout.Namespace)); err != nil {
-		return nil, err
-	}
-
-	// filter out constraints that are not matching the rollout
-	matchingConstraints := []rolloutv1alpha1.RolloutConstraint{}
-	for _, constraint := range rolloutConstraints.Items {
-		if constraint.Spec.RolloutRef.Name == rollout.Name {
-			matchingConstraints = append(matchingConstraints, constraint)
+		// If either version is invalid, consider it "smaller"
+		if errI != nil && errJ != nil {
+			return releases[i] > releases[j] // Fallback to string comparison
 		}
-	}
-
-	// group the matching constraints by priority
-	priorityGroups := map[int][]rolloutv1alpha1.RolloutConstraint{}
-	for _, constraint := range matchingConstraints {
-		priorityGroups[constraint.Spec.Priority] = append(priorityGroups[constraint.Spec.Priority], constraint)
-	}
-
-	// iterate over the priority groups and find the release that satisfies all constraints
-	for _, priorityGroup := range priorityGroups {
-		// if all the constraints in the priority group are inactive, skip it
-		active := false
-		for _, constraint := range priorityGroup {
-			if constraint.Status.Active != nil && *constraint.Status.Active {
-				active = true
-				break
-			}
+		if errI != nil {
+			return false // Invalid version is "smaller"
 		}
-		if !active {
-			continue
+		if errJ != nil {
+			return true // Valid version is "greater"
 		}
 
-		// check if all the constraints in the priority group are wanting the same release
-		for _, constraint := range priorityGroup {
-			if constraint.Status.WantedRelease == nil {
-				return nil, nil
-			}
-			if *constraint.Status.WantedRelease != *priorityGroup[0].Status.WantedRelease {
-				return nil, fmt.Errorf("conflicting releases wanted by highest priority constraints: release %s is wanted by %s, but %s is wanted by %s", *priorityGroup[0].Status.WantedRelease, priorityGroup[0].Name, *constraint.Status.WantedRelease, constraint.Name)
-			}
-		}
-		// if all the constraints are wanting the same release and the release is not nil, return the release
-		if priorityGroup[0].Status.WantedRelease != nil {
-			if slices.Contains(releases, *priorityGroup[0].Status.WantedRelease) {
-				return priorityGroup[0].Status.WantedRelease, nil
-			} else {
-				return nil, fmt.Errorf("release %s is not a valid release", *priorityGroup[0].Status.WantedRelease)
-			}
-		}
-	}
-	return nil, nil
+		// Compare valid semver versions
+		return vi.GreaterThan(vj)
+	})
+
+	return releases[0]
 }

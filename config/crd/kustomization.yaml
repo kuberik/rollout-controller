@@ -3,7 +3,6 @@
 # It should be run by config/default
 resources:
   - bases/kuberik.com_rollouts.yaml
-  - bases/kuberik.com_rolloutconstraints.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
