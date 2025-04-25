@@ -261,12 +261,4 @@ endef
 # Release notes generation
 .PHONY: changelog
 changelog: git-cliff ## Generate changelog
-	$(GIT_CLIFF) --output CHANGELOG.md
-
-.PHONY: changelog-unreleased
-changelog-unreleased: git-cliff ## Generate changelog for unreleased changes
-	$(GIT_CLIFF) --unreleased --output CHANGELOG.md
-
-.PHONY: changelog-preview
-changelog-preview: git-cliff ## Preview changelog for the next release
-	$(GIT_CLIFF) --unreleased --preview
+	$(GIT_CLIFF) --tag $(VERSION) --output CHANGELOG.md
