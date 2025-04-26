@@ -53,6 +53,7 @@ fi
 echo "Created release ${NEW_VERSION}"
 echo "To push the changes, run:"
 if [[ "$BRANCH" == "main" ]]; then
+    echo "git push origin main"
     echo "git push origin ${RELEASE_BRANCH}"
 fi
 echo "git push origin ${NEW_VERSION}"
