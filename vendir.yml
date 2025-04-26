@@ -1,0 +1,8 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: vendir
+    contents:
+      - path: ocirepositories
+        http:
+          url: https://raw.githubusercontent.com/fluxcd/source-controller/refs/tags/v1.5.0/config/crd/bases/source.toolkit.fluxcd.io_ocirepositories.yaml

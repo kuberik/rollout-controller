@@ -28,7 +28,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -37,8 +39,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/controller"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -51,7 +55,27 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(kuberikcomv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(sourcev1beta2.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+// checkCRDExists checks if a CRD with the given name exists in the cluster
+func checkCRDExists(config *rest.Config, groupVersion, kind string) (bool, error) {
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return false, err
+	}
+	resources, err := discoveryClient.ServerResourcesForGroupVersion(groupVersion)
+	if err != nil {
+		return false, nil
+	}
+	for _, resource := range resources.APIResources {
+		if resource.Kind == kind {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // nolint:gocyclo
@@ -208,6 +232,26 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
+	}
+
+	// Check if Flux OCIRepository CRD exists before registering the controller
+	crdExists, err := checkCRDExists(mgr.GetConfig(), "source.toolkit.fluxcd.io/v1beta2", "OCIRepository")
+	if err != nil {
+		setupLog.Error(err, "failed to check for Flux OCIRepository CRD")
+		os.Exit(1)
+	}
+
+	if crdExists {
+		setupLog.Info("Flux OCIRepository CRD found, registering controller")
+		if err = (&controller.FluxOCIRepositoryReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "FluxOCIRepository")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("Flux OCIRepository CRD not found, skipping controller registration")
 	}
 	// +kubebuilder:scaffold:builder
 
