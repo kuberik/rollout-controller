@@ -792,34 +792,19 @@ func assertEqualDigests(image1, image2 registryv1.Image) {
 	Expect(digest1).To(Equal(digest2))
 }
 
-type testAuthHandler struct {
-	handler  http.Handler
-	username string
-	password string
-}
-
-func (h *testAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.username == "" && h.password == "" {
-		h.handler.ServeHTTP(w, r)
-		return
-	}
-
-	username, password, ok := r.BasicAuth()
-	if !ok || username != h.username || password != h.password {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Registry"`)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	h.handler.ServeHTTP(w, r)
-}
-
 func setupTestRegistry(username, password string) (*httptest.Server, string) {
-	handler := &testAuthHandler{
-		handler:  registry.New(),
-		username: username,
-		password: password,
-	}
-	server := httptest.NewServer(handler)
+	registry := registry.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if username != "" || password != "" {
+			reqUsername, reqPassword, ok := r.BasicAuth()
+			if !ok || reqUsername != username || reqPassword != password {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Registry"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		registry.ServeHTTP(w, r)
+	}))
 	endpoint := strings.TrimPrefix(server.URL, "http://")
 	return server, endpoint
 }
