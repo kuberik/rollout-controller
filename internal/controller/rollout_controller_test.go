@@ -550,6 +550,80 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
 			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"" + version0_3_0 + "\" from spec not found"))
 		})
+
+		It("should support rollback to a previous version", func() {
+			By("Creating test deployment images")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+
+			By("Reconciling the resources to deploy version 0.1.0")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that version 0.1.0 was deployed")
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
+			By("Verifying deployment history")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+
+			By("Publishing version 0.2.0")
+			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+			By("Reconciling to deploy version 0.2.0")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that version 0.2.0 was deployed")
+			targetImage, err = pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_2_0_image, targetImage)
+
+			By("Verifying deployment history after upgrade")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
+
+			By("Setting wanted version back to 0.1.0 to perform rollback")
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			wantedVersion := version0_1_0
+			rollout.Spec.WantedVersion = &wantedVersion
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling to perform rollback to version 0.1.0")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that version 0.1.0 was deployed after rollback")
+			targetImage, err = pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(version_0_1_0_image, targetImage)
+
+			By("Verifying deployment history after rollback")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(3))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[2].Version).To(Equal(version0_1_0))
+		})
 	})
 })
 

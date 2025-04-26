@@ -199,9 +199,6 @@ spec:
                   - version
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - version
-                x-kubernetes-list-type: map
               wantedVersion:
                 description: |-
                   WantedVersion specifies a specific version to deploy, overriding the automatic version selection.

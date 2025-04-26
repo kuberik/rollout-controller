@@ -75,8 +75,6 @@ type RolloutStatus struct {
 	// History tracks the deployment history of this Rollout.
 	// Each entry contains the version deployed and the timestamp of the deployment.
 	// +optional
-	// +listType=map
-	// +listMapKey=version
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
 
 	// AvailableReleases is a list of all releases available in the releases repository.
