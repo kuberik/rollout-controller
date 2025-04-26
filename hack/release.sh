@@ -30,13 +30,18 @@ fi
 echo "Current version: ${LATEST_TAG}"
 echo "New version: ${NEW_VERSION}"
 
+(
+    cd config/manager
+    kustomize edit set image controller=ghcr.io/kuberik/rollout-controller:${NEW_VERSION}
+)
+
 # Generate changelog
 echo "Generating changelog..."
 make changelog VERSION="${NEW_VERSION}"
 
 # Create git tag
-git add CHANGELOG.md
-git commit -m "chore: update changelog for ${NEW_VERSION}"
+git add CHANGELOG.md config/manager/kustomization.yaml
+git commit -m "chore: release version ${NEW_VERSION}"
 git tag -a "${NEW_VERSION}" -m "Release ${NEW_VERSION}"
 
 # For minor releases on main, create a release branch
