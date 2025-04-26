@@ -31,7 +31,6 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/google/go-containerregistry/pkg/crane"
-	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -189,7 +188,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // SetupWithManager sets up the controller with the Manager.
 func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kuberikcomv1alpha1.Rollout{}).
+		For(&rolloutv1alpha1.Rollout{}).
 		Named("rollout").
 		Complete(r)
 }

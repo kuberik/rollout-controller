@@ -42,6 +42,13 @@ import (
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
 
+const (
+	version0_1_0 = "0.1.0"
+	version0_2_0 = "0.2.0"
+	version0_3_0 = "0.3.0"
+	version0_4_0 = "0.4.0"
+)
+
 var _ = Describe("Rollout Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
@@ -113,8 +120,8 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update deployment history after successful deployment", func() {
 			By("Creating a test deployment image")
-			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, "0.1.0")
-			_, err := pullImage(releasesRepository, "0.1.0")
+			version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			_, err := pullImage(releasesRepository, version0_1_0)
 			Expect(err).ShouldNot(HaveOccurred())
 			_, err = pullImage(targetRepository, "latest")
 			Expect(err).Should(HaveOccurred())
@@ -140,13 +147,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[0].Timestamp.IsZero()).To(BeFalse())
 
 			By("Creating a second deployment with a new version")
-			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, "0.2.0")
-			_, err = pullImage(releasesRepository, "0.2.0")
+			version_0_2_0_image := pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			_, err = pullImage(releasesRepository, version0_2_0)
 			Expect(err).ShouldNot(HaveOccurred())
 
 			By("Reconciling the resources again")
@@ -166,13 +173,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(2))
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
 
 			// The newest entry should be first in the history
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.2.0"))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.History[0].Timestamp.IsZero()).To(BeFalse())
 
-			Expect(updatedRollout.Status.History[1].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[1].Timestamp.IsZero()).To(BeFalse())
 
 			By("Reconciling the resources again without any new version")
@@ -186,11 +193,11 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(2), "History should still have only 2 entries")
+			Expect(updatedRollout.Status.History).To(HaveLen(2), "History should still have only 2 entries")
 
 			// Verify the history entries remain the same
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.2.0"))
-			Expect(updatedRollout.Status.History[1].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
 		})
 
 		It("should respect the history limit", func() {
@@ -248,7 +255,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(3), "History should be limited to 3 entries")
+			Expect(updatedRollout.Status.History).To(HaveLen(3), "History should be limited to 3 entries")
 
 			// Verify the most recent versions are present
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.4.0"))
@@ -272,7 +279,7 @@ var _ = Describe("Rollout Controller", func() {
 			rollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
 			Expect(err).NotTo(HaveOccurred())
-			wantedVersion := "0.1.0"
+			wantedVersion := version0_1_0
 			rollout.Spec.WantedVersion = &wantedVersion
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
@@ -292,7 +299,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
 
 			By("Removing the wanted version override")
@@ -310,7 +317,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(2))
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
 		})
 
@@ -418,7 +425,7 @@ var _ = Describe("Rollout Controller", func() {
 			rollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
 			Expect(err).NotTo(HaveOccurred())
-			wantedVersion := "0.1.0"
+			wantedVersion := version0_1_0
 			rollout.Status.WantedVersion = &wantedVersion
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
@@ -438,7 +445,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
 		})
 
@@ -483,7 +490,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(1))
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.2.0"))
 
 			By("Removing spec wanted version")
@@ -501,7 +508,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(len(updatedRollout.Status.History)).To(Equal(2))
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
 		})
 
@@ -541,7 +548,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
-			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"0.3.0\" from spec not found"))
+			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"" + version0_3_0 + "\" from spec not found"))
 		})
 	})
 })
@@ -570,14 +577,14 @@ func pullImage(repository, tag string) (registryv1.Image, error) {
 	return image, nil
 }
 
-func assertEqualDigests(image1, image2 registryv1.Image) bool {
+func assertEqualDigests(image1, image2 registryv1.Image) {
 	digest1, err := image1.Digest()
 	if err != nil {
-		return false
+		Fail(fmt.Sprintf("Failed to get digest for image1: %v", err))
 	}
 	digest2, err := image2.Digest()
 	if err != nil {
-		return false
+		Fail(fmt.Sprintf("Failed to get digest for image2: %v", err))
 	}
-	return digest1.String() == digest2.String()
+	Expect(digest1).To(Equal(digest2))
 }
