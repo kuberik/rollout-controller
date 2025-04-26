@@ -18,11 +18,15 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/registry"
 	registryv1 "github.com/google/go-containerregistry/pkg/v1"
@@ -61,8 +65,10 @@ var _ = Describe("Rollout Controller", func() {
 		var registryEndpoint string
 		var releasesRepository string
 		var targetRepository string
+		var registryUser string
+		var registryPassword string
 
-		BeforeEach(func() {
+		JustBeforeEach(func() {
 			By("creating a unique namespace for the test")
 			ns := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
@@ -73,9 +79,7 @@ var _ = Describe("Rollout Controller", func() {
 			namespace = ns.Name
 
 			By("setting up the test environment")
-			registry := registry.New()
-			registryServer = httptest.NewServer(registry)
-			registryEndpoint = strings.TrimPrefix(registryServer.URL, "http://")
+			registryServer, registryEndpoint = setupTestRegistry(registryUser, registryPassword)
 			releasesRepository = fmt.Sprintf("%s/my-app/kubernetes-manifests/my-env/release", registryEndpoint)
 			targetRepository = fmt.Sprintf("%s/my-app/kubernetes-manifests/my-env/deploy", registryEndpoint)
 
@@ -537,7 +541,7 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
 
 			By("Verifying that the rollout failed with appropriate condition")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -624,27 +628,152 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.History[2].Version).To(Equal(version0_1_0))
 		})
+
+		When("using an authenticated registry", func() {
+
+			var secret *corev1.Secret
+			var craneAuth crane.Option
+
+			BeforeEach(func() {
+				registryUser = "testuser"
+				registryPassword = "testpassword"
+				craneAuth = crane.WithAuth(authn.FromConfig(authn.AuthConfig{
+					Username: registryUser,
+					Password: registryPassword,
+				}))
+			})
+
+			JustBeforeEach(func() {
+				By("Creating a test docker config secret")
+				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", registryUser, registryPassword)))
+				dockerConfig := map[string]any{
+					"auths": map[string]any{
+						registryEndpoint: map[string]string{
+							"auth": auth,
+						},
+					},
+				}
+				dockerConfigJSON, err := json.Marshal(dockerConfig)
+				Expect(err).NotTo(HaveOccurred())
+
+				secret = &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-docker-config",
+						Namespace: namespace,
+					},
+					Type: corev1.SecretTypeDockerConfigJson,
+					Data: map[string][]byte{
+						".dockerconfigjson": dockerConfigJSON,
+					},
+				}
+				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+				By("Updating rollout to use authentication")
+				rollout := &rolloutv1alpha1.Rollout{}
+				err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				rollout.Spec.ReleasesRepository.Auth = &corev1.LocalObjectReference{
+					Name: secret.Name,
+				}
+				rollout.Spec.TargetRepository.Auth = &corev1.LocalObjectReference{
+					Name: secret.Name,
+				}
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+			})
+
+			It("should successfully deploy with valid credentials", func() {
+				By("Creating test deployment images")
+				version_0_1_0_image := pushFakeDeploymentImage(releasesRepository, version0_1_0, craneAuth)
+				_, err := pullImage(releasesRepository, version0_1_0, craneAuth)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				By("Reconciling the resources")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: typeNamespacedName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that the deployment happened with authentication")
+				targetImage, err := pullImage(targetRepository, "latest", craneAuth)
+				Expect(err).ShouldNot(HaveOccurred())
+				assertEqualDigests(version_0_1_0_image, targetImage)
+
+				By("Verifying that deployment history was updated")
+				updatedRollout := &rolloutv1alpha1.Rollout{}
+				err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+			})
+
+			It("should fail with invalid credentials", func() {
+				By("Creating test deployment images")
+				pushFakeDeploymentImage(releasesRepository, version0_1_0, craneAuth)
+				_, err := pullImage(releasesRepository, version0_1_0, craneAuth)
+				Expect(err).ShouldNot(HaveOccurred())
+
+				By("Updating secret with incorrect credentials")
+				incorrectConfig := map[string]any{
+					"auths": map[string]any{
+						registryEndpoint: map[string]any{
+							"auth": base64.StdEncoding.EncodeToString([]byte("invaliduser:invalidpassword")),
+						},
+					},
+				}
+				incorrectConfigJSON, err := json.Marshal(incorrectConfig)
+				Expect(err).NotTo(HaveOccurred())
+
+				secret.Data[".dockerconfigjson"] = incorrectConfigJSON
+				Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+
+				By("Reconciling with incorrect credentials")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: typeNamespacedName,
+				})
+				Expect(err).To(HaveOccurred())
+
+				By("Verifying that the rollout failed with appropriate condition")
+				updatedRollout := &rolloutv1alpha1.Rollout{}
+				err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+				Expect(readyCondition).NotTo(BeNil())
+				Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
+			})
+		})
 	})
 })
 
-func pushFakeDeploymentImage(repository, version string) registryv1.Image {
+func pushFakeDeploymentImage(repository, version string, craneOptions ...crane.Option) registryv1.Image {
 	image, err := mutate.AppendLayers(empty.Image, static.NewLayer(fmt.Appendf(nil, "%s/%s", repository, version), cranev1.MediaType("fake")))
 	Expect(err).ShouldNot(HaveOccurred())
-	Expect(err).ShouldNot(HaveOccurred())
-	pushImage(image, repository, version)
+	pushImage(image, repository, version, craneOptions...)
 	return image
 }
 
-func pushImage(image registryv1.Image, repository, tag string) {
+func pushImage(image registryv1.Image, repository, tag string, craneOptions ...crane.Option) {
 	imageURL := fmt.Sprintf("%s:%s", repository, tag)
 	Expect(
-		crane.Push(image, imageURL),
+		crane.Push(image, imageURL, craneOptions...),
 	).To(Succeed())
 }
 
-func pullImage(repository, tag string) (registryv1.Image, error) {
+func pullImage(repository, tag string, craneOptions ...crane.Option) (registryv1.Image, error) {
 	imageURL := fmt.Sprintf("%s:%s", repository, tag)
-	image, err := crane.Pull(imageURL)
+	image, err := crane.Pull(imageURL, craneOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -661,4 +790,36 @@ func assertEqualDigests(image1, image2 registryv1.Image) {
 		Fail(fmt.Sprintf("Failed to get digest for image2: %v", err))
 	}
 	Expect(digest1).To(Equal(digest2))
+}
+
+type testAuthHandler struct {
+	handler  http.Handler
+	username string
+	password string
+}
+
+func (h *testAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.username == "" && h.password == "" {
+		h.handler.ServeHTTP(w, r)
+		return
+	}
+
+	username, password, ok := r.BasicAuth()
+	if !ok || username != h.username || password != h.password {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Registry"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	h.handler.ServeHTTP(w, r)
+}
+
+func setupTestRegistry(username, password string) (*httptest.Server, string) {
+	handler := &testAuthHandler{
+		handler:  registry.New(),
+		username: username,
+		password: password,
+	}
+	server := httptest.NewServer(handler)
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	return server, endpoint
 }

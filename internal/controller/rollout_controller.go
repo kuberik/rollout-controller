@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -30,8 +32,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/Masterminds/semver"
+	"github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/configfile"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -44,6 +51,7 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -63,6 +71,34 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// Get authentication options for releases repository
+	releasesAuthOpts, err := r.getAuthOptions(ctx, req.Namespace, rollout.Spec.ReleasesRepository.Auth)
+	if err != nil {
+		log.Error(err, "Failed to get authentication options for releases repository")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "RolloutFailed",
+			Message:            err.Error(),
+		})
+		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+	}
+
+	// Get authentication options for target repository
+	targetAuthOpts, err := r.getAuthOptions(ctx, req.Namespace, rollout.Spec.TargetRepository.Auth)
+	if err != nil {
+		log.Error(err, "Failed to get authentication options for target repository")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "RolloutFailed",
+			Message:            err.Error(),
+		})
+		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
 	}
 
 	// Check if we need to update the available releases
@@ -85,7 +121,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if shouldUpdateReleases {
 		// Fetch available releases from the repository
 		var err error
-		releases, err = crane.ListTags(rollout.Spec.ReleasesRepository.URL)
+		releases, err = crane.ListTags(rollout.Spec.ReleasesRepository.URL, releasesAuthOpts...)
 		if err != nil {
 			log.Error(err, "Failed to list tags from releases repository")
 			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
@@ -95,7 +131,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				Reason:             "RolloutFailed",
 				Message:            err.Error(),
 			})
-			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
 		}
 
 		// Update available releases in status
@@ -137,7 +173,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Reason:             "RolloutFailed",
 			Message:            err.Error(),
 		})
-		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
 	}
 
 	if len(rollout.Status.History) > 0 && wantedRelease == rollout.Status.History[0].Version {
@@ -148,6 +184,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	err = crane.Copy(
 		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
 		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
+		append(releasesAuthOpts, targetAuthOpts...)...,
 	)
 	if err != nil {
 		log.Error(err, "Failed to copy artifact from releases to target repository")
@@ -158,7 +195,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Reason:             "RolloutFailed",
 			Message:            err.Error(),
 		})
-		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
 	}
 
 	// Add new entry to history
@@ -231,4 +268,55 @@ func getWantedRelease(releases []string, spec *rolloutv1alpha1.RolloutSpec, stat
 	})
 
 	return releases[0], nil
+}
+
+type dockerConfigKeychain struct {
+	config *configfile.ConfigFile
+}
+
+func (k *dockerConfigKeychain) Resolve(resource authn.Resource) (authn.Authenticator, error) {
+	registry := resource.RegistryStr()
+	if registry == name.DefaultRegistry {
+		registry = authn.DefaultAuthKey
+	}
+
+	cfg, err := k.config.GetAuthConfig(registry)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.Auth == "" && cfg.Username == "" && cfg.Password == "" && cfg.IdentityToken == "" && cfg.RegistryToken == "" {
+		return authn.Anonymous, nil
+	}
+
+	return authn.FromConfig(authn.AuthConfig{
+		Username:      cfg.Username,
+		Password:      cfg.Password,
+		Auth:          cfg.Auth,
+		IdentityToken: cfg.IdentityToken,
+		RegistryToken: cfg.RegistryToken,
+	}), nil
+}
+
+func (r *RolloutReconciler) getAuthOptions(ctx context.Context, namespace string, secretRef *corev1.LocalObjectReference) ([]crane.Option, error) {
+	if secretRef == nil {
+		return []crane.Option{crane.WithAuthFromKeychain(authn.DefaultKeychain)}, nil
+	}
+
+	secret := corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretRef.Name}, &secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
+	}
+
+	dockerConfigJSON, ok := secret.Data[".dockerconfigjson"]
+	if !ok {
+		return nil, fmt.Errorf("secret %s does not contain .dockerconfigjson", secretRef.Name)
+	}
+
+	config, err := config.LoadFromReader(bytes.NewReader(dockerConfigJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse docker config: %w", err)
+	}
+
+	return []crane.Option{crane.WithAuthFromKeychain(&dockerConfigKeychain{config: config})}, nil
 }
