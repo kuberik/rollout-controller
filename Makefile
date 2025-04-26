@@ -263,3 +263,7 @@ endef
 .PHONY: changelog
 changelog: git-cliff ## Generate changelog
 	$(GIT_CLIFF) --tag $(VERSION) --output CHANGELOG.md
+
+.PHONY: changelog-current
+changelog-current: git-cliff ## Generate changelog for the current release
+	$(GIT_CLIFF) --current --output CHANGELOG-current.md
