@@ -151,6 +151,8 @@ const (
 	RolloutReady = "Ready"
 	// RolloutReleasesUpdated means the available releases were updated.
 	RolloutReleasesUpdated = "ReleasesUpdated"
+	// RolloutGatesPassing means all gates are passing.
+	RolloutGatesPassing = "GatesPassing"
 )
 
 func init() {

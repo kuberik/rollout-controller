@@ -34,6 +34,7 @@ import (
 	"github.com/Masterminds/semver"
 	"github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
+	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -73,228 +74,53 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Get authentication options for releases repository
-	releasesAuthOpts, err := r.getAuthOptions(ctx, req.Namespace, rollout.Spec.ReleasesRepository.Auth)
+	releasesAuthOpts, targetAuthOpts, err := r.fetchAuthOptions(ctx, req.Namespace, &rollout)
 	if err != nil {
-		log.Error(err, "Failed to get authentication options for releases repository")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RolloutFailed",
-			Message:            err.Error(),
-		})
-		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		log.Error(err, "Failed to get authentication options")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
 
-	// Get authentication options for target repository
-	targetAuthOpts, err := r.getAuthOptions(ctx, req.Namespace, rollout.Spec.TargetRepository.Auth)
+	err = r.updateAvailableReleases(ctx, &rollout, releasesAuthOpts, log)
 	if err != nil {
-		log.Error(err, "Failed to get authentication options for target repository")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RolloutFailed",
-			Message:            err.Error(),
-		})
-		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		return ctrl.Result{}, err
 	}
-
-	// Check if we need to update the available releases
-	updateInterval := metav1.Duration{Duration: time.Minute} // default to 1 minute
-	if rollout.Spec.ReleaseUpdateInterval != nil {
-		updateInterval = *rollout.Spec.ReleaseUpdateInterval
-	}
-
-	releasesUpdatedCondition := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
-	shouldUpdateReleases := true
-	if releasesUpdatedCondition != nil && releasesUpdatedCondition.Status == metav1.ConditionTrue {
-		lastUpdateTime := releasesUpdatedCondition.LastTransitionTime
-		if time.Since(lastUpdateTime.Time) < updateInterval.Duration {
-			shouldUpdateReleases = false
-			log.Info("Skipping release update as it was updated recently", "lastUpdate", lastUpdateTime, "updateInterval", updateInterval.Duration)
-		}
-	}
-
-	var releases []string
-	if shouldUpdateReleases {
-		// Fetch available releases from the repository
-		var err error
-		releases, err = crane.ListTags(rollout.Spec.ReleasesRepository.URL, releasesAuthOpts...)
-		if err != nil {
-			log.Error(err, "Failed to list tags from releases repository")
-			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               rolloutv1alpha1.RolloutReady,
-				Status:             metav1.ConditionFalse,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "RolloutFailed",
-				Message:            err.Error(),
-			})
-			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
-		}
-
-		// Update available releases in status
-		rollout.Status.AvailableReleases = releases
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReleasesUpdated,
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "ReleasesUpdated",
-			Message:            "Available releases were updated successfully",
-		})
-		if err := r.Status().Update(ctx, &rollout); err != nil {
-			log.Error(err, "Failed to update available releases in status")
-			return ctrl.Result{}, err
-		}
-	} else {
-		releases = rollout.Status.AvailableReleases
-	}
+	releases := rollout.Status.AvailableReleases
 
 	if len(releases) == 0 {
 		log.Info("No releases available, skipping deployment")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "NoReleasesAvailable",
-			Message:            "No releases available",
-		})
-		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No releases available")
 	}
 
 	// Gating logic: if wantedVersion is set in spec or status, ignore gates
-	rollout.Status.Gates = nil // reset before populating
 	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
-	gatedReleaseCandidates := releaseCandidates
+	var gatedReleaseCandidates []string
+	var gatesPassing bool
 	if err != nil {
 		log.Error(err, "Failed to get next release candidates")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RolloutFailed",
-			Message:            err.Error(),
-		})
-		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
 	if rollout.Spec.WantedVersion == nil && rollout.Status.WantedVersion == nil {
-		gateList := &rolloutv1alpha1.RolloutGateList{}
-		if err := r.List(ctx, gateList, client.InNamespace(req.Namespace)); err != nil {
-			log.Error(err, "Failed to list RolloutGates")
-			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               rolloutv1alpha1.RolloutReady,
-				Status:             metav1.ConditionFalse,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "GateListFailed",
-				Message:            err.Error(),
-			})
-			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
-		var gateSummaries []rolloutv1alpha1.RolloutGateStatusSummary
-		gatesPassing := true
-		for _, gate := range gateList.Items {
-			if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
-				summary := rolloutv1alpha1.RolloutGateStatusSummary{
-					Name:    gate.Name,
-					Passing: gate.Status.Passing,
-				}
-
-				if gate.Status.Passing != nil && !*gate.Status.Passing {
-					summary.Message = "Gate is not passing"
-					gatesPassing = false
-				} else if gate.Status.AllowedVersions != nil {
-					summary.AllowedVersions = *gate.Status.AllowedVersions
-					// Filter gatedReleaseCandidates to only those in allowedVersions
-					var filtered []string
-					for _, r := range gatedReleaseCandidates {
-						if slices.Contains(*gate.Status.AllowedVersions, r) {
-							filtered = append(filtered, r)
-						}
-					}
-					gatedReleaseCandidates = filtered
-
-					allowed := false
-					for _, r := range releaseCandidates {
-						if slices.Contains(*gate.Status.AllowedVersions, r) {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						summary.Message = "Gate does not allow any available version"
-					} else {
-						summary.Message = "Gate is passing"
-					}
-				} else {
-					summary.Message = "Gate is passing"
-				}
-				gateSummaries = append(gateSummaries, summary)
-			}
-		}
-		rollout.Status.Gates = gateSummaries
-		condStatus := metav1.ConditionTrue
-		condReason := "AllGatesPassing"
-		condMsg := "All gates are passing"
 		if !gatesPassing {
-			condStatus = metav1.ConditionFalse
-			condReason = "SomeGatesBlocking"
-			condMsg = "Some gates are blocking deployment"
-		}
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               "GatesPassing",
-			Status:             condStatus,
-			LastTransitionTime: metav1.Now(),
-			Reason:             condReason,
-			Message:            condMsg,
-		})
-		if !gatesPassing {
-			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+			return ctrl.Result{}, nil // Status already updated in evaluateGates
 		}
 		if len(gatedReleaseCandidates) == 0 {
-			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               "GatesPassing",
-				Status:             metav1.ConditionFalse,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "NoAllowedVersions",
-				Message:            "No available releases are allowed by all gates",
-			})
-			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+			return ctrl.Result{}, nil // Status already updated in evaluateGates
 		}
 	}
 
 	// Use filteredReleases instead of releases for wantedRelease selection
-	wantedRelease := rollout.Spec.WantedVersion
-	if wantedRelease == nil {
-		wantedRelease = rollout.Status.WantedVersion
+	wantedRelease, err := r.selectWantedRelease(&rollout, releases, gatedReleaseCandidates)
+	if err != nil {
+		log.Error(err, "Failed to select wanted release")
+		return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
 	}
-	if wantedRelease != nil {
-		if !slices.Contains(releases, *wantedRelease) {
-			err = fmt.Errorf("wanted version %q not found in available releases", *wantedRelease)
-			log.Error(err, "Failed to get wanted release")
-			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type:               rolloutv1alpha1.RolloutReady,
-				Status:             metav1.ConditionFalse,
-				LastTransitionTime: metav1.Now(),
-				Reason:             "RolloutFailed",
-				Message:            fmt.Sprintf("wanted version %q not found in available releases", *wantedRelease),
-			})
-			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
-		}
-	} else if len(gatedReleaseCandidates) > 0 {
-		wantedRelease = &gatedReleaseCandidates[0]
-	}
-
 	if wantedRelease == nil {
 		log.Info("No release candidates found, skipping deployment")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RolloutSucceeded",
-			Message:            "No release candidates found",
-		})
-		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No release candidates found")
 	}
 
 	if len(rollout.Status.History) > 0 && *wantedRelease == rollout.Status.History[0].Version {
@@ -302,45 +128,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	err = crane.Copy(
-		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, *wantedRelease),
-		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
-		append(releasesAuthOpts, targetAuthOpts...)...,
-	)
-	if err != nil {
-		log.Error(err, "Failed to copy artifact from releases to target repository")
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "RolloutFailed",
-			Message:            err.Error(),
-		})
-		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+	if err := r.deployRelease(ctx, &rollout, *wantedRelease, releasesAuthOpts, targetAuthOpts); err != nil {
+		log.Error(err, "Failed to deploy release")
+		return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
 	}
 
-	// Add new entry to history
-	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
-		Version:   *wantedRelease,
-		Timestamp: metav1.Now(),
-	}}, rollout.Status.History...)
-
-	// Limit history size if specified
-	versionHistoryLimit := int32(5) // default value
-	if rollout.Spec.VersionHistoryLimit != nil {
-		versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
-	}
-	if int32(len(rollout.Status.History)) > versionHistoryLimit {
-		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
-	}
-	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-		Type:               rolloutv1alpha1.RolloutReady,
-		Status:             metav1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
-		Reason:             "RolloutSucceeded",
-		Message:            "Release deployed successfully",
-	})
-	return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -443,4 +236,194 @@ func (r *RolloutReconciler) getAuthOptions(ctx context.Context, namespace string
 	}
 
 	return []crane.Option{crane.WithAuthFromKeychain(&dockerConfigKeychain{config: config})}, nil
+}
+
+// fetchAuthOptions fetches authentication options for both releases and target repositories.
+func (r *RolloutReconciler) fetchAuthOptions(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) ([]crane.Option, []crane.Option, error) {
+	releasesAuthOpts, err := r.getAuthOptions(ctx, namespace, rollout.Spec.ReleasesRepository.Auth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get authentication options for releases repository: %w", err)
+	}
+	targetAuthOpts, err := r.getAuthOptions(ctx, namespace, rollout.Spec.TargetRepository.Auth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get authentication options for target repository: %w", err)
+	}
+	return releasesAuthOpts, targetAuthOpts, nil
+}
+
+// updateAvailableReleases checks if releases should be updated, fetches them if needed, and updates status.
+// Returns the releases, whether status was updated, and error if any.
+func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, releasesAuthOpts []crane.Option, log logr.Logger) error {
+	updateInterval := metav1.Duration{Duration: time.Minute} // default to 1 minute
+	if rollout.Spec.ReleaseUpdateInterval != nil {
+		updateInterval = *rollout.Spec.ReleaseUpdateInterval
+	}
+
+	releasesUpdatedCondition := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
+	shouldUpdateReleases := true
+	if releasesUpdatedCondition != nil && releasesUpdatedCondition.Status == metav1.ConditionTrue {
+		lastUpdateTime := releasesUpdatedCondition.LastTransitionTime
+		if time.Since(lastUpdateTime.Time) < updateInterval.Duration {
+			shouldUpdateReleases = false
+			log.Info("Skipping release update as it was updated recently", "lastUpdate", lastUpdateTime, "updateInterval", updateInterval.Duration)
+		}
+	}
+
+	if shouldUpdateReleases {
+		var err error
+		releases, err := crane.ListTags(rollout.Spec.ReleasesRepository.URL, releasesAuthOpts...)
+		if err != nil {
+			log.Error(err, "Failed to list tags from releases repository")
+			return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
+		}
+		rollout.Status.AvailableReleases = releases
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReleasesUpdated,
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "ReleasesUpdated",
+			Message:            "Available releases were updated successfully",
+		})
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			log.Error(err, "Failed to update available releases in status")
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+// updateRolloutStatusOnError sets a condition and updates status, returning error for early return.
+func (r *RolloutReconciler) updateRolloutStatusOnError(ctx context.Context, rollout *rolloutv1alpha1.Rollout, reason, message string) error {
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutReady,
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            message,
+	})
+	return r.Status().Update(ctx, rollout)
+}
+
+// evaluateGates lists and evaluates gates, updates rollout status, and returns filtered candidates and gatesPassing.
+func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, releaseCandidates []string) ([]string, bool, error) {
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	if err := r.List(ctx, gateList, client.InNamespace(namespace)); err != nil {
+		log := logf.FromContext(ctx)
+		log.Error(err, "Failed to list RolloutGates")
+		return nil, false, errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "GateListFailed", err.Error()))
+	}
+	rollout.Status.Gates = nil
+	gatedReleaseCandidates := releaseCandidates
+	gatesPassing := true
+	for _, gate := range gateList.Items {
+		if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
+			summary := rolloutv1alpha1.RolloutGateStatusSummary{
+				Name:    gate.Name,
+				Passing: gate.Status.Passing,
+			}
+
+			if gate.Status.Passing != nil && !*gate.Status.Passing {
+				summary.Message = "Gate is not passing"
+				gatesPassing = false
+			} else if gate.Status.AllowedVersions != nil {
+				summary.AllowedVersions = *gate.Status.AllowedVersions
+				// Filter gatedReleaseCandidates to only those in allowedVersions
+				var filtered []string
+				for _, r := range gatedReleaseCandidates {
+					if slices.Contains(*gate.Status.AllowedVersions, r) {
+						filtered = append(filtered, r)
+					}
+				}
+				gatedReleaseCandidates = filtered
+
+				allowed := false
+				for _, r := range releaseCandidates {
+					if slices.Contains(*gate.Status.AllowedVersions, r) {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					summary.Message = "Gate does not allow any available version"
+				} else {
+					summary.Message = "Gate is passing"
+				}
+			} else {
+				summary.Message = "Gate is passing"
+			}
+			rollout.Status.Gates = append(rollout.Status.Gates, summary)
+		}
+	}
+	condStatus := metav1.ConditionTrue
+	condReason := "AllGatesPassing"
+	condMsg := "All gates are passing"
+	if !gatesPassing {
+		condStatus = metav1.ConditionFalse
+		condReason = "SomeGatesBlocking"
+		condMsg = "Some gates are blocking deployment"
+	}
+	if len(gatedReleaseCandidates) == 0 && gatesPassing {
+		condStatus = metav1.ConditionFalse
+		condReason = "NoAllowedVersions"
+		condMsg = "No available releases are allowed by all gates"
+	}
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutGatesPassing,
+		Status:             condStatus,
+		LastTransitionTime: metav1.Now(),
+		Reason:             condReason,
+		Message:            condMsg,
+	})
+	return gatedReleaseCandidates, gatesPassing, r.Status().Update(ctx, rollout)
+}
+
+// selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
+func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []string) (*string, error) {
+	wantedRelease := rollout.Spec.WantedVersion
+	if wantedRelease == nil {
+		wantedRelease = rollout.Status.WantedVersion
+	}
+	if wantedRelease != nil {
+		if !slices.Contains(releases, *wantedRelease) {
+			return nil, fmt.Errorf("wanted version %q not found in available releases", *wantedRelease)
+		}
+		return wantedRelease, nil
+	} else if len(gatedReleaseCandidates) > 0 {
+		return &gatedReleaseCandidates[0], nil
+	}
+	return nil, nil
+}
+
+// deployRelease copies the release and updates the rollout history and status.
+func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, releasesAuthOpts, targetAuthOpts []crane.Option) error {
+	err := crane.Copy(
+		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
+		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
+		append(releasesAuthOpts, targetAuthOpts...)...,
+	)
+	if err != nil {
+		return err
+	}
+	// Add new entry to history
+	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
+		Version:   wantedRelease,
+		Timestamp: metav1.Now(),
+	}}, rollout.Status.History...)
+	// Limit history size if specified
+	versionHistoryLimit := int32(5) // default value
+	if rollout.Spec.VersionHistoryLimit != nil {
+		versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
+	}
+	if int32(len(rollout.Status.History)) > versionHistoryLimit {
+		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
+	}
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutReady,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "RolloutSucceeded",
+		Message:            "Release deployed successfully",
+	})
+	return r.Status().Update(ctx, rollout)
 }
