@@ -163,9 +163,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.Status().Update(ctx, &rollout)
 	}
 
-	wantedRelease, err := getWantedRelease(releases, &rollout.Spec, &rollout.Status)
+	// Gating logic: if wantedVersion is set in spec or status, ignore gates
+	rollout.Status.Gates = nil // reset before populating
+	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
+	gatedReleaseCandidates := releaseCandidates
 	if err != nil {
-		log.Error(err, "Failed to get wanted release")
+		log.Error(err, "Failed to get next release candidates")
 		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionFalse,
@@ -175,14 +178,132 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
 	}
+	if rollout.Spec.WantedVersion == nil && rollout.Status.WantedVersion == nil {
+		gateList := &rolloutv1alpha1.RolloutGateList{}
+		if err := r.List(ctx, gateList, client.InNamespace(req.Namespace)); err != nil {
+			log.Error(err, "Failed to list RolloutGates")
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "GateListFailed",
+				Message:            err.Error(),
+			})
+			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		}
+		var gateSummaries []rolloutv1alpha1.RolloutGateStatusSummary
+		gatesPassing := true
+		for _, gate := range gateList.Items {
+			if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
+				summary := rolloutv1alpha1.RolloutGateStatusSummary{
+					Name:    gate.Name,
+					Passing: gate.Status.Passing,
+				}
 
-	if len(rollout.Status.History) > 0 && wantedRelease == rollout.Status.History[0].Version {
+				if gate.Status.Passing != nil && !*gate.Status.Passing {
+					summary.Message = "Gate is not passing"
+					gatesPassing = false
+				} else if gate.Status.AllowedVersions != nil {
+					summary.AllowedVersions = *gate.Status.AllowedVersions
+					// Filter gatedReleaseCandidates to only those in allowedVersions
+					var filtered []string
+					for _, r := range gatedReleaseCandidates {
+						if slices.Contains(*gate.Status.AllowedVersions, r) {
+							filtered = append(filtered, r)
+						}
+					}
+					gatedReleaseCandidates = filtered
+
+					allowed := false
+					for _, r := range releaseCandidates {
+						if slices.Contains(*gate.Status.AllowedVersions, r) {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						summary.Message = "Gate does not allow any available version"
+					} else {
+						summary.Message = "Gate is passing"
+					}
+				} else {
+					summary.Message = "Gate is passing"
+				}
+				gateSummaries = append(gateSummaries, summary)
+			}
+		}
+		rollout.Status.Gates = gateSummaries
+		condStatus := metav1.ConditionTrue
+		condReason := "AllGatesPassing"
+		condMsg := "All gates are passing"
+		if !gatesPassing {
+			condStatus = metav1.ConditionFalse
+			condReason = "SomeGatesBlocking"
+			condMsg = "Some gates are blocking deployment"
+		}
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               "GatesPassing",
+			Status:             condStatus,
+			LastTransitionTime: metav1.Now(),
+			Reason:             condReason,
+			Message:            condMsg,
+		})
+		if !gatesPassing {
+			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+		}
+		if len(gatedReleaseCandidates) == 0 {
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               "GatesPassing",
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "NoAllowedVersions",
+				Message:            "No available releases are allowed by all gates",
+			})
+			return ctrl.Result{}, r.Status().Update(ctx, &rollout)
+		}
+	}
+
+	// Use filteredReleases instead of releases for wantedRelease selection
+	wantedRelease := rollout.Spec.WantedVersion
+	if wantedRelease == nil {
+		wantedRelease = rollout.Status.WantedVersion
+	}
+	if wantedRelease != nil {
+		if !slices.Contains(releases, *wantedRelease) {
+			err = fmt.Errorf("wanted version %q not found in available releases", *wantedRelease)
+			log.Error(err, "Failed to get wanted release")
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "RolloutFailed",
+				Message:            fmt.Sprintf("wanted version %q not found in available releases", *wantedRelease),
+			})
+			return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+		}
+	} else if len(gatedReleaseCandidates) > 0 {
+		wantedRelease = &gatedReleaseCandidates[0]
+	}
+
+	if wantedRelease == nil {
+		log.Info("No release candidates found, skipping deployment")
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type:               rolloutv1alpha1.RolloutReady,
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "RolloutSucceeded",
+			Message:            "No release candidates found",
+		})
+		return ctrl.Result{}, errors.Join(err, r.Status().Update(ctx, &rollout))
+	}
+
+	if len(rollout.Status.History) > 0 && *wantedRelease == rollout.Status.History[0].Version {
 		log.V(5).Info("Wanted release is already deployed, skipping deployment")
 		return ctrl.Result{}, nil
 	}
 
 	err = crane.Copy(
-		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
+		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, *wantedRelease),
 		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
 		append(releasesAuthOpts, targetAuthOpts...)...,
 	)
@@ -200,7 +321,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Add new entry to history
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
-		Version:   wantedRelease,
+		Version:   *wantedRelease,
 		Timestamp: metav1.Now(),
 	}}, rollout.Status.History...)
 
@@ -230,44 +351,47 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func getWantedRelease(releases []string, spec *rolloutv1alpha1.RolloutSpec, status *rolloutv1alpha1.RolloutStatus) (string, error) {
-	// If a specific version is wanted in spec, use it if available (spec has precedence)
-	if spec.WantedVersion != nil {
-		if !slices.Contains(releases, *spec.WantedVersion) {
-			return "", fmt.Errorf("wanted version %q from spec not found in available releases", *spec.WantedVersion)
+func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.RolloutStatus) ([]string, error) {
+	// If there are no releases, return an error
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("no releases available")
+	}
+	// Create a copy of releases to avoid modifying the original slice
+	candidates := []semver.Version{}
+	for _, release := range releases {
+		semVer, err := semver.NewVersion(release)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse semver: %w", err)
 		}
-		return *spec.WantedVersion, nil
+		candidates = append(candidates, *semVer)
 	}
 
-	// If a specific version is wanted in status, use it if available
-	if status.WantedVersion != nil {
-		if !slices.Contains(releases, *status.WantedVersion) {
-			return "", fmt.Errorf("wanted version %q from status not found in available releases", *status.WantedVersion)
-		}
-		return *status.WantedVersion, nil
-	}
-
-	// Get the latest semver release from releases
-	sort.Slice(releases, func(i, j int) bool {
-		vi, errI := semver.NewVersion(releases[i])
-		vj, errJ := semver.NewVersion(releases[j])
-
-		// If either version is invalid, consider it "smaller"
-		if errI != nil && errJ != nil {
-			return releases[i] > releases[j] // Fallback to string comparison
-		}
-		if errI != nil {
-			return false // Invalid version is "smaller"
-		}
-		if errJ != nil {
-			return true // Valid version is "greater"
-		}
-
-		// Compare valid semver versions
-		return vi.GreaterThan(vj)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].GreaterThan(&candidates[j])
 	})
 
-	return releases[0], nil
+	if len(status.History) > 0 {
+		currentRelease := status.History[0].Version
+		currentSemVer, err := semver.NewVersion(currentRelease)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse current release semver: %w", err)
+		}
+
+		var filteredCandidates []semver.Version
+		for _, candidate := range candidates {
+			if candidate.GreaterThan(currentSemVer) {
+				filteredCandidates = append(filteredCandidates, candidate)
+			}
+		}
+		candidates = filteredCandidates
+	}
+
+	result := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		result[i] = candidate.String()
+	}
+
+	return result, nil
 }
 
 type dockerConfigKeychain struct {
