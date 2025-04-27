@@ -44,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	ptrutil "k8s.io/utils/ptr"
 )
 
 const (
@@ -552,7 +553,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
-			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"" + version0_3_0 + "\" from spec not found"))
+			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"" + version0_3_0 + "\" not found in available releases"))
 		})
 
 		It("should support rollback to a previous version", func() {
@@ -627,6 +628,235 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.History[2].Version).To(Equal(version0_1_0))
+		})
+
+		It("should deploy the latest release if there are no gates", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			allowedImage, err := pullImage(releasesRepository, version0_2_0)
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(targetImage, allowedImage)
+		})
+
+		It("should only deploy versions allowed by a passing gate with allowedVersions", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			pushFakeDeploymentImage(releasesRepository, version0_3_0)
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			gate.Status = rolloutv1alpha1.RolloutGateStatus{
+				AllowedVersions: &[]string{version0_1_0, version0_2_0},
+			}
+			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			allowedImage, err := pullImage(releasesRepository, version0_2_0)
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(targetImage, allowedImage)
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
+			Expect(updatedRollout.Status.Gates[0].Name).To(Equal("test-gate"))
+			Expect(updatedRollout.Status.Gates[0].AllowedVersions).To(ContainElements(version0_1_0, version0_2_0))
+			Expect(updatedRollout.Status.Gates[0].Passing).ToNot(BeNil())
+			Expect(*updatedRollout.Status.Gates[0].Passing).To(BeTrue())
+		})
+
+		It("should block deployment if a single gate is not passing", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			gate.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing: ptrutil.To(false),
+			}
+			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
+			Expect(updatedRollout.Status.Gates[0].Passing).ToNot(BeNil())
+			Expect(*updatedRollout.Status.Gates[0].Passing).To(BeFalse())
+		})
+
+		It("should only deploy intersection of allowedVersions from multiple passing gates", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			pushFakeDeploymentImage(releasesRepository, version0_3_0)
+			gate1 := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate1)).To(Succeed())
+			gate1.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing:         ptrutil.To(true),
+				AllowedVersions: &[]string{version0_2_0, version0_3_0},
+			}
+			Expect(k8sClient.Status().Update(ctx, gate1)).To(Succeed())
+			gate2 := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
+			gate2.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing:         ptrutil.To(true),
+				AllowedVersions: &[]string{version0_2_0},
+			}
+			Expect(k8sClient.Status().Update(ctx, gate2)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			allowedImage, err := pullImage(releasesRepository, version0_2_0)
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(targetImage, allowedImage)
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
+		})
+
+		It("should block deployment if no allowed releases remain after gate filtering", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			gate.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing:         ptrutil.To(true),
+				AllowedVersions: &[]string{"0.9.9"},
+			}
+			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
+		})
+
+		It("should ignore gates if wantedVersion is set", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			pushFakeDeploymentImage(releasesRepository, version0_3_0)
+			rolloutWithWanted := &rolloutv1alpha1.Rollout{}
+			err := k8sClient.Get(ctx, typeNamespacedName, rolloutWithWanted)
+			Expect(err).NotTo(HaveOccurred())
+			rolloutWithWanted.Spec.WantedVersion = ptrutil.To(version0_1_0)
+			Expect(k8sClient.Update(ctx, rolloutWithWanted)).To(Succeed())
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			gate.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing:         ptrutil.To(false),
+				AllowedVersions: &[]string{version0_2_0, version0_3_0},
+			}
+			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			allowedImage, err := pullImage(releasesRepository, version0_1_0)
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(targetImage, allowedImage)
+		})
+
+		It("should deploy the latest release if a single passing gate has no allowedVersions", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			gate.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing: ptrutil.To(true),
+			}
+			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			targetImage, err := pullImage(targetRepository, "latest")
+			Expect(err).ShouldNot(HaveOccurred())
+			allowedImage, err := pullImage(releasesRepository, version0_2_0)
+			Expect(err).ShouldNot(HaveOccurred())
+			assertEqualDigests(targetImage, allowedImage)
+		})
+
+		It("should block deployment if one of multiple gates is not passing", func() {
+			pushFakeDeploymentImage(releasesRepository, version0_1_0)
+			pushFakeDeploymentImage(releasesRepository, version0_2_0)
+			gate1 := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate1)).To(Succeed())
+			gate1.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing: ptrutil.To(true),
+			}
+			Expect(k8sClient.Status().Update(ctx, gate1)).To(Succeed())
+			gate2 := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
+			gate2.Status = rolloutv1alpha1.RolloutGateStatus{
+				Passing: ptrutil.To(false),
+			}
+			Expect(k8sClient.Status().Update(ctx, gate2)).To(Succeed())
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
 		})
 
 		When("using an authenticated registry", func() {

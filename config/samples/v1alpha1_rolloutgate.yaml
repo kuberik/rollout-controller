@@ -1,0 +1,9 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutGate
+metadata:
+  labels:
+    app.kubernetes.io/name: rollout-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: rolloutgate-sample
+spec:
+  # TODO(user): Add fields here

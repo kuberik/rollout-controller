@@ -15,6 +15,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - rolloutgates
   - rollouts
   verbs:
   - create
@@ -27,12 +28,14 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - rolloutgates/finalizers
   - rollouts/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
+  - rolloutgates/status
   - rollouts/status
   verbs:
   - get

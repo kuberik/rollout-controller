@@ -62,6 +62,26 @@ type Repository struct {
 	Auth *corev1.LocalObjectReference `json:"secretRef,omitempty"`
 }
 
+// RolloutGateStatusSummary summarizes the status of a gate relevant to this rollout.
+type RolloutGateStatusSummary struct {
+	// Name is the name of the gate.
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// Passing is true if the gate is passing, false if it is blocking.
+	// +optional
+	Passing *bool `json:"passing,omitempty"`
+
+	// AllowedVersions is a list of versions that are allowed by the gate.
+	// +optional
+	AllowedVersions []string `json:"allowedVersions,omitempty"`
+
+	// Message is a message describing the status of the gate.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // RolloutStatus defines the observed state of Rollout.
 type RolloutStatus struct {
 	// Conditions represents the current state of the rollout process.
@@ -86,6 +106,10 @@ type RolloutStatus struct {
 	// This field is overridden by spec.wantedVersion if both are set.
 	// +optional
 	WantedVersion *string `json:"wantedVersion,omitempty"`
+
+	// Gates summarizes the status of each gate relevant to this rollout.
+	// +optional
+	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.

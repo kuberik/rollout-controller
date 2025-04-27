@@ -179,6 +179,34 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              gates:
+                description: Gates summarizes the status of each gate relevant to
+                  this rollout.
+                items:
+                  description: RolloutGateStatusSummary summarizes the status of a
+                    gate relevant to this rollout.
+                  properties:
+                    allowedVersions:
+                      description: AllowedVersions is a list of versions that are
+                        allowed by the gate.
+                      items:
+                        type: string
+                      type: array
+                    message:
+                      description: Message is a message describing the status of the
+                        gate.
+                      type: string
+                    name:
+                      description: Name is the name of the gate.
+                      type: string
+                    passing:
+                      description: Passing is true if the gate is passing, false if
+                        it is blocking.
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
               history:
                 description: |-
                   History tracks the deployment history of this Rollout.

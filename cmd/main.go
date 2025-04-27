@@ -253,6 +253,14 @@ func main() {
 	} else {
 		setupLog.Info("Flux OCIRepository CRD not found, skipping controller registration")
 	}
+
+	if err = (&controller.RolloutGateReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RolloutGate")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
