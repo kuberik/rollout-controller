@@ -24,4 +24,11 @@ resources:
   kind: RolloutGate
   path: github.com/kuberik/rollout-controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: kuberik.com
+  kind: HealthCheck
+  path: github.com/kuberik/rollout-controller/api/v1alpha1
+  version: v1alpha1
 version: "3"

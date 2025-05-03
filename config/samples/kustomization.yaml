@@ -1,5 +1,6 @@
 ## Append samples of your project ##
 resources:
-  - v1alpha1_rollout.yaml
+- v1alpha1_rollout.yaml
 - v1alpha1_rolloutgate.yaml
+- v1alpha1_healthcheck.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
