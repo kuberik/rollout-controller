@@ -102,11 +102,6 @@ type RolloutStatus struct {
 	// +listType=set
 	AvailableReleases []string `json:"availableReleases,omitempty"`
 
-	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection.
-	// This field is overridden by spec.wantedVersion if both are set.
-	// +optional
-	WantedVersion *string `json:"wantedVersion,omitempty"`
-
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
 	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`

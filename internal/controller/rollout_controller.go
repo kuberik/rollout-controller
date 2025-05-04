@@ -91,7 +91,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No releases available")
 	}
 
-	// Gating logic: if wantedVersion is set in spec or status, ignore gates
+	// Gating logic: if wantedVersion is set in spec, ignore gates
 	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
 	var gatedReleaseCandidates []string
 	var gatesPassing bool
@@ -99,7 +99,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "Failed to get next release candidates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
-	if rollout.Spec.WantedVersion == nil && rollout.Status.WantedVersion == nil {
+	if rollout.Spec.WantedVersion == nil {
 		gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -381,9 +381,6 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 // selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
 func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []string) (*string, error) {
 	wantedRelease := rollout.Spec.WantedVersion
-	if wantedRelease == nil {
-		wantedRelease = rollout.Status.WantedVersion
-	}
 	if wantedRelease != nil {
 		if !slices.Contains(releases, *wantedRelease) {
 			return nil, fmt.Errorf("wanted version %q not found in available releases", *wantedRelease)

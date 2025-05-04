@@ -243,11 +243,6 @@ spec:
                   - version
                   type: object
                 type: array
-              wantedVersion:
-                description: |-
-                  WantedVersion specifies a specific version to deploy, overriding the automatic version selection.
-                  This field is overridden by spec.wantedVersion if both are set.
-                type: string
             type: object
         type: object
     served: true
