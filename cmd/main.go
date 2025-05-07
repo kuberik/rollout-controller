@@ -40,9 +40,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/controller"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -229,6 +230,7 @@ func main() {
 	if err = (&controller.RolloutReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Clock:  &controller.RealClock{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
@@ -259,6 +261,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RolloutGate")
+		os.Exit(1)
+	}
+	if err = (&controller.HealthCheckReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HealthCheck")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

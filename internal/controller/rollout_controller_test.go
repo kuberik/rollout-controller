@@ -44,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	gomegaTypes "github.com/onsi/gomega/types"
 	ptrutil "k8s.io/utils/ptr"
 )
 
@@ -68,6 +69,8 @@ var _ = Describe("Rollout Controller", func() {
 		var targetRepository string
 		var registryUser string
 		var registryPassword string
+		var bakeTime *metav1.Duration
+		var healthCheckSelector *metav1.LabelSelector
 
 		JustBeforeEach(func() {
 			By("creating a unique namespace for the test")
@@ -103,6 +106,8 @@ var _ = Describe("Rollout Controller", func() {
 						URL: targetRepository,
 					},
 					ReleaseUpdateInterval: &metav1.Duration{Duration: 0},
+					BakeTime:              bakeTime,
+					HealthCheckSelector:   healthCheckSelector,
 				},
 			}
 			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
@@ -144,7 +149,7 @@ var _ = Describe("Rollout Controller", func() {
 			By("Verifying that the deployment happened")
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(version_0_1_0_image, targetImage)
+			Expect(targetImage).To(HaveSameDigestAs(version_0_1_0_image))
 
 			By("Verifying that deployment history was updated")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -170,7 +175,7 @@ var _ = Describe("Rollout Controller", func() {
 			By("Verifying that the new deployment happened")
 			targetImage, err = pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(version_0_2_0_image, targetImage)
+			Expect(targetImage).To(HaveSameDigestAs(version_0_2_0_image))
 
 			By("Verifying that deployment history was updated with both versions")
 			updatedRollout = &rolloutv1alpha1.Rollout{}
@@ -470,7 +475,7 @@ var _ = Describe("Rollout Controller", func() {
 			By("Verifying that version 0.1.0 was deployed")
 			targetImage, err := pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(version_0_1_0_image, targetImage)
+			Expect(targetImage).To(HaveSameDigestAs(version_0_1_0_image))
 
 			By("Verifying deployment history")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -491,7 +496,7 @@ var _ = Describe("Rollout Controller", func() {
 			By("Verifying that version 0.2.0 was deployed")
 			targetImage, err = pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(version_0_2_0_image, targetImage)
+			Expect(targetImage).To(HaveSameDigestAs(version_0_2_0_image))
 
 			By("Verifying deployment history after upgrade")
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
@@ -516,7 +521,7 @@ var _ = Describe("Rollout Controller", func() {
 			By("Verifying that version 0.1.0 was deployed after rollback")
 			targetImage, err = pullImage(targetRepository, "latest")
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(version_0_1_0_image, targetImage)
+			Expect(targetImage).To(HaveSameDigestAs(version_0_1_0_image))
 
 			By("Verifying deployment history after rollback")
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
@@ -537,7 +542,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			allowedImage, err := pullImage(releasesRepository, version0_2_0)
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(targetImage, allowedImage)
+			Expect(targetImage).To(HaveSameDigestAs(allowedImage))
 		})
 
 		It("should only deploy versions allowed by a passing gate with allowedVersions", func() {
@@ -562,7 +567,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			allowedImage, err := pullImage(releasesRepository, version0_2_0)
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(targetImage, allowedImage)
+			Expect(targetImage).To(HaveSameDigestAs(allowedImage))
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
@@ -634,7 +639,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			allowedImage, err := pullImage(releasesRepository, version0_2_0)
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(targetImage, allowedImage)
+			Expect(targetImage).To(HaveSameDigestAs(allowedImage))
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
@@ -694,7 +699,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			allowedImage, err := pullImage(releasesRepository, version0_1_0)
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(targetImage, allowedImage)
+			Expect(targetImage).To(HaveSameDigestAs(allowedImage))
 		})
 
 		It("should deploy the latest release if a single passing gate has no allowedVersions", func() {
@@ -718,7 +723,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			allowedImage, err := pullImage(releasesRepository, version0_2_0)
 			Expect(err).ShouldNot(HaveOccurred())
-			assertEqualDigests(targetImage, allowedImage)
+			Expect(targetImage).To(HaveSameDigestAs(allowedImage))
 		})
 
 		It("should block deployment if one of multiple gates is not passing", func() {
@@ -754,6 +759,182 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(BeEmpty())
 			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
+		})
+
+		When("using bake time and health check selector", func() {
+
+			var healthCheck *rolloutv1alpha1.HealthCheck
+			var fakeClock *FakeClock
+
+			BeforeEach(func() {
+				bakeTime = &metav1.Duration{Duration: 5 * time.Minute}
+				fakeClock = &FakeClock{
+					now: metav1.NewTime(time.Now()),
+				}
+				healthCheckSelector = &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "test-app",
+					},
+				}
+			})
+
+			JustBeforeEach(func() {
+				By("Creating a health check")
+				healthCheck = &rolloutv1alpha1.HealthCheck{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-health-check",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test-app",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+			})
+
+			It("should block new deployment if bake is in progress", func() {
+				By("Pushing and deploying an initial image")
+				img1 := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				targetImage, err := pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1))
+
+				By("Verifying initial bake times were set")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
+				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Pushing a new deployment image")
+				pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+				By("Advancing clock within bake window and ensuring no health errors")
+				fakeClock.Add(1 * time.Minute) // Still within bake window
+				healthCheck.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying new release was not deployed")
+				targetImage, err = pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1)) // Should still be img1
+			})
+
+			It("should block new deployment if previous bake failed", func() {
+				By("Pushing and deploying an initial image")
+				img1 := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				targetImage, err := pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1))
+
+				By("Verifying initial bake times were set")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
+				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Pushing a new deployment image")
+				pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+				By("Advancing clock within bake window and simulating health check error")
+				fakeClock.Add(2 * time.Minute)                                                              // Still within bake window
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Minute)} // Error occurred after bake start
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying bake status is Failed and new release was not deployed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				targetImage, err = pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1)) // Should still be img1
+			})
+
+			It("should allow new deployment if previous bake succeeded", func() {
+				By("Pushing and deploying an initial image")
+				img1 := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				targetImage, err := pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1))
+
+				By("Verifying initial bake times were set")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
+				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Pushing a new deployment image")
+				img2 := pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+				By("Advancing clock past bake window and ensuring no recent health errors")
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)} // Error before bake start
+				fakeClock.Add(10 * time.Minute)                                                              // Past bake window (assuming 5 min bakeTime)
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying bake status is Succeeded and new release was deployed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(2))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
+				targetImage, err = pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img2)) // Should be img2
+			})
+
+			It("should allow wantedVersion override regardless of bake status", func() {
+				By("Pushing and deploying an initial image")
+				img1 := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				targetImage, err := pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1))
+
+				By("Verifying initial bake times were set")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
+				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Pushing a new deployment image")
+				img2 := pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+				By("Setting wantedVersion and advancing clock within bake window")
+				rollout.Spec.WantedVersion = ptrutil.To(version0_2_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+				fakeClock.Add(1 * time.Minute) // Still within bake window
+				healthCheck.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the wanted version was deployed")
+				targetImage, err = pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img2)) // Should be img2
+			})
 		})
 
 		When("using an authenticated registry", func() {
@@ -828,7 +1009,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying that the deployment happened with authentication")
 				targetImage, err := pullImage(targetRepository, "latest", craneAuth)
 				Expect(err).ShouldNot(HaveOccurred())
-				assertEqualDigests(version_0_1_0_image, targetImage)
+				Expect(targetImage).To(HaveSameDigestAs(version_0_1_0_image))
 
 				By("Verifying that deployment history was updated")
 				updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -907,18 +1088,6 @@ func pullImage(repository, tag string, craneOptions ...crane.Option) (registryv1
 	return image, nil
 }
 
-func assertEqualDigests(image1, image2 registryv1.Image) {
-	digest1, err := image1.Digest()
-	if err != nil {
-		Fail(fmt.Sprintf("Failed to get digest for image1: %v", err))
-	}
-	digest2, err := image2.Digest()
-	if err != nil {
-		Fail(fmt.Sprintf("Failed to get digest for image2: %v", err))
-	}
-	Expect(digest1).To(Equal(digest2))
-}
-
 func setupTestRegistry(username, password string) (*httptest.Server, string) {
 	registry := registry.New()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -934,4 +1103,66 @@ func setupTestRegistry(username, password string) (*httptest.Server, string) {
 	}))
 	endpoint := strings.TrimPrefix(server.URL, "http://")
 	return server, endpoint
+}
+
+// Add FakeClock for testing
+
+type FakeClock struct {
+	now metav1.Time
+}
+
+func (f *FakeClock) Now() time.Time {
+	return f.now.Rfc3339Copy().Time
+}
+
+func (f *FakeClock) Add(d time.Duration) {
+	f.now = metav1.NewTime(f.now.Add(d))
+}
+
+// HaveSameDigestAs Gomega Matcher
+
+var _ gomegaTypes.GomegaMatcher = &ImageDigestMatcher{}
+
+type ImageDigestMatcher struct {
+	expected registryv1.Image
+}
+
+func HaveSameDigestAs(expected registryv1.Image) gomegaTypes.GomegaMatcher {
+	return &ImageDigestMatcher{
+		expected: expected,
+	}
+}
+
+func (matcher *ImageDigestMatcher) Match(actual any) (success bool, err error) {
+	actualImage, ok := actual.(registryv1.Image)
+	if !ok {
+		return false, fmt.Errorf("HaveSameDigestAs matcher expects a registryv1.Image")
+	}
+
+	actualDigest, err := actualImage.Digest()
+	if err != nil {
+		return false, fmt.Errorf("Failed to get digest for actual image: %v", err)
+	}
+
+	expectedDigest, err := matcher.expected.Digest()
+	if err != nil {
+		// Treat error in expected digest calculation as a test setup error
+		return false, fmt.Errorf("Failed to get digest for expected image: %v", err)
+	}
+
+	return actualDigest == expectedDigest, nil
+}
+
+func (matcher *ImageDigestMatcher) FailureMessage(actual interface{}) (message string) {
+	actualImage, _ := actual.(registryv1.Image)
+	actualDigest, _ := actualImage.Digest()
+	expectedDigest, _ := matcher.expected.Digest()
+	return fmt.Sprintf("Expected digest\n\t%s\nto equal\n\t%s", actualDigest, expectedDigest)
+}
+
+func (matcher *ImageDigestMatcher) NegatedFailureMessage(actual interface{}) (message string) {
+	actualImage, _ := actual.(registryv1.Image)
+	actualDigest, _ := actualImage.Digest()
+	expectedDigest, _ := matcher.expected.Digest()
+	return fmt.Sprintf("Expected digest\n\t%s\nnot to equal\n\t%s", actualDigest, expectedDigest)
 }

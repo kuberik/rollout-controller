@@ -49,6 +49,16 @@ type RolloutSpec struct {
 	// +kubebuilder:default="1m"
 	// +optional
 	ReleaseUpdateInterval *metav1.Duration `json:"releaseUpdateInterval,omitempty"`
+
+	// BakeTime specifies how long to wait after deployment before marking as successful
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +optional
+	BakeTime *metav1.Duration `json:"bakeTime,omitempty"`
+
+	// HealthCheckSelector specifies the label selector for matching HealthChecks
+	// +optional
+	HealthCheckSelector *metav1.LabelSelector `json:"healthCheckSelector,omitempty"`
 }
 
 type Repository struct {
@@ -105,6 +115,14 @@ type RolloutStatus struct {
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
 	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`
+
+	// BakeStartTime is the time when the current bake period started
+	// +optional
+	BakeStartTime *metav1.Time `json:"bakeStartTime,omitempty"`
+
+	// BakeEndTime is the time when the current bake period ends
+	// +optional
+	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.
@@ -118,6 +136,14 @@ type DeploymentHistoryEntry struct {
 	// +kubebuilder:validation:Required
 	// +required
 	Timestamp metav1.Time `json:"timestamp"`
+
+	// BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed)
+	// +optional
+	BakeStatus *string `json:"bakeStatus,omitempty"`
+
+	// BakeStatusMessage provides details about the bake state for this deployment
+	// +optional
+	BakeStatusMessage *string `json:"bakeStatusMessage,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -153,6 +179,12 @@ const (
 	RolloutReleasesUpdated = "ReleasesUpdated"
 	// RolloutGatesPassing means all gates are passing.
 	RolloutGatesPassing = "GatesPassing"
+)
+
+const (
+	BakeStatusInProgress = "InProgress"
+	BakeStatusSucceeded  = "Succeeded"
+	BakeStatusFailed     = "Failed"
 )
 
 func init() {

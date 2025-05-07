@@ -41,12 +41,22 @@ import (
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sptr "k8s.io/utils/ptr"
 )
+
+type Clock interface {
+	Now() time.Time
+}
+
+type RealClock struct{}
+
+func (RealClock) Now() time.Time { return time.Now() }
 
 // RolloutReconciler reconciles a Rollout object
 type RolloutReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Clock  Clock
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
@@ -89,6 +99,25 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if len(releases) == 0 {
 		log.Info("No releases available, skipping deployment")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No releases available")
+	}
+
+	// --- Bake time and health check gating logic (before deployment) ---
+	if rollout.Spec.BakeTime != nil && rollout.Spec.HealthCheckSelector != nil && rollout.Spec.WantedVersion == nil {
+		if len(rollout.Status.History) > 0 {
+			bakeStatus := rollout.Status.History[0].BakeStatus
+			if bakeStatus != nil {
+				if *bakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+					r, err := r.handleBakeTime(ctx, req.Namespace, &rollout, req)
+					baked := rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusSucceeded
+					if err != nil || !baked {
+						return r, err
+					}
+				} else if *bakeStatus == rolloutv1alpha1.BakeStatusFailed {
+					// Previous bake failed, block new deployment
+					return ctrl.Result{}, nil
+				}
+			}
+		}
 	}
 
 	// Gating logic: if wantedVersion is set in spec, ignore gates
@@ -140,6 +169,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
+		Owns(&rolloutv1alpha1.HealthCheck{}).
 		Named("rollout").
 		Complete(r)
 }
@@ -402,11 +432,23 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if err != nil {
 		return err
 	}
-	// Add new entry to history
+	// Add new entry to history with BakeStatus only if baking is enabled
+	var bakeStatus, bakeStatusMsg *string
+	if rollout.Spec.BakeTime != nil && rollout.Spec.HealthCheckSelector != nil {
+		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
+		bakeStatusMsg = k8sptr.To("Bake time started, monitoring health checks.")
+	}
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
-		Version:   wantedRelease,
-		Timestamp: metav1.Now(),
+		Version:           wantedRelease,
+		Timestamp:         metav1.Now(),
+		BakeStatus:        bakeStatus,
+		BakeStatusMessage: bakeStatusMsg,
 	}}, rollout.Status.History...)
+	if rollout.Spec.BakeTime != nil && rollout.Spec.HealthCheckSelector != nil {
+		now := r.now()
+		rollout.Status.BakeStartTime = &metav1.Time{Time: now}
+		rollout.Status.BakeEndTime = &metav1.Time{Time: now.Add(rollout.Spec.BakeTime.Duration)}
+	}
 	// Limit history size if specified
 	versionHistoryLimit := int32(5) // default value
 	if rollout.Spec.VersionHistoryLimit != nil {
@@ -423,4 +465,67 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Message:            "Release deployed successfully",
 	})
 	return r.Status().Update(ctx, rollout)
+}
+
+func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	now := r.now()
+
+	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector)
+		if err != nil {
+			log.Error(err, "Invalid healthCheckSelector")
+			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidHealthCheckSelector", err.Error())
+		}
+
+		hcList := &rolloutv1alpha1.HealthCheckList{}
+		if err := r.List(ctx, hcList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+			log.Error(err, "Failed to list HealthChecks")
+			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
+		}
+		for _, hc := range hcList.Items {
+			if hc.Status.LastErrorTime == nil {
+				continue
+			}
+			errTime := hc.Status.LastErrorTime.Time
+			if !errTime.Before(rollout.Status.BakeStartTime.Time) {
+				log.Info("HealthCheck error detected during bake time, marking rollout as failed")
+				rollout.Status.BakeStartTime = nil
+				rollout.Status.BakeEndTime = nil
+				if len(rollout.Status.History) > 0 {
+					rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
+					rollout.Status.History[0].BakeStatusMessage = k8sptr.To("A HealthCheck reported an error during bake time (via LastErrorTime).")
+				}
+				return ctrl.Result{}, r.Status().Update(ctx, rollout)
+			}
+		}
+	}
+
+	if now.Before(rollout.Status.BakeEndTime.Time) {
+		log.Info("Bake time in progress, waiting for bake to complete")
+		return ctrl.Result{}, nil
+	}
+	// No errors during bake window, mark as succeeded
+	log.Info("Bake time completed successfully, rollout is healthy")
+	if len(rollout.Status.History) > 0 {
+		succeeded := rolloutv1alpha1.BakeStatusSucceeded
+		msg := "Bake time completed successfully, no HealthCheck errors detected."
+		rollout.Status.History[0].BakeStatus = &succeeded
+		rollout.Status.History[0].BakeStatusMessage = &msg
+	}
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutReady,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "BakeTimePassed",
+		Message:            "Bake time completed successfully, no HealthCheck errors detected.",
+	})
+	return ctrl.Result{}, r.Status().Update(ctx, rollout)
+}
+
+func (r *RolloutReconciler) now() time.Time {
+	if r.Clock != nil {
+		return r.Clock.Now()
+	}
+	return time.Now()
 }

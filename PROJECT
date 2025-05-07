@@ -27,6 +27,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
+  controller: true
   domain: kuberik.com
   kind: HealthCheck
   path: github.com/kuberik/rollout-controller/api/v1alpha1

@@ -15,6 +15,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - healthchecks
   - rolloutgates
   - rollouts
   verbs:
@@ -28,6 +29,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - healthchecks/finalizers
   - rolloutgates/finalizers
   - rollouts/finalizers
   verbs:
@@ -35,6 +37,7 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - healthchecks/status
   - rolloutgates/status
   - rollouts/status
   verbs:
