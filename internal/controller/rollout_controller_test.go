@@ -935,6 +935,44 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(targetImage).To(HaveSameDigestAs(img2)) // Should be img2
 			})
+
+			It("should allow new deployment if bake succeeded and LastErrorTime is nil", func() {
+				By("Pushing and deploying an initial image")
+				img1 := pushFakeDeploymentImage(releasesRepository, version0_1_0)
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				targetImage, err := pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img1))
+
+				By("Verifying initial bake times were set")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
+				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Pushing a new deployment image")
+				img2 := pushFakeDeploymentImage(releasesRepository, version0_2_0)
+
+				By("Advancing clock past bake window and ensuring LastErrorTime is nil")
+				healthCheck.Status.LastErrorTime = nil
+				fakeClock.Add(10 * time.Minute) // Past bake window (assuming 5 min bakeTime)
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying bake status is Succeeded and new release was deployed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(2))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress)) // New deployment
+				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))  // Previous deployment
+				targetImage, err = pullImage(targetRepository, "latest")
+				Expect(err).ShouldNot(HaveOccurred())
+				Expect(targetImage).To(HaveSameDigestAs(img2)) // Should be img2
+			})
 		})
 
 		When("using an authenticated registry", func() {
