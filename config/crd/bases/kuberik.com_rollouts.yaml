@@ -137,30 +137,6 @@ spec:
                 required:
                 - url
                 type: object
-              targetRepository:
-                description: TargetRepository specifies the path where releases should
-                  be deployed to
-                properties:
-                  secretRef:
-                    description: The secret name containing the authentication credentials
-                    properties:
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  url:
-                    description: The URL of the repository
-                    type: string
-                required:
-                - url
-                type: object
               versionHistoryLimit:
                 default: 5
                 description: VersionHistoryLimit defines the maximum number of entries
@@ -174,7 +150,6 @@ spec:
                 type: string
             required:
             - releasesRepository
-            - targetRepository
             type: object
           status:
             description: RolloutStatus defines the observed state of Rollout.

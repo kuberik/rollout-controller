@@ -20,8 +20,8 @@ import (
 	"context"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -102,7 +102,6 @@ func (r *FluxOCIRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			ociRepo.Annotations = make(map[string]string)
 		}
 		ociRepo.Annotations["reconcile.fluxcd.io/requestedAt"] = metav1.Now().Format(time.RFC3339Nano)
-
 
 		if err := r.Client.Patch(ctx, &ociRepo, patch, client.FieldOwner("kuberik-rollout-controller")); err != nil {
 			log.Error(err, "Failed to patch OCIRepository", "name", ociRepo.Name)

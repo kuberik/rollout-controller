@@ -73,7 +73,6 @@ var _ = Describe("HealthCheck Controller", func() {
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
 					ReleasesRepository:  rolloutv1alpha1.Repository{URL: "dummy"},
-					TargetRepository:    rolloutv1alpha1.Repository{URL: "dummy"},
 					HealthCheckSelector: selector,
 					BakeTime:            bakeTime,
 				},

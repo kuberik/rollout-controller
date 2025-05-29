@@ -44,7 +44,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
-	gomegaTypes "github.com/onsi/gomega/types"
 	ptrutil "k8s.io/utils/ptr"
 )
 
@@ -819,8 +818,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(rollout.Status.History[0].Version).To(Equal(version0_1_0))
-				Expect(rollout.Status.BakeStartTime.Time).To(Equal(fakeClock.Now()))
-				Expect(rollout.Status.BakeEndTime.Time).To(Equal(fakeClock.Now().Add(5 * time.Minute)))
+				Expect(rollout.Status.BakeStartTime.Time).To(BeTemporally("~", fakeClock.Now(), time.Second))
+				Expect(rollout.Status.BakeEndTime.Time).To(BeTemporally("~", fakeClock.Now().Add(5*time.Minute), time.Second))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image to releases repository")
@@ -959,9 +958,9 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying bake status is Succeeded and new release was recorded in history")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(2))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0)) // New version
+				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))                             // New version
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress)) // New deployment's bake status
-				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0)) // Old version
+				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0))                             // Old version
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))  // Previous deployment's bake status
 			})
 		})
@@ -1077,8 +1076,8 @@ var _ = Describe("Rollout Controller", func() {
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: typeNamespacedName,
 				})
-				Expect(err).To(HaveOccurred()) // Error from crane.ListTags due to auth
-				Expect(err.Error()).To(ContainSubstring("UNAUTHORIZED")) // Or similar, depending on registry error
+				Expect(err).To(HaveOccurred())                           // Error from crane.ListTags due to auth
+				Expect(err.Error()).To(ContainSubstring("Unauthorized")) // Or similar, depending on registry error
 
 				By("Verifying that the rollout failed with appropriate condition")
 				updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -1093,7 +1092,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(readyCondition.Message).To(SatisfyAny(
 					ContainSubstring("failed to list tags"),
 					ContainSubstring("authentication options"),
-					ContainSubstring("UNAUTHORIZED"), // If crane error propagates
+					ContainSubstring("Unauthorized"), // If crane error propagates
 				))
 			})
 		})

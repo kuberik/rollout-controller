@@ -41,7 +41,6 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 		var namespace *corev1.Namespace
 		var rolloutNamespacedName types.NamespacedName
 		var ociRepoNamespacedName types.NamespacedName
-		var testRollout *rolloutv1alpha1.Rollout
 		var testOCIRepo *sourcev1beta2.OCIRepository
 
 		var controllerReconciler *FluxOCIRepositoryReconciler
@@ -128,7 +127,7 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 
 		It("should update OCIRepository when Rollout has history and annotation matches", func() {
 			By("Creating a Rollout with deployment history")
-			testRollout = createRollout(true)
+			createRollout(true)
 
 			By("Creating an OCIRepository with matching annotation")
 			initialRef := &sourcev1beta2.OCIRepositoryRef{Tag: "old-tag", Digest: "sha256:olddigest", SemVer: "1.0.0"}
@@ -150,7 +149,7 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 
 		It("should not update OCIRepository if annotation value does not match Rollout name", func() {
 			By("Creating a Rollout with deployment history")
-			testRollout = createRollout(true)
+			createRollout(true)
 
 			By("Creating an OCIRepository with a non-matching annotation value")
 			initialRef := &sourcev1beta2.OCIRepositoryRef{Tag: "initial-tag"}
@@ -169,7 +168,7 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 
 		It("should not update OCIRepository if annotation is missing", func() {
 			By("Creating a Rollout with deployment history")
-			testRollout = createRollout(true)
+			createRollout(true)
 
 			By("Creating an OCIRepository without the rollout annotation")
 			initialRef := &sourcev1beta2.OCIRepositoryRef{Tag: "no-annotation-tag"}
@@ -188,7 +187,7 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 
 		It("should not update OCIRepository if Rollout has no deployment history", func() {
 			By("Creating a Rollout without deployment history")
-			testRollout = createRollout(false)
+			createRollout(false)
 
 			By("Creating an OCIRepository with matching annotation")
 			initialRef := &sourcev1beta2.OCIRepositoryRef{Tag: "no-history-tag"}
@@ -207,7 +206,7 @@ var _ = Describe("Flux OCIRepository Controller", func() {
 
 		It("should update OCIRepository correctly if spec.reference is initially nil", func() {
 			By("Creating a Rollout with deployment history")
-			testRollout = createRollout(true)
+			createRollout(true)
 
 			By("Creating an OCIRepository with matching annotation and nil spec.reference")
 			testOCIRepo = createOCIRepository(map[string]string{RolloutNameAnnotation: rolloutName}, nil) // Spec.Reference is nil

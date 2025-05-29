@@ -361,7 +361,6 @@ func (in *RolloutList) DeepCopyObject() runtime.Object {
 func (in *RolloutSpec) DeepCopyInto(out *RolloutSpec) {
 	*out = *in
 	in.ReleasesRepository.DeepCopyInto(&out.ReleasesRepository)
-	in.TargetRepository.DeepCopyInto(&out.TargetRepository)
 	if in.WantedVersion != nil {
 		in, out := &in.WantedVersion, &out.WantedVersion
 		*out = new(string)
