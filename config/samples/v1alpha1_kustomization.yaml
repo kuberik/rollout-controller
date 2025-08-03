@@ -1,0 +1,18 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: my-app-kustomization
+  namespace: default
+  annotations:
+    rollout.kuberik.com/rollout: "my-app-rollout"
+    rollout.kuberik.com/substitute: "IMAGE_TAG"
+spec:
+  interval: 1m0s
+  path: ./kustomize
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: my-app-repo
+  postBuild:
+    substitute:
+      IMAGE_TAG: "1.0.0" # This will be updated by the rollout controller

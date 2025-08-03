@@ -236,26 +236,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check if Flux OCIRepository CRD exists before registering the controller
-	crdExists, err := checkCRDExists(mgr.GetConfig(), "source.toolkit.fluxcd.io/v1beta2", "OCIRepository")
-	if err != nil {
-		setupLog.Error(err, "failed to check for Flux OCIRepository CRD")
-		os.Exit(1)
-	}
-
-	if crdExists {
-		setupLog.Info("Flux OCIRepository CRD found, registering controller")
-		if err = (&controller.FluxOCIRepositoryReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "FluxOCIRepository")
-			os.Exit(1)
-		}
-	} else {
-		setupLog.Info("Flux OCIRepository CRD not found, skipping controller registration")
-	}
-
 	if err = (&controller.RolloutGateReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

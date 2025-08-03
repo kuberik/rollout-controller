@@ -1,9 +1,17 @@
 apiVersion: kuberik.com/v1alpha1
 kind: Rollout
 metadata:
-  labels:
-    app.kubernetes.io/name: rollout-controller
-    app.kubernetes.io/managed-by: kustomize
-  name: rollout-sample
+  name: example-rollout
 spec:
-  # TODO(user): Add fields here
+  releasesImagePolicy:
+    name: example-image-policy
+  # Optional: specify a specific version to deploy
+  # wantedVersion: "1.2.3"
+  # Optional: limit the number of history entries to keep
+  # versionHistoryLimit: 10
+  # Optional: specify bake time for health checks
+  # bakeTime: "5m"
+  # Optional: specify health check selector
+  # healthCheckSelector:
+  #   matchLabels:
+  #     app: my-app
