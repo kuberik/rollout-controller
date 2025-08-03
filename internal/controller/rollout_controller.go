@@ -425,7 +425,9 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 	return nil
 }
 
-// patchKustomizations finds Kustomizations with rollout annotation and patches their substitutes.
+// patchKustomizations finds Kustomizations with rollout-specific annotations and patches their substitutes.
+// Each rollout should have its own annotation in the format: rollout.kuberik.com/{rollout-name}.substitute
+// Example: rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
 func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
 	log := logf.FromContext(ctx)
 
@@ -441,15 +443,10 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 			continue
 		}
 
-		rolloutName, hasRolloutAnnotation := kustomization.Annotations["rollout.kuberik.com/rollout"]
-		if !hasRolloutAnnotation || rolloutName != rollout.Name {
-			continue
-		}
-
-		// Get the substitute name from annotation
-		substituteName, hasSubstituteName := kustomization.Annotations["rollout.kuberik.com/substitute"]
-		if !hasSubstituteName {
-			log.V(5).Info("Kustomization missing substitute name annotation", "name", kustomization.Name)
+		// Look for rollout-specific substitute annotation
+		substituteKey := fmt.Sprintf("rollout.kuberik.com/%s.substitute", rollout.Name)
+		substituteName, hasRolloutSubstitute := kustomization.Annotations[substituteKey]
+		if !hasRolloutSubstitute {
 			continue
 		}
 

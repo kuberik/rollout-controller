@@ -1,6 +1,70 @@
 # Rollout Controller
 
-A Kubernetes controller for managing application rollouts with support for Flux ImagePolicy integration.
+A Kubernetes controller for managing application rollouts with support for health checks, gates, and bake time.
+
+## Features
+
+- **Health Check Integration**: Monitor application health during rollouts
+- **Rollout Gates**: Control deployment progression with custom gates
+- **Bake Time**: Wait for a specified duration before considering a deployment successful
+- **Multiple Rollout Support**: Kustomizations can be managed by multiple rollouts using rollout-specific annotations
+
+## Multiple Rollout Support
+
+### Kustomizations
+
+Kustomizations can be managed by multiple rollouts simultaneously using rollout-specific annotations. Each rollout has its own annotation, preventing conflicts between different rollouts.
+
+#### Example
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: my-app
+  annotations:
+    rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
+    rollout.kuberik.com/backend-rollout.substitute: "backend_version"
+    rollout.kuberik.com/api-rollout.substitute: "api_version"
+spec:
+  # ... other spec fields
+  postBuild:
+    substitute:
+      frontend_version: "1.0.0"  # Managed by frontend-rollout
+      backend_version: "2.0.0"   # Managed by backend-rollout
+      api_version: "3.0.0"       # Managed by api-rollout
+```
+
+In this example:
+- `frontend-rollout` manages the `frontend_version` substitute
+- `backend-rollout` manages the `backend_version` substitute
+- `api-rollout` manages the `api_version` substitute
+
+### OCIRepositories
+
+OCIRepositories use a simpler approach since they only have one modifiable field (tag). Each OCIRepository can be managed by a single rollout.
+
+#### Example
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: my-image-repo
+  annotations:
+    rollout.kuberik.com/rollout: "my-app-rollout"
+spec:
+  # ... other spec fields
+  reference:
+    tag: "latest"  # This will be updated by the referenced rollout
+```
+
+### Annotation Format
+
+- **Kustomizations**: `rollout.kuberik.com/{rollout-name}.substitute`
+- **OCIRepositories**: `rollout.kuberik.com/rollout`
+
+Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
 
 ## Overview
 

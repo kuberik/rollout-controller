@@ -33,6 +33,10 @@ import (
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	ptrutil "k8s.io/utils/ptr"
+
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -719,6 +723,142 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(BeEmpty())
 			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
+		})
+
+		It("should patch Kustomization with rollout-specific substitute annotation", func() {
+			By("Setting available releases")
+			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Creating a Kustomization with rollout-specific annotation")
+			kustomization := &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-kustomization",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/test-resource.substitute": "app_version",
+					},
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Interval: metav1.Duration{Duration: 1 * time.Minute},
+					Path:     "./kustomize",
+					Prune:    true,
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind: "GitRepository",
+						Name: "test-repo",
+					},
+					PostBuild: &kustomizev1.PostBuild{
+						Substitute: map[string]string{
+							"app_version": "old-version",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the Kustomization was patched with the new version")
+			updatedKustomization := &kustomizev1.Kustomization{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: "test-kustomization", Namespace: namespace}, updatedKustomization)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedKustomization.Spec.PostBuild.Substitute["app_version"]).To(Equal(version0_2_0))
+
+			By("Verifying that deployment history was updated")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+		})
+
+		It("should patch OCIRepository with rollout annotation", func() {
+			By("Setting available releases")
+			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Creating an OCIRepository with rollout annotation")
+			ociRepo := &sourcev1beta2.OCIRepository{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oci-repo",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/rollout": "test-resource",
+					},
+				},
+				Spec: sourcev1beta2.OCIRepositorySpec{
+					URL:      "oci://ghcr.io/test/app",
+					Interval: metav1.Duration{Duration: 1 * time.Minute},
+					Reference: &sourcev1beta2.OCIRepositoryRef{
+						Tag: "old-tag",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ociRepo)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the OCIRepository was patched with the new tag")
+			updatedOCIRepo := &sourcev1beta2.OCIRepository{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: "test-oci-repo", Namespace: namespace}, updatedOCIRepo)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedOCIRepo.Spec.Reference.Tag).To(Equal(version0_2_0))
+
+			By("Verifying that deployment history was updated")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+		})
+
+		It("should not patch OCIRepository with non-matching rollout annotation", func() {
+			By("Setting available releases")
+			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Creating an OCIRepository with different rollout annotation")
+			ociRepo := &sourcev1beta2.OCIRepository{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oci-repo",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/rollout": "other-rollout",
+					},
+				},
+				Spec: sourcev1beta2.OCIRepositorySpec{
+					URL:      "oci://ghcr.io/test/app",
+					Interval: metav1.Duration{Duration: 1 * time.Minute},
+					Reference: &sourcev1beta2.OCIRepositoryRef{
+						Tag: "old-tag",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ociRepo)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the OCIRepository was NOT patched")
+			updatedOCIRepo := &sourcev1beta2.OCIRepository{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: "test-oci-repo", Namespace: namespace}, updatedOCIRepo)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedOCIRepo.Spec.Reference.Tag).To(Equal("old-tag"))
+
+			By("Verifying that deployment history was still updated")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
 		})
 
 		When("using bake time and health check selector", func() {

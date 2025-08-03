@@ -4,8 +4,9 @@ metadata:
   name: my-app-kustomization
   namespace: default
   annotations:
-    rollout.kuberik.com/rollout: "my-app-rollout"
-    rollout.kuberik.com/substitute: "IMAGE_TAG"
+    rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
+    rollout.kuberik.com/backend-rollout.substitute: "backend_version"
+    rollout.kuberik.com/api-rollout.substitute: "api_version"
 spec:
   interval: 1m0s
   path: ./kustomize
@@ -15,4 +16,6 @@ spec:
     name: my-app-repo
   postBuild:
     substitute:
-      IMAGE_TAG: "1.0.0" # This will be updated by the rollout controller
+      frontend_version: "1.0.0" # Managed by frontend-rollout
+      backend_version: "2.0.0" # Managed by backend-rollout
+      api_version: "3.0.0" # Managed by api-rollout
