@@ -23,15 +23,10 @@ import (
 
 // RolloutSpec defines the desired state of Rollout.
 type RolloutSpec struct {
-	// ReleasesRepository specifies the path to the releases repository
+	// ReleasesImagePolicy specifies the ImagePolicy that provides available releases
 	// +kubebuilder:validation:Required
 	// +required
-	ReleasesRepository Repository `json:"releasesRepository,omitempty"`
-
-	// TargetRepository specifies the path where releases should be deployed to
-	// +kubebuilder:validation:Required
-	// +required
-	TargetRepository Repository `json:"targetRepository,omitempty"`
+	ReleasesImagePolicy corev1.LocalObjectReference `json:"releasesImagePolicy,omitempty"`
 
 	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection
 	// +optional

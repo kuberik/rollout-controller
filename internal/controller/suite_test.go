@@ -32,6 +32,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
 	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -66,6 +68,12 @@ var _ = BeforeSuite(func() {
 	err = sourcev1beta2.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = imagev1beta2.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = kustomizev1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
@@ -73,6 +81,8 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "vendir", "ocirepositories"),
+			filepath.Join("..", "..", "vendir", "kustomizations"),
+			filepath.Join("..", "..", "vendir", "imagepolicies"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}

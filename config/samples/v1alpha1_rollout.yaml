@@ -1,9 +1,25 @@
 apiVersion: kuberik.com/v1alpha1
 kind: Rollout
 metadata:
-  labels:
-    app.kubernetes.io/name: rollout-controller
-    app.kubernetes.io/managed-by: kustomize
   name: rollout-sample
 spec:
-  # TODO(user): Add fields here
+  # References a Flux ImagePolicy by name only
+  releasesImagePolicy:
+    name: my-app-policy
+
+  # Optional: specify a specific version to deploy
+  # wantedVersion: "1.2.3"
+
+  # Optional: limit deployment history
+  versionHistoryLimit: 10
+
+  # Optional: how often to check for new releases
+  releaseUpdateInterval: "5m"
+
+  # Optional: bake time for health checks
+  bakeTime: "10m"
+
+  # Optional: health check selector for bake time
+  healthCheckSelector:
+    matchLabels:
+      app: myapp

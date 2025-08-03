@@ -1,134 +1,200 @@
-# rollout-controller
-// TODO(user): Add simple overview of use/purpose
+# Rollout Controller
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes controller for managing application rollouts with support for Flux ImagePolicy integration.
 
-## Getting Started
+## Overview
+
+The Rollout Controller manages application deployments by:
+- Monitoring available releases from Flux ImagePolicy
+- Evaluating deployment gates
+- Managing bake time for health checks
+- Copying releases from source to target repositories
+
+## Flux ImagePolicy Integration
+
+The rollout controller integrates with Flux's image automation components to provide a GitOps-friendly approach to release management. Instead of directly accessing OCI repositories, the controller uses Flux's ImagePolicy to determine available releases.
+
+### Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   ImageRepo     │    │  ImagePolicy    │    │    Rollout      │
+│   (Flux)        │───▶│   (Flux)        │───▶│  Controller     │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                         │
+                                                         ▼
+                                               ┌─────────────────┐
+                                               │ Target Repo     │
+                                               │ (Deployment)    │
+                                               └─────────────────┘
+```
+
+### Setup
+
+1. **Create an ImageRepository** (Flux component):
+```yaml
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImageRepository
+metadata:
+  name: my-app-repo
+  namespace: flux-system
+spec:
+  image: ghcr.io/myorg/myapp
+  interval: 1m0s
+  secretRef:
+    name: ghcr-secret
+```
+
+2. **Create an ImagePolicy** (Flux component):
+```yaml
+apiVersion: image.toolkit.fluxcd.io/v1beta2
+kind: ImagePolicy
+metadata:
+  name: my-app-policy
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: my-app-repo
+  policy:
+    semver:
+      range: '>=1.0.0'
+      prereleases:
+        enabled: true
+        allow:
+          - rc
+          - beta
+          - alpha
+  digestReflectionPolicy: IfNotPresent
+```
+
+3. **Create a Rollout** (this controller):
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: my-app-rollout
+spec:
+  releasesImagePolicy:
+    name: my-app-policy
+
+  versionHistoryLimit: 10
+  releaseUpdateInterval: "5m"
+
+  # Optional: bake time for health checks
+  bakeTime: "10m"
+  healthCheckSelector:
+    matchLabels:
+      app: myapp
+```
+
+### How it Works
+
+1. **Release Discovery**: The controller reads the `latestRef` from the ImagePolicy status to determine available releases.
+
+2. **Version Selection**: The controller applies semver logic to select the next release to deploy, considering:
+   - Current deployed version
+   - Available releases from ImagePolicy
+   - Gates and constraints
+
+3. **Resource Patching**: The controller finds and patches Flux resources with specific annotations:
+   - **OCIRepositories**: Updates `spec.ref.tag` for resources with `rollout.kuberik.com/rollout: <rollout-name>`
+   - **Kustomizations**: Updates `spec.postBuild.substitute.<NAME>` for resources with `rollout.kuberik.com/rollout: <rollout-name>` and `rollout.kuberik.com/substitute: <NAME>`
+
+4. **Health Monitoring**: During bake time, the controller monitors HealthChecks to ensure deployment stability.
+
+### Annotations
+
+The rollout controller uses annotations to identify which Flux resources should be managed:
+
+#### OCIRepository
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: my-app-repo
+  annotations:
+    rollout.kuberik.com/rollout: "my-app-rollout"  # References the rollout name
+spec:
+  url: oci://ghcr.io/myorg/myapp
+  ref:
+    tag: "1.0.0"  # This will be updated by the rollout controller
+```
+
+#### Kustomization
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: my-app-kustomization
+  annotations:
+    rollout.kuberik.com/rollout: "my-app-rollout"  # References the rollout name
+    rollout.kuberik.com/substitute: "IMAGE_TAG"     # Specifies which substitute to update
+spec:
+  postBuild:
+    substitute:
+      IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
+```
+
+### Benefits
+
+- **GitOps Integration**: Leverages Flux's image automation for consistent, auditable release management
+- **Separation of Concerns**: Image discovery is handled by Flux, deployment by the rollout controller
+- **Policy-Driven**: Uses Flux's powerful image policy engine for release selection
+- **Observability**: Integrates with Flux's monitoring and alerting capabilities
+
+## Installation
 
 ### Prerequisites
-- go version v1.24.2+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- Kubernetes cluster
+- Flux v2 installed with image-reflector-controller
+- kubectl configured
 
-```sh
-make docker-build docker-push IMG=<some-registry>/rollout-controller:tag
+### Install the Controller
+
+```bash
+# Install CRDs
+kubectl apply -f config/crd/bases/
+
+# Install the controller
+kubectl apply -k config/default/
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+## Usage Examples
 
-**Install the CRDs into the cluster:**
+See the `config/samples/` directory for complete examples including:
+- `v1alpha1_imagerepository.yaml` - Flux ImageRepository example
+- `v1alpha1_imagepolicy.yaml` - Flux ImagePolicy example
+- `v1alpha1_rollout.yaml` - Rollout controller example
 
-```sh
-make install
+## Development
+
+### Building
+
+```bash
+make build
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+### Testing
 
-```sh
-make deploy IMG=<some-registry>/rollout-controller:tag
+```bash
+make test
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+### Running Locally
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
+```bash
+make run
 ```
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/rollout-controller:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/rollout-controller/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
 ## License
 
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Apache 2.0
