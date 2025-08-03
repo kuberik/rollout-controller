@@ -90,13 +90,14 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if len(rollout.Status.History) > 0 {
 			bakeStatus := rollout.Status.History[0].BakeStatus
 			if bakeStatus != nil {
-				if *bakeStatus == rolloutv1alpha1.BakeStatusInProgress {
-					r, err := r.handleBakeTime(ctx, req.Namespace, &rollout, req)
+				switch *bakeStatus {
+				case rolloutv1alpha1.BakeStatusInProgress:
+					r, err := r.handleBakeTime(ctx, req.Namespace, &rollout)
 					baked := rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusSucceeded
 					if err != nil || !baked {
 						return r, err
 					}
-				} else if *bakeStatus == rolloutv1alpha1.BakeStatusFailed {
+				case rolloutv1alpha1.BakeStatusFailed:
 					// Previous bake failed, block new deployment
 					return ctrl.Result{}, nil
 				}
@@ -483,7 +484,7 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 	return nil
 }
 
-func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, req ctrl.Request) (ctrl.Result, error) {
+func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	now := r.now()
 

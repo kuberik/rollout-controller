@@ -28,9 +28,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -59,24 +57,6 @@ func init() {
 	utilruntime.Must(sourcev1beta2.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
-}
-
-// checkCRDExists checks if a CRD with the given name exists in the cluster
-func checkCRDExists(config *rest.Config, groupVersion, kind string) (bool, error) {
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
-	if err != nil {
-		return false, err
-	}
-	resources, err := discoveryClient.ServerResourcesForGroupVersion(groupVersion)
-	if err != nil {
-		return false, nil
-	}
-	for _, resource := range resources.APIResources {
-		if resource.Kind == kind {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // nolint:gocyclo
