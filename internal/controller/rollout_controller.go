@@ -526,7 +526,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	if now.Before(rollout.Status.BakeEndTime.Time) {
 		log.Info("Bake time in progress, waiting for bake to complete")
-		return ctrl.Result{}, nil
+		// Calculate time until bake end and requeue
+		timeUntilBakeEnd := rollout.Status.BakeEndTime.Time.Sub(now)
+		return ctrl.Result{RequeueAfter: timeUntilBakeEnd}, nil
 	}
 	// No errors during bake window, mark as succeeded
 	log.Info("Bake time completed successfully, rollout is healthy")
