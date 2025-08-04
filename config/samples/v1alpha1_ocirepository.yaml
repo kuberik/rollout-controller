@@ -1,0 +1,12 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: my-app-repo
+  namespace: default
+  annotations:
+    rollout.kuberik.com/rollout: "my-app-rollout"
+spec:
+  url: oci://ghcr.io/myorg/myapp
+  interval: 1m0s
+  ref:
+    tag: "1.0.0" # This will be updated by the referenced rollout

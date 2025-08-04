@@ -135,8 +135,7 @@ func ownerRefsEqual(a, b []metav1.OwnerReference) bool {
 // SetupWithManager sets up the controller with the Manager.
 func (r *HealthCheckReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		// Uncomment the following line adding a pointer to an instance of the controlled resource as an argument
-		// For().
+		For(&rolloutv1alpha1.HealthCheck{}).
 		Named("healthcheck").
 		Complete(r)
 }

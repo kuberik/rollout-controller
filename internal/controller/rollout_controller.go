@@ -17,31 +17,27 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/Masterminds/semver"
-	"github.com/docker/cli/cli/config"
-	"github.com/docker/cli/cli/config/configfile"
-	"github.com/go-logr/logr"
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/crane"
-	"github.com/google/go-containerregistry/pkg/name"
+	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sptr "k8s.io/utils/ptr"
 )
 
 type Clock interface {
@@ -63,16 +59,12 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagepolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Rollout object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -84,13 +76,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	releasesAuthOpts, targetAuthOpts, err := r.fetchAuthOptions(ctx, req.Namespace, &rollout)
-	if err != nil {
-		log.Error(err, "Failed to get authentication options")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
-	}
-
-	err = r.updateAvailableReleases(ctx, &rollout, releasesAuthOpts, log)
+	err := r.updateAvailableReleases(ctx, &rollout, log)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -106,13 +92,14 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if len(rollout.Status.History) > 0 {
 			bakeStatus := rollout.Status.History[0].BakeStatus
 			if bakeStatus != nil {
-				if *bakeStatus == rolloutv1alpha1.BakeStatusInProgress {
-					r, err := r.handleBakeTime(ctx, req.Namespace, &rollout, req)
+				switch *bakeStatus {
+				case rolloutv1alpha1.BakeStatusInProgress:
+					r, err := r.handleBakeTime(ctx, req.Namespace, &rollout)
 					baked := rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusSucceeded
 					if err != nil || !baked {
 						return r, err
 					}
-				} else if *bakeStatus == rolloutv1alpha1.BakeStatusFailed {
+				case rolloutv1alpha1.BakeStatusFailed:
 					// Previous bake failed, block new deployment
 					return ctrl.Result{}, nil
 				}
@@ -157,7 +144,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.deployRelease(ctx, &rollout, *wantedRelease, releasesAuthOpts, targetAuthOpts); err != nil {
+	if err := r.deployRelease(ctx, &rollout, *wantedRelease); err != nil {
 		log.Error(err, "Failed to deploy release")
 		return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
 	}
@@ -170,6 +157,10 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
 		Owns(&rolloutv1alpha1.HealthCheck{}).
+		Watches(
+			&imagev1beta2.ImagePolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
+		).
 		Named("rollout").
 		Complete(r)
 }
@@ -179,146 +170,65 @@ func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.Rollout
 	if len(releases) == 0 {
 		return nil, fmt.Errorf("no releases available")
 	}
-	// Create a copy of releases to avoid modifying the original slice
-	candidates := []semver.Version{}
-	for _, release := range releases {
-		semVer, err := semver.NewVersion(release)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse semver: %w", err)
-		}
-		candidates = append(candidates, *semVer)
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].GreaterThan(&candidates[j])
-	})
-
+	releases = slices.Clone(releases)
+	slices.Reverse(releases)
 	if len(status.History) > 0 {
 		currentRelease := status.History[0].Version
-		currentSemVer, err := semver.NewVersion(currentRelease)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse current release semver: %w", err)
+		if latestReleaseIndex := slices.Index(releases, currentRelease); latestReleaseIndex != -1 {
+			return releases[:latestReleaseIndex], nil
+		} else {
+			return nil, fmt.Errorf("current release %q not found in available releases", currentRelease)
 		}
-
-		var filteredCandidates []semver.Version
-		for _, candidate := range candidates {
-			if candidate.GreaterThan(currentSemVer) {
-				filteredCandidates = append(filteredCandidates, candidate)
-			}
-		}
-		candidates = filteredCandidates
 	}
-
-	result := make([]string, len(candidates))
-	for i, candidate := range candidates {
-		result[i] = candidate.String()
-	}
-
-	return result, nil
+	return releases, nil
 }
 
-type dockerConfigKeychain struct {
-	config *configfile.ConfigFile
-}
+// updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
+func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
+	// Get the ImagePolicy
+	imagePolicyNamespace := rollout.Namespace
 
-func (k *dockerConfigKeychain) Resolve(resource authn.Resource) (authn.Authenticator, error) {
-	registry := resource.RegistryStr()
-	if registry == name.DefaultRegistry {
-		registry = authn.DefaultAuthKey
+	imagePolicy := &imagev1beta2.ImagePolicy{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: imagePolicyNamespace,
+		Name:      rollout.Spec.ReleasesImagePolicy.Name,
+	}, imagePolicy); err != nil {
+		log.Error(err, "Failed to get ImagePolicy")
+		return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
 	}
 
-	cfg, err := k.config.GetAuthConfig(registry)
-	if err != nil {
-		return nil, err
+	// Check if ImagePolicy is ready
+	readyCondition := meta.FindStatusCondition(imagePolicy.Status.Conditions, "Ready")
+	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
+		log.Info("ImagePolicy is not ready", "imagePolicy", imagePolicy.Name, "status", readyCondition)
+		return r.updateRolloutStatusOnError(ctx, rollout, "ImagePolicyNotReady", "ImagePolicy is not ready")
 	}
 
-	if cfg.Auth == "" && cfg.Username == "" && cfg.Password == "" && cfg.IdentityToken == "" && cfg.RegistryToken == "" {
-		return authn.Anonymous, nil
+	// Extract available releases from ImagePolicy status
+	var newReleases []string
+	if imagePolicy.Status.LatestRef != nil && imagePolicy.Status.LatestRef.Tag != "" {
+		newReleases = []string{imagePolicy.Status.LatestRef.Tag}
 	}
 
-	return authn.FromConfig(authn.AuthConfig{
-		Username:      cfg.Username,
-		Password:      cfg.Password,
-		Auth:          cfg.Auth,
-		IdentityToken: cfg.IdentityToken,
-		RegistryToken: cfg.RegistryToken,
-	}), nil
-}
-
-func (r *RolloutReconciler) getAuthOptions(ctx context.Context, namespace string, secretRef *corev1.LocalObjectReference) ([]crane.Option, error) {
-	if secretRef == nil {
-		return []crane.Option{crane.WithAuthFromKeychain(authn.DefaultKeychain)}, nil
-	}
-
-	secret := corev1.Secret{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretRef.Name}, &secret); err != nil {
-		return nil, fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
-	}
-
-	dockerConfigJSON, ok := secret.Data[".dockerconfigjson"]
-	if !ok {
-		return nil, fmt.Errorf("secret %s does not contain .dockerconfigjson", secretRef.Name)
-	}
-
-	config, err := config.LoadFromReader(bytes.NewReader(dockerConfigJSON))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse docker config: %w", err)
-	}
-
-	return []crane.Option{crane.WithAuthFromKeychain(&dockerConfigKeychain{config: config})}, nil
-}
-
-// fetchAuthOptions fetches authentication options for both releases and target repositories.
-func (r *RolloutReconciler) fetchAuthOptions(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) ([]crane.Option, []crane.Option, error) {
-	releasesAuthOpts, err := r.getAuthOptions(ctx, namespace, rollout.Spec.ReleasesRepository.Auth)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get authentication options for releases repository: %w", err)
-	}
-	targetAuthOpts, err := r.getAuthOptions(ctx, namespace, rollout.Spec.TargetRepository.Auth)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get authentication options for target repository: %w", err)
-	}
-	return releasesAuthOpts, targetAuthOpts, nil
-}
-
-// updateAvailableReleases checks if releases should be updated, fetches them if needed, and updates status.
-// Returns the releases, whether status was updated, and error if any.
-func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, releasesAuthOpts []crane.Option, log logr.Logger) error {
-	updateInterval := metav1.Duration{Duration: time.Minute} // default to 1 minute
-	if rollout.Spec.ReleaseUpdateInterval != nil {
-		updateInterval = *rollout.Spec.ReleaseUpdateInterval
-	}
-
-	releasesUpdatedCondition := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
-	shouldUpdateReleases := true
-	if releasesUpdatedCondition != nil && releasesUpdatedCondition.Status == metav1.ConditionTrue {
-		lastUpdateTime := releasesUpdatedCondition.LastTransitionTime
-		if time.Since(lastUpdateTime.Time) < updateInterval.Duration {
-			shouldUpdateReleases = false
-			log.Info("Skipping release update as it was updated recently", "lastUpdate", lastUpdateTime, "updateInterval", updateInterval.Duration)
+	// Append new releases to existing ones if they're not already present
+	existingReleases := rollout.Status.AvailableReleases
+	for _, newRelease := range newReleases {
+		if !slices.Contains(existingReleases, newRelease) {
+			existingReleases = append(existingReleases, newRelease)
 		}
 	}
 
-	if shouldUpdateReleases {
-		var err error
-		releases, err := crane.ListTags(rollout.Spec.ReleasesRepository.URL, releasesAuthOpts...)
-		if err != nil {
-			log.Error(err, "Failed to list tags from releases repository")
-			return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
-		}
-		rollout.Status.AvailableReleases = releases
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReleasesUpdated,
-			Status:             metav1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "ReleasesUpdated",
-			Message:            "Available releases were updated successfully",
-		})
-		if err := r.Status().Update(ctx, rollout); err != nil {
-			log.Error(err, "Failed to update available releases in status")
-			return err
-		}
-		return nil
+	rollout.Status.AvailableReleases = existingReleases
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutReleasesUpdated,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "ReleasesUpdated",
+		Message:            "Available releases were updated successfully from ImagePolicy",
+	})
+	if err := r.Status().Update(ctx, rollout); err != nil {
+		log.Error(err, "Failed to update available releases in status")
+		return err
 	}
 	return nil
 }
@@ -422,16 +332,22 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 	return nil, nil
 }
 
-// deployRelease copies the release and updates the rollout history and status.
-func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, releasesAuthOpts, targetAuthOpts []crane.Option) error {
-	err := crane.Copy(
-		fmt.Sprintf("%s:%s", rollout.Spec.ReleasesRepository.URL, wantedRelease),
-		fmt.Sprintf("%s:latest", rollout.Spec.TargetRepository.URL),
-		append(releasesAuthOpts, targetAuthOpts...)...,
-	)
-	if err != nil {
+// deployRelease finds and patches Flux resources with the wanted version.
+func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
+	log := logf.FromContext(ctx)
+
+	// Find and patch OCIRepositories
+	if err := r.patchOCIRepositories(ctx, rollout, wantedRelease); err != nil {
+		log.Error(err, "Failed to patch OCIRepositories")
 		return err
 	}
+
+	// Find and patch Kustomizations
+	if err := r.patchKustomizations(ctx, rollout, wantedRelease); err != nil {
+		log.Error(err, "Failed to patch Kustomizations")
+		return err
+	}
+
 	// Add new entry to history with BakeStatus only if baking is enabled
 	var bakeStatus, bakeStatusMsg *string
 	if rollout.Spec.BakeTime != nil && rollout.Spec.HealthCheckSelector != nil {
@@ -467,7 +383,114 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	return r.Status().Update(ctx, rollout)
 }
 
-func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, req ctrl.Request) (ctrl.Result, error) {
+// patchOCIRepositories finds OCIRepositories with rollout annotation and patches their tag.
+func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
+	log := logf.FromContext(ctx)
+
+	// List OCIRepositories in the same namespace
+	var ociRepos sourcev1beta2.OCIRepositoryList
+	if err := r.Client.List(ctx, &ociRepos, client.InNamespace(rollout.Namespace)); err != nil {
+		return fmt.Errorf("failed to list OCIRepositories: %w", err)
+	}
+
+	for _, ociRepo := range ociRepos.Items {
+		// Check if this OCIRepository should be managed by this rollout
+		if ociRepo.Annotations == nil {
+			continue
+		}
+
+		rolloutName, hasRolloutAnnotation := ociRepo.Annotations["rollout.kuberik.com/rollout"]
+		if !hasRolloutAnnotation || rolloutName != rollout.Name {
+			continue
+		}
+
+		// Check if the tag needs to be updated
+		currentTag := ""
+		if ociRepo.Spec.Reference != nil && ociRepo.Spec.Reference.Tag != "" {
+			currentTag = ociRepo.Spec.Reference.Tag
+		}
+
+		if currentTag == wantedRelease {
+			log.V(5).Info("OCIRepository tag is already up to date", "name", ociRepo.Name, "tag", wantedRelease)
+			continue
+		}
+
+		// Patch the OCIRepository with the new tag
+		patch := client.MergeFrom(ociRepo.DeepCopy())
+		if ociRepo.Spec.Reference == nil {
+			ociRepo.Spec.Reference = &sourcev1beta2.OCIRepositoryRef{}
+		}
+		ociRepo.Spec.Reference.Tag = wantedRelease
+
+		if err := r.Client.Patch(ctx, &ociRepo, patch); err != nil {
+			return fmt.Errorf("failed to patch OCIRepository %s: %w", ociRepo.Name, err)
+		}
+
+		log.Info("Patched OCIRepository", "name", ociRepo.Name, "tag", wantedRelease)
+	}
+
+	return nil
+}
+
+// patchKustomizations finds Kustomizations with rollout-specific annotations and patches their substitutes.
+// Each rollout should have its own annotation in the format: rollout.kuberik.com/{rollout-name}.substitute
+// Example: rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
+func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
+	log := logf.FromContext(ctx)
+
+	// List Kustomizations in the same namespace
+	var kustomizations kustomizev1.KustomizationList
+	if err := r.Client.List(ctx, &kustomizations, client.InNamespace(rollout.Namespace)); err != nil {
+		return fmt.Errorf("failed to list Kustomizations: %w", err)
+	}
+
+	for _, kustomization := range kustomizations.Items {
+		// Check if this Kustomization should be managed by this rollout
+		if kustomization.Annotations == nil {
+			continue
+		}
+
+		// Look for rollout-specific substitute annotation
+		substituteKey := fmt.Sprintf("rollout.kuberik.com/%s.substitute", rollout.Name)
+		substituteName, hasRolloutSubstitute := kustomization.Annotations[substituteKey]
+		if !hasRolloutSubstitute {
+			continue
+		}
+
+		// Check if the substitute needs to be updated
+		currentValue := ""
+		if kustomization.Spec.PostBuild != nil && kustomization.Spec.PostBuild.Substitute != nil {
+			if val, exists := kustomization.Spec.PostBuild.Substitute[substituteName]; exists {
+				currentValue = val
+			}
+		}
+
+		if currentValue == wantedRelease {
+			log.V(5).Info("Kustomization substitute is already up to date", "name", kustomization.Name, "substitute", substituteName, "value", wantedRelease)
+			continue
+		}
+
+		// Patch the Kustomization with the new substitute value
+		patch := client.MergeFrom(kustomization.DeepCopy())
+		if kustomization.Spec.PostBuild == nil {
+			kustomization.Spec.PostBuild = &kustomizev1.PostBuild{}
+		}
+		if kustomization.Spec.PostBuild.Substitute == nil {
+			kustomization.Spec.PostBuild.Substitute = make(map[string]string)
+		}
+		kustomization.Spec.PostBuild.Substitute[substituteName] = wantedRelease
+
+		if err := r.Client.Patch(ctx, &kustomization, patch); err != nil {
+			return fmt.Errorf("failed to patch Kustomization %s: %w", kustomization.Name, err)
+		}
+
+		log.Info("Patched Kustomization", "name", kustomization.Name, "substitute", substituteName, "value", wantedRelease)
+	}
+
+	return nil
+}
+
+func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	now := r.now()
 
@@ -503,7 +526,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	if now.Before(rollout.Status.BakeEndTime.Time) {
 		log.Info("Bake time in progress, waiting for bake to complete")
-		return ctrl.Result{}, nil
+		// Calculate time until bake end and requeue
+		timeUntilBakeEnd := rollout.Status.BakeEndTime.Time.Sub(now)
+		return ctrl.Result{RequeueAfter: timeUntilBakeEnd}, nil
 	}
 	// No errors during bake window, mark as succeeded
 	log.Info("Bake time completed successfully, rollout is healthy")
@@ -528,4 +553,33 @@ func (r *RolloutReconciler) now() time.Time {
 		return r.Clock.Now()
 	}
 	return time.Now()
+}
+
+// findRolloutsForImagePolicy finds all rollouts that reference the given ImagePolicy.
+func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj client.Object) []reconcile.Request {
+	imagePolicy, ok := obj.(*imagev1beta2.ImagePolicy)
+	if !ok {
+		return nil
+	}
+
+	// List all rollouts in the same namespace as the ImagePolicy
+	rolloutList := &rolloutv1alpha1.RolloutList{}
+	if err := r.List(ctx, rolloutList, client.InNamespace(imagePolicy.Namespace)); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, rollout := range rolloutList.Items {
+		// Check if this rollout references the ImagePolicy
+		if rollout.Spec.ReleasesImagePolicy.Name == imagePolicy.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKey{
+					Namespace: rollout.Namespace,
+					Name:      rollout.Name,
+				},
+			})
+		}
+	}
+
+	return requests
 }

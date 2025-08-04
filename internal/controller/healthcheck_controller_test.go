@@ -72,8 +72,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesRepository:  rolloutv1alpha1.Repository{URL: "dummy"},
-					TargetRepository:    rolloutv1alpha1.Repository{URL: "dummy"},
+					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "dummy-policy"},
 					HealthCheckSelector: selector,
 					BakeTime:            bakeTime,
 				},
