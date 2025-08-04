@@ -18,9 +18,6 @@ spec:
     - jsonPath: .status.history[0].version
       name: Version
       type: string
-    - jsonPath: .spec.releasesRepository.url
-      name: Source
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
