@@ -861,6 +861,83 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
 		})
 
+		It("should find rollouts that reference a given ImagePolicy", func() {
+			By("Creating multiple rollouts with different ImagePolicy references")
+			rollout1 := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rollout-1",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout1)).To(Succeed())
+
+			rollout2 := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rollout-2",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout2)).To(Succeed())
+
+			rollout3 := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rollout-3",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "other-image-policy",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout3)).To(Succeed())
+
+			By("Creating the ImagePolicy")
+			imagePolicy := &imagev1beta2.ImagePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				},
+				Spec: imagev1beta2.ImagePolicySpec{
+					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+						Name: "test-image-repo",
+					},
+					Policy: imagev1beta2.ImagePolicyChoice{
+						SemVer: &imagev1beta2.SemVerPolicy{
+							Range: ">=0.1.0",
+						},
+					},
+				},
+			}
+
+			By("Testing the findRolloutsForImagePolicy function")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			requests := controllerReconciler.findRolloutsForImagePolicy(ctx, imagePolicy)
+			Expect(requests).To(HaveLen(3)) // test-resource, rollout-1, rollout-2
+
+			// Verify that the correct rollouts are found
+			rolloutNames := make([]string, len(requests))
+			for i, req := range requests {
+				rolloutNames[i] = req.NamespacedName.Name
+			}
+			Expect(rolloutNames).To(ContainElements("test-resource", "rollout-1", "rollout-2"))
+			Expect(rolloutNames).NotTo(ContainElement("rollout-3"))
+		})
+
 		When("using bake time and health check selector", func() {
 
 			var healthCheck *rolloutv1alpha1.HealthCheck

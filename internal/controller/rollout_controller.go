@@ -30,7 +30,9 @@ import (
 	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
@@ -155,6 +157,10 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
 		Owns(&rolloutv1alpha1.HealthCheck{}).
+		Watches(
+			&imagev1beta2.ImagePolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
+		).
 		Named("rollout").
 		Complete(r)
 }
@@ -545,4 +551,33 @@ func (r *RolloutReconciler) now() time.Time {
 		return r.Clock.Now()
 	}
 	return time.Now()
+}
+
+// findRolloutsForImagePolicy finds all rollouts that reference the given ImagePolicy.
+func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj client.Object) []reconcile.Request {
+	imagePolicy, ok := obj.(*imagev1beta2.ImagePolicy)
+	if !ok {
+		return nil
+	}
+
+	// List all rollouts in the same namespace as the ImagePolicy
+	rolloutList := &rolloutv1alpha1.RolloutList{}
+	if err := r.List(ctx, rolloutList, client.InNamespace(imagePolicy.Namespace)); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, rollout := range rolloutList.Items {
+		// Check if this rollout references the ImagePolicy
+		if rollout.Spec.ReleasesImagePolicy.Name == imagePolicy.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKey{
+					Namespace: rollout.Namespace,
+					Name:      rollout.Name,
+				},
+			})
+		}
+	}
+
+	return requests
 }
