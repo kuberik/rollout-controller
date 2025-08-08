@@ -7,4 +7,5 @@ resources:
   - v1alpha1_imagerepository.yaml
   - v1alpha1_ocirepository.yaml
   - v1alpha1_kustomization.yaml
+- v1alpha1_kubestatus.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
