@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -415,15 +416,30 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 			continue
 		}
 
-		// Patch the OCIRepository with the new tag
-		patch := client.MergeFrom(ociRepo.DeepCopy())
-		if ociRepo.Spec.Reference == nil {
-			ociRepo.Spec.Reference = &sourcev1.OCIRepositoryRef{}
+		// Build a minimal apply object to update only the Reference.Tag using Server-Side Apply
+		var desiredRef sourcev1.OCIRepositoryRef
+		if ociRepo.Spec.Reference != nil {
+			desiredRef = *ociRepo.Spec.Reference.DeepCopy()
 		}
-		ociRepo.Spec.Reference.Tag = wantedRelease
+		desiredRef.Tag = wantedRelease
 
-		if err := r.Client.Patch(ctx, &ociRepo, patch); err != nil {
-			return fmt.Errorf("failed to patch OCIRepository %s: %w", ociRepo.Name, err)
+		unstructuredRef, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desiredRef)
+		if err != nil {
+			return fmt.Errorf("failed to convert OCIRepository reference to unstructured: %w", err)
+		}
+
+		patch := &unstructured.Unstructured{}
+		patch.SetAPIVersion(sourcev1.GroupVersion.String())
+		patch.SetKind("OCIRepository")
+		patch.SetName(ociRepo.Name)
+		patch.SetNamespace(ociRepo.Namespace)
+
+		if err := unstructured.SetNestedMap(patch.Object, unstructuredRef, "spec", "ref"); err != nil {
+			return fmt.Errorf("failed to construct patch for OCIRepository %s: %w", ociRepo.Name, err)
+		}
+
+		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil {
+			return fmt.Errorf("failed to apply OCIRepository %s: %w", ociRepo.Name, err)
 		}
 
 		log.Info("Patched OCIRepository", "name", ociRepo.Name, "tag", wantedRelease)
@@ -470,18 +486,28 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 			continue
 		}
 
-		// Patch the Kustomization with the new substitute value
-		patch := client.MergeFrom(kustomization.DeepCopy())
-		if kustomization.Spec.PostBuild == nil {
-			kustomization.Spec.PostBuild = &kustomizev1.PostBuild{}
+		// Patch the Kustomization with the new substitute value using Server-Side Apply.
+		// Preserve existing substitutes by copying them and updating our key.
+		desiredSubs := make(map[string]interface{})
+		if kustomization.Spec.PostBuild != nil && kustomization.Spec.PostBuild.Substitute != nil {
+			for k, v := range kustomization.Spec.PostBuild.Substitute {
+				desiredSubs[k] = v
+			}
 		}
-		if kustomization.Spec.PostBuild.Substitute == nil {
-			kustomization.Spec.PostBuild.Substitute = make(map[string]string)
-		}
-		kustomization.Spec.PostBuild.Substitute[substituteName] = wantedRelease
+		desiredSubs[substituteName] = wantedRelease
 
-		if err := r.Client.Patch(ctx, &kustomization, patch); err != nil {
-			return fmt.Errorf("failed to patch Kustomization %s: %w", kustomization.Name, err)
+		patch := &unstructured.Unstructured{}
+		patch.SetAPIVersion(kustomizev1.GroupVersion.String())
+		patch.SetKind("Kustomization")
+		patch.SetName(kustomization.Name)
+		patch.SetNamespace(kustomization.Namespace)
+
+		if err := unstructured.SetNestedMap(patch.Object, desiredSubs, "spec", "postBuild", "substitute"); err != nil {
+			return fmt.Errorf("failed to construct patch for Kustomization %s: %w", kustomization.Name, err)
+		}
+
+		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil {
+			return fmt.Errorf("failed to apply Kustomization %s: %w", kustomization.Name, err)
 		}
 
 		log.Info("Patched Kustomization", "name", kustomization.Name, "substitute", substituteName, "value", wantedRelease)
