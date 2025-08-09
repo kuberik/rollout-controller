@@ -4,7 +4,7 @@ go 1.24.2
 
 require (
 	github.com/fluxcd/image-reflector-controller/api v0.35.0
-	github.com/fluxcd/kustomize-controller/api v1.5.0
+	github.com/fluxcd/kustomize-controller/api v1.6.1
 	github.com/fluxcd/source-controller/api v1.6.2
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/fluxcd/pkg/apis/kustomize v1.9.0 // indirect
+	github.com/fluxcd/pkg/apis/kustomize v1.10.0 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 )
 
@@ -88,7 +88,7 @@ require (
 	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/text v0.25.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
-	golang.org/x/tools v0.29.0 // indirect
+	golang.org/x/tools v0.33.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241209162323-e6fa225c2576 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241209162323-e6fa225c2576 // indirect
