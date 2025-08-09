@@ -18,7 +18,7 @@ Kustomizations can be managed by multiple rollouts simultaneously using rollout-
 #### Example
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app
@@ -47,7 +47,7 @@ OCIRepositories use a simpler approach since they only have one modifiable field
 #### Example
 
 ```yaml
-apiVersion: source.toolkit.fluxcd.io/v1beta2
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   name: my-image-repo
@@ -172,7 +172,7 @@ The rollout controller uses annotations to identify which Flux resources should 
 
 #### OCIRepository
 ```yaml
-apiVersion: source.toolkit.fluxcd.io/v1beta2
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   name: my-app-repo
@@ -186,7 +186,7 @@ spec:
 
 #### Kustomization
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app-kustomization

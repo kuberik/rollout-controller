@@ -35,8 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
-	sourcev1beta2 "github.com/fluxcd/source-controller/api/v1beta2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
 
@@ -388,7 +388,7 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 	log := logf.FromContext(ctx)
 
 	// List OCIRepositories in the same namespace
-	var ociRepos sourcev1beta2.OCIRepositoryList
+	var ociRepos sourcev1.OCIRepositoryList
 	if err := r.Client.List(ctx, &ociRepos, client.InNamespace(rollout.Namespace)); err != nil {
 		return fmt.Errorf("failed to list OCIRepositories: %w", err)
 	}
@@ -418,7 +418,7 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 		// Patch the OCIRepository with the new tag
 		patch := client.MergeFrom(ociRepo.DeepCopy())
 		if ociRepo.Spec.Reference == nil {
-			ociRepo.Spec.Reference = &sourcev1beta2.OCIRepositoryRef{}
+			ociRepo.Spec.Reference = &sourcev1.OCIRepositoryRef{}
 		}
 		ociRepo.Spec.Reference.Tag = wantedRelease
 
