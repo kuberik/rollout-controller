@@ -23,13 +23,49 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// ObjectReference defines a reference to a namespaced object in the same namespace.
+// Only APIVersion, Kind and Name are required; Namespace is implicitly the same as the KubeStatus resource.
+type ObjectReference struct {
+	// APIVersion of the target object, e.g. "apps/v1" or "kustomize.toolkit.fluxcd.io/v1beta2"
+	// +kubebuilder:validation:MinLength=1
+	APIVersion string `json:"apiVersion"`
+
+	// Kind of the target object, e.g. "Deployment" or "Kustomization"
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+
+	// Name of the target object in the same namespace as this KubeStatus
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// ObjectMetaTemplate allows specifying metadata for the generated HealthCheck.
+type ObjectMetaTemplate struct {
+	// Labels to set on the HealthCheck
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+	// Annotations to set on the HealthCheck
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// HealthCheckTemplate allows customizing the generated HealthCheck resource.
+type HealthCheckTemplate struct {
+	// Metadata contains labels/annotations for the HealthCheck.
+	// +optional
+	Metadata ObjectMetaTemplate `json:"metadata,omitempty"`
+}
+
 // KubeStatusSpec defines the desired state of KubeStatus.
 type KubeStatusSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// TargetRef references a namespace-local object whose status should be evaluated.
+	// +kubebuilder:validation:Required
+	// +required
+	TargetRef ObjectReference `json:"targetRef"`
 
-	// Foo is an example field of KubeStatus. Edit kubestatus_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Template customizes the generated HealthCheck metadata (labels/annotations).
+	// +optional
+	Template *HealthCheckTemplate `json:"template,omitempty"`
 }
 
 // KubeStatusStatus defines the observed state of KubeStatus.
