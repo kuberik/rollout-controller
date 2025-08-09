@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	github.com/fluxcd/image-reflector-controller/api v0.35.0
 	github.com/fluxcd/kustomize-controller/api v1.5.0
-	github.com/fluxcd/source-controller/api v1.5.0
+	github.com/fluxcd/source-controller/api v1.6.2
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
 	k8s.io/apiextensions-apiserver v0.33.0
@@ -24,20 +24,7 @@ require (
 	github.com/fluxcd/pkg/apis/meta v1.12.0
 )
 
-require (
-	github.com/Masterminds/semver v1.5.0
-	github.com/containerd/stargz-snapshotter/estargz v0.16.3 // indirect
-	github.com/docker/cli v27.5.0+incompatible
-	github.com/docker/distribution v2.8.3+incompatible // indirect
-	github.com/docker/docker-credential-helpers v0.8.2 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/mitchellh/go-homedir v1.1.0 // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.0 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/vbatts/tar-split v0.11.6 // indirect
-	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
-)
+require go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 
 require (
 	cel.dev/expr v0.19.1 // indirect
@@ -64,7 +51,6 @@ require (
 	github.com/google/cel-go v0.23.2 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/go-containerregistry v0.20.3
 	github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.24.0 // indirect
@@ -81,7 +67,7 @@ require (
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spf13/cobra v1.8.1 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.58.0 // indirect
