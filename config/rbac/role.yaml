@@ -13,6 +13,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - image.toolkit.fluxcd.io
   resources:
   - imagepolicies
@@ -24,6 +32,7 @@ rules:
   - kuberik.com
   resources:
   - healthchecks
+  - kubestatuses
   - rolloutgates
   - rollouts
   verbs:
@@ -38,6 +47,7 @@ rules:
   - kuberik.com
   resources:
   - healthchecks/finalizers
+  - kubestatuses/finalizers
   - rolloutgates/finalizers
   - rollouts/finalizers
   verbs:
@@ -46,6 +56,7 @@ rules:
   - kuberik.com
   resources:
   - healthchecks/status
+  - kubestatuses/status
   - rolloutgates/status
   - rollouts/status
   verbs:

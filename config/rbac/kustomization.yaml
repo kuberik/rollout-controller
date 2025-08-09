@@ -29,6 +29,8 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the Project itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- kubestatus_editor_role.yaml
+- kubestatus_viewer_role.yaml
 - rolloutgate_editor_role.yaml
 - rolloutgate_viewer_role.yaml
 # For each CRD, "Editor" and "Viewer" roles are scaffolded by
