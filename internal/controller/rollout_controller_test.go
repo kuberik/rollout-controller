@@ -489,14 +489,11 @@ var _ = Describe("Rollout Controller", func() {
 			gate := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
-					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+					AllowedVersions: &[]string{version0_1_0, version0_2_0},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-			gate.Status = rolloutv1alpha1.RolloutGateStatus{
-				AllowedVersions: &[]string{version0_1_0, version0_2_0},
-			}
-			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -524,13 +521,10 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					Passing:    ptrutil.To(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-			gate.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing: ptrutil.To(false),
-			}
-			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -554,28 +548,22 @@ var _ = Describe("Rollout Controller", func() {
 			gate1 := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
-					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+					Passing:         ptrutil.To(true),
+					AllowedVersions: &[]string{version0_2_0, version0_3_0},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate1)).To(Succeed())
-			gate1.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing:         ptrutil.To(true),
-				AllowedVersions: &[]string{version0_2_0, version0_3_0},
-			}
-			Expect(k8sClient.Status().Update(ctx, gate1)).To(Succeed())
 
 			gate2 := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
-					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+					Passing:         ptrutil.To(true),
+					AllowedVersions: &[]string{version0_2_0},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
-			gate2.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing:         ptrutil.To(true),
-				AllowedVersions: &[]string{version0_2_0},
-			}
-			Expect(k8sClient.Status().Update(ctx, gate2)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -598,15 +586,12 @@ var _ = Describe("Rollout Controller", func() {
 			gate := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
-					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+					Passing:         ptrutil.To(true),
+					AllowedVersions: &[]string{"0.9.9"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-			gate.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing:         ptrutil.To(true),
-				AllowedVersions: &[]string{"0.9.9"},
-			}
-			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -634,15 +619,12 @@ var _ = Describe("Rollout Controller", func() {
 			gate := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
-					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+					Passing:         ptrutil.To(false),
+					AllowedVersions: &[]string{version0_2_0, version0_3_0},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-			gate.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing:         ptrutil.To(false),
-				AllowedVersions: &[]string{version0_2_0, version0_3_0},
-			}
-			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -665,13 +647,10 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					Passing:    ptrutil.To(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-			gate.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing: ptrutil.To(true),
-			}
-			Expect(k8sClient.Status().Update(ctx, gate)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -694,25 +673,19 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					Passing:    ptrutil.To(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate1)).To(Succeed())
-			gate1.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing: ptrutil.To(true),
-			}
-			Expect(k8sClient.Status().Update(ctx, gate1)).To(Succeed())
 
 			gate2 := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+					Passing:    ptrutil.To(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
-			gate2.Status = rolloutv1alpha1.RolloutGateStatus{
-				Passing: ptrutil.To(false),
-			}
-			Expect(k8sClient.Status().Update(ctx, gate2)).To(Succeed())
 
 			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
