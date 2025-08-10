@@ -219,21 +219,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
 	}
-
-	if err = (&controller.RolloutGateReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "RolloutGate")
-		os.Exit(1)
-	}
-	if err = (&controller.HealthCheckReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "HealthCheck")
-		os.Exit(1)
-	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

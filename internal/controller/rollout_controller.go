@@ -39,6 +39,7 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 type Clock interface {
@@ -59,6 +60,8 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagepolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories,verbs=get;list;watch;update;patch
@@ -239,10 +242,17 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
-		Owns(&rolloutv1alpha1.HealthCheck{}).
 		Watches(
 			&imagev1beta2.ImagePolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
+		).
+		Watches(
+			&rolloutv1alpha1.RolloutGate{},
+			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForRolloutGate),
+		).
+		Watches(
+			&rolloutv1alpha1.HealthCheck{},
+			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForHealthCheck),
 		).
 		Named("rollout").
 		Complete(r)
@@ -900,6 +910,64 @@ func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj 
 					Name:      rollout.Name,
 				},
 			})
+		}
+	}
+
+	return requests
+}
+
+// findRolloutsForRolloutGate finds all rollouts that reference the given RolloutGate.
+func (r *RolloutReconciler) findRolloutsForRolloutGate(ctx context.Context, obj client.Object) []reconcile.Request {
+	rolloutGate, ok := obj.(*rolloutv1alpha1.RolloutGate)
+	if !ok {
+		return nil
+	}
+
+	// If the gate doesn't have a rollout reference, return empty
+	if rolloutGate.Spec.RolloutRef == nil {
+		return nil
+	}
+
+	// Return a single request for the referenced rollout
+	return []reconcile.Request{
+		{
+			NamespacedName: client.ObjectKey{
+				Namespace: rolloutGate.Namespace,
+				Name:      rolloutGate.Spec.RolloutRef.Name,
+			},
+		},
+	}
+}
+
+// findRolloutsForHealthCheck finds all rollouts that reference the given HealthCheck.
+func (r *RolloutReconciler) findRolloutsForHealthCheck(ctx context.Context, obj client.Object) []reconcile.Request {
+	healthCheck, ok := obj.(*rolloutv1alpha1.HealthCheck)
+	if !ok {
+		return nil
+	}
+
+	// List all rollouts in the same namespace as the HealthCheck
+	rolloutList := &rolloutv1alpha1.RolloutList{}
+	if err := r.List(ctx, rolloutList, client.InNamespace(healthCheck.Namespace)); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, rollout := range rolloutList.Items {
+		// Check if this rollout references the HealthCheck via label selector
+		if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.MinBakeTime != nil {
+			selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector)
+			if err != nil {
+				continue // Skip invalid selectors
+			}
+			if selector.Matches(labels.Set(healthCheck.Labels)) {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKey{
+						Namespace: rollout.Namespace,
+						Name:      rollout.Name,
+					},
+				})
+			}
 		}
 	}
 
