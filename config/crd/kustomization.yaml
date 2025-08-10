@@ -5,6 +5,7 @@ resources:
 - bases/kuberik.com_rollouts.yaml
 - bases/kuberik.com_rolloutgates.yaml
 - bases/kuberik.com_healthchecks.yaml
+- bases/kuberik.com_kubestatuses.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

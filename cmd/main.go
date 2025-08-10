@@ -219,6 +219,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
 	}
+
+	if err = (&controller.KubeStatusReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KubeStatus")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
