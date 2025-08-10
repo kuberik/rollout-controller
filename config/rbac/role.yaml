@@ -25,6 +25,13 @@ rules:
   resources:
   - healthchecks
   - rolloutgates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kuberik.com
+  resources:
   - rollouts
   verbs:
   - create
@@ -37,16 +44,12 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - healthchecks/finalizers
-  - rolloutgates/finalizers
   - rollouts/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
-  - healthchecks/status
-  - rolloutgates/status
   - rollouts/status
   verbs:
   - get
