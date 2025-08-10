@@ -32,8 +32,27 @@ rules:
   - kuberik.com
   resources:
   - healthchecks
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kuberik.com
+  resources:
+  - healthchecks/status
+  - kubestatuses/status
+  - rollouts/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - kuberik.com
+  resources:
   - kubestatuses
-  - rolloutgates
   - rollouts
   verbs:
   - create
@@ -46,23 +65,18 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - healthchecks/finalizers
   - kubestatuses/finalizers
-  - rolloutgates/finalizers
   - rollouts/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
-  - healthchecks/status
-  - kubestatuses/status
-  - rolloutgates/status
-  - rollouts/status
+  - rolloutgates
   verbs:
   - get
-  - patch
-  - update
+  - list
+  - watch
 - apiGroups:
   - kustomize.toolkit.fluxcd.io
   resources:

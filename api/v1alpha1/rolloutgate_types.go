@@ -25,10 +25,7 @@ import (
 type RolloutGateSpec struct {
 	// +required
 	RolloutRef *corev1.LocalObjectReference `json:"rolloutRef"`
-}
 
-// RolloutGateStatus defines the observed state of RolloutGate.
-type RolloutGateStatus struct {
 	// Passing is true if the RolloutGate is passing.
 	// +required
 	// +default=true
@@ -37,6 +34,10 @@ type RolloutGateStatus struct {
 	// AllowedVersions is a list of versions that Rollout can be updated to.
 	// +optional
 	AllowedVersions *[]string `json:"allowedVersions,omitempty"`
+}
+
+// RolloutGateStatus defines the observed state of RolloutGate.
+type RolloutGateStatus struct {
 }
 
 // +kubebuilder:object:root=true

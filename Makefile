@@ -118,6 +118,12 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+KIND_CLUSTER_NAME ?= rollout-dev
+
+.PHONY: kind-load
+kind-load: ## Load the manager image into the kind cluster.
+	$(KIND) load docker-image ${IMG} --name ${KIND_CLUSTER_NAME}
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/

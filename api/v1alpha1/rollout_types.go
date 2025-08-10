@@ -38,11 +38,21 @@ type RolloutSpec struct {
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 
-	// BakeTime specifies how long to wait after deployment before marking as successful
+	// MinBakeTime specifies how long to wait after deployment before marking as successful
+	// This is the minimum time that must pass before the rollout can be considered successful,
+	// even if all health checks are passing. If not specified, no minimum wait time is enforced.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
 	// +optional
-	BakeTime *metav1.Duration `json:"bakeTime,omitempty"`
+	MinBakeTime *metav1.Duration `json:"minBakeTime,omitempty"`
+
+	// MaxBakeTime specifies the maximum time to wait for health checks before marking as failed
+	// This is the maximum time the rollout will wait for health checks to pass before failing.
+	// If not specified, the rollout will wait indefinitely. Must be greater than MinBakeTime if both are specified.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +optional
+	MaxBakeTime *metav1.Duration `json:"maxBakeTime,omitempty"`
 
 	// HealthCheckSelector specifies the label selector for matching HealthChecks
 	// +optional
@@ -103,14 +113,6 @@ type RolloutStatus struct {
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
 	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`
-
-	// BakeStartTime is the time when the current bake period started
-	// +optional
-	BakeStartTime *metav1.Time `json:"bakeStartTime,omitempty"`
-
-	// BakeEndTime is the time when the current bake period ends
-	// +optional
-	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.
@@ -125,18 +127,34 @@ type DeploymentHistoryEntry struct {
 	// +required
 	Timestamp metav1.Time `json:"timestamp"`
 
-	// BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed)
+	// BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed, Cancelled)
+	// The bake process ensures that the deployment is stable and healthy before marking as successful.
 	// +optional
 	BakeStatus *string `json:"bakeStatus,omitempty"`
 
 	// BakeStatusMessage provides details about the bake state for this deployment
+	// This field contains human-readable information about why the bake status is what it is.
 	// +optional
 	BakeStatusMessage *string `json:"bakeStatusMessage,omitempty"`
+
+	// BakeStartTime is the time when the bake period started for this deployment
+	// This is when the rollout controller began monitoring the deployment for stability.
+	// +optional
+	BakeStartTime *metav1.Time `json:"bakeStartTime,omitempty"`
+
+	// BakeEndTime is the time when the bake period ended for this deployment
+	// This is when the bake process completed (either successfully or with failure).
+	// +optional
+	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.history[0].version`
+// +kubebuilder:printcolumn:name="BakeStatus",type=string,JSONPath=`.status.history[0].bakeStatus`
+// +kubebuilder:printcolumn:name="BakeTime",type=string,JSONPath=`.status.history[0].bakeStartTime`
+// +kubebuilder:printcolumn:name="Gates",type=string,JSONPath=`.status.conditions[?(@.type=="GatesPassing")].status`
+// +kubebuilder:printcolumn:name="Available",type=integer,JSONPath=`.status.availableReleases`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description=""
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description=""
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].message",description=""
@@ -166,12 +184,17 @@ const (
 	RolloutReleasesUpdated = "ReleasesUpdated"
 	// RolloutGatesPassing means all gates are passing.
 	RolloutGatesPassing = "GatesPassing"
+	// RolloutBakeTimeRetrying means the bake time is being retried after a failure.
+	RolloutBakeTimeRetrying = "BakeTimeRetrying"
+	// RolloutInvalidBakeTimeConfiguration means the bake time configuration is invalid.
+	RolloutInvalidBakeTimeConfiguration = "InvalidBakeTimeConfiguration"
 )
 
 const (
 	BakeStatusInProgress = "InProgress"
 	BakeStatusSucceeded  = "Succeeded"
 	BakeStatusFailed     = "Failed"
+	BakeStatusCancelled  = "Cancelled"
 )
 
 func init() {
