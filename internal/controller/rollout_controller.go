@@ -164,8 +164,8 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Update status with release candidates
 	rollout.Status.ReleaseCandidates = releaseCandidates
 
+	gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
 	if rollout.Spec.WantedVersion == nil {
-		gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -185,9 +185,6 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 			return ctrl.Result{}, nil // Status already updated in evaluateGates
 		}
-	} else {
-		// For wanted version, all release candidates are considered gated
-		gatedReleaseCandidates = releaseCandidates
 	}
 
 	// Update status with gated release candidates
