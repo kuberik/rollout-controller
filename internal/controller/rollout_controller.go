@@ -353,18 +353,18 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
 			summary := rolloutv1alpha1.RolloutGateStatusSummary{
 				Name:    gate.Name,
-				Passing: gate.Status.Passing,
+				Passing: gate.Spec.Passing,
 			}
 
-			if gate.Status.Passing != nil && !*gate.Status.Passing {
+			if gate.Spec.Passing != nil && !*gate.Spec.Passing {
 				summary.Message = "Gate is not passing"
 				gatesPassing = false
-			} else if gate.Status.AllowedVersions != nil {
-				summary.AllowedVersions = *gate.Status.AllowedVersions
+			} else if gate.Spec.AllowedVersions != nil {
+				summary.AllowedVersions = *gate.Spec.AllowedVersions
 				// Filter gatedReleaseCandidates to only those in allowedVersions
 				var filtered []string
 				for _, r := range gatedReleaseCandidates {
-					if slices.Contains(*gate.Status.AllowedVersions, r) {
+					if slices.Contains(*gate.Spec.AllowedVersions, r) {
 						filtered = append(filtered, r)
 					}
 				}
@@ -372,7 +372,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 
 				allowed := false
 				for _, r := range releaseCandidates {
-					if slices.Contains(*gate.Status.AllowedVersions, r) {
+					if slices.Contains(*gate.Spec.AllowedVersions, r) {
 						allowed = true
 						break
 					}
