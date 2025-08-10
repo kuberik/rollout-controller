@@ -66,7 +66,7 @@ func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	newOwnerRefs := []metav1.OwnerReference{}
 
 	for _, rollout := range rolloutList.Items {
-		if rollout.Spec.HealthCheckSelector == nil || rollout.Spec.BakeTime == nil {
+		if rollout.Spec.HealthCheckSelector == nil || rollout.Spec.MinBakeTime == nil {
 			continue
 		}
 		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector)

@@ -18,6 +18,18 @@ spec:
     - jsonPath: .status.history[0].version
       name: Version
       type: string
+    - jsonPath: .status.history[0].bakeStatus
+      name: BakeStatus
+      type: string
+    - jsonPath: .status.history[0].bakeStartTime
+      name: BakeTime
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="GatesPassing")].status
+      name: Gates
+      type: string
+    - jsonPath: .status.availableReleases
+      name: Available
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -52,11 +64,6 @@ spec:
           spec:
             description: RolloutSpec defines the desired state of Rollout.
             properties:
-              bakeTime:
-                description: BakeTime specifies how long to wait after deployment
-                  before marking as successful
-                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
-                type: string
               healthCheckSelector:
                 description: HealthCheckSelector specifies the label selector for
                   matching HealthChecks
@@ -104,6 +111,20 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              maxBakeTime:
+                description: |-
+                  MaxBakeTime specifies the maximum time to wait for health checks before marking as failed
+                  This is the maximum time the rollout will wait for health checks to pass before failing.
+                  If not specified, the rollout will wait indefinitely. Must be greater than MinBakeTime if both are specified.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+              minBakeTime:
+                description: |-
+                  MinBakeTime specifies how long to wait after deployment before marking as successful
+                  This is the minimum time that must pass before the rollout can be considered successful,
+                  even if all health checks are passing. If not specified, no minimum wait time is enforced.
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
               releasesImagePolicy:
                 description: ReleasesImagePolicy specifies the ImagePolicy that provides
                   available releases
@@ -143,16 +164,6 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
-              bakeEndTime:
-                description: BakeEndTime is the time when the current bake period
-                  ends
-                format: date-time
-                type: string
-              bakeStartTime:
-                description: BakeStartTime is the time when the current bake period
-                  started
-                format: date-time
-                type: string
               conditions:
                 description: Conditions represents the current state of the rollout
                   process.
@@ -250,13 +261,27 @@ spec:
                   description: DeploymentHistoryEntry represents a single entry in
                     the deployment history.
                   properties:
+                    bakeEndTime:
+                      description: |-
+                        BakeEndTime is the time when the bake period ended for this deployment
+                        This is when the bake process completed (either successfully or with failure).
+                      format: date-time
+                      type: string
+                    bakeStartTime:
+                      description: |-
+                        BakeStartTime is the time when the bake period started for this deployment
+                        This is when the rollout controller began monitoring the deployment for stability.
+                      format: date-time
+                      type: string
                     bakeStatus:
-                      description: BakeStatus tracks the bake state for this deployment
-                        (e.g., None, InProgress, Succeeded, Failed)
+                      description: |-
+                        BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed, Cancelled)
+                        The bake process ensures that the deployment is stable and healthy before marking as successful.
                       type: string
                     bakeStatusMessage:
-                      description: BakeStatusMessage provides details about the bake
-                        state for this deployment
+                      description: |-
+                        BakeStatusMessage provides details about the bake state for this deployment
+                        This field contains human-readable information about why the bake status is what it is.
                       type: string
                     timestamp:
                       description: Timestamp is the time when the deployment occurred.
