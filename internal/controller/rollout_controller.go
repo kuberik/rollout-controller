@@ -404,7 +404,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 					}
 				}
 				if !allowed {
-					summary.Message = "Gate does not allow any available version"
+					summary.Message = "Gate does not allow any release candidate"
 				} else {
 					summary.Message = "Gate is passing"
 				}
@@ -425,7 +425,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	if len(gatedReleaseCandidates) == 0 && gatesPassing {
 		condStatus = metav1.ConditionFalse
 		condReason = "NoAllowedVersions"
-		condMsg = "No available releases are allowed by all gates"
+		condMsg = "No release candidates are allowed by all gates"
 	}
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 		Type:               rolloutv1alpha1.RolloutGatesPassing,
@@ -515,6 +515,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Reason:             "RolloutSucceeded",
 		Message:            fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout)),
 	})
+
+	releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
+	if err != nil {
+		log.Error(err, "Failed to get next release candidates")
+		return err
+	}
+	rollout.Status.ReleaseCandidates = releaseCandidates
+
 	return r.Status().Update(ctx, rollout)
 }
 
