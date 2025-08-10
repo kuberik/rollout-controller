@@ -515,6 +515,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Reason:             "RolloutSucceeded",
 		Message:            fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout)),
 	})
+
+	releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
+	if err != nil {
+		log.Error(err, "Failed to get next release candidates")
+		return err
+	}
+	rollout.Status.ReleaseCandidates = releaseCandidates
+
 	return r.Status().Update(ctx, rollout)
 }
 

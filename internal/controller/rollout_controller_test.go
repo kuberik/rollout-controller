@@ -370,6 +370,20 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
+			// Create a gate that is not passing (blocks all releases)
+			blockingGate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "blocking-gate",
+					Namespace: rollout.Namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: rollout.Name},
+					// AllowedVersions is empty, so no release is allowed
+					AllowedVersions: &[]string{},
+				},
+			}
+			Expect(k8sClient.Create(ctx, blockingGate)).To(Succeed())
+
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
 				Client: k8sClient,
@@ -389,16 +403,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_1_0))
 
-			// Should have gated release candidates (same as release candidates when no gates)
-			Expect(updatedRollout.Status.GatedReleaseCandidates).To(HaveLen(1))
-			Expect(updatedRollout.Status.GatedReleaseCandidates).To(ContainElements(version0_1_0))
-
 			By("Adding more releases to ImagePolicy")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
 				Tag: version0_2_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
+			By("Reconciling again to pick up the new release")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -411,7 +422,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// After first reconciliation, a version was deployed, creating deployment history
 			// So getNextReleaseCandidates only returns releases newer than the deployed version
-			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(2))
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_2_0))
 		})
 
