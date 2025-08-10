@@ -110,6 +110,18 @@ type RolloutStatus struct {
 	// +listType=set
 	AvailableReleases []string `json:"availableReleases,omitempty"`
 
+	// ReleaseCandidates is a list of releases that are candidates for the next deployment.
+	// These are filtered from AvailableReleases based on deployment history and version ordering.
+	// +optional
+	// +listType=set
+	ReleaseCandidates []string `json:"releaseCandidates,omitempty"`
+
+	// GatedReleaseCandidates is a list of release candidates that have passed through all gates.
+	// This shows which versions are actually available for deployment after gate evaluation.
+	// +optional
+	// +listType=set
+	GatedReleaseCandidates []string `json:"gatedReleaseCandidates,omitempty"`
+
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
 	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`

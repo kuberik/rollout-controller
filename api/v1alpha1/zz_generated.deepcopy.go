@@ -583,6 +583,16 @@ func (in *RolloutStatus) DeepCopyInto(out *RolloutStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ReleaseCandidates != nil {
+		in, out := &in.ReleaseCandidates, &out.ReleaseCandidates
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.GatedReleaseCandidates != nil {
+		in, out := &in.GatedReleaseCandidates, &out.GatedReleaseCandidates
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Gates != nil {
 		in, out := &in.Gates, &out.Gates
 		*out = make([]RolloutGateStatusSummary, len(*in))

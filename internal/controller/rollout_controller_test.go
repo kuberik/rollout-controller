@@ -363,6 +363,58 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]string{version0_1_0, version0_2_0}))
 		})
 
+		It("should update release candidates in status", func() {
+			By("Setting up ImagePolicy with initial release")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: version0_1_0,
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that release candidates are populated in status")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have release candidates (all available releases since no history)
+			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_1_0))
+
+			// Should have gated release candidates (same as release candidates when no gates)
+			Expect(updatedRollout.Status.GatedReleaseCandidates).To(HaveLen(1))
+			Expect(updatedRollout.Status.GatedReleaseCandidates).To(ContainElements(version0_1_0))
+
+			By("Adding more releases to ImagePolicy")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: version0_2_0,
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should now have 2 releases
+			updatedRollout = &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			// After first reconciliation, a version was deployed, creating deployment history
+			// So getNextReleaseCandidates only returns releases newer than the deployed version
+			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_2_0))
+		})
+
 		It("should fail when wanted version is not available", func() {
 			By("Setting available releases")
 			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
