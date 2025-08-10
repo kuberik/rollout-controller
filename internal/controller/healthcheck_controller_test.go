@@ -63,9 +63,9 @@ var _ = Describe("HealthCheck Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
 
-			By("creating a Rollout with HealthCheckSelector matching app=test-app and BakeTime set")
+			By("creating a Rollout with HealthCheckSelector matching app=test-app and MinBakeTime set")
 			selector := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test-app"}}
-			bakeTime := &metav1.Duration{Duration: 1 * time.Minute}
+			minBakeTime := &metav1.Duration{Duration: 1 * time.Minute}
 			rollout = &rolloutv1alpha1.Rollout{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rollout",
@@ -74,7 +74,7 @@ var _ = Describe("HealthCheck Controller", func() {
 				Spec: rolloutv1alpha1.RolloutSpec{
 					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "dummy-policy"},
 					HealthCheckSelector: selector,
-					BakeTime:            bakeTime,
+					MinBakeTime:         minBakeTime,
 				},
 			}
 			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
