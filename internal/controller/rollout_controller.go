@@ -160,18 +160,38 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "Failed to get next release candidates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
+
+	// Update status with release candidates
+	rollout.Status.ReleaseCandidates = releaseCandidates
+
 	if rollout.Spec.WantedVersion == nil {
 		gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if !gatesPassing {
+			// Update status with gated release candidates before returning
+			rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
+			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+				log.Error(err, "Failed to update rollout status with gated release candidates")
+			}
 			return ctrl.Result{}, nil // Status already updated in evaluateGates
 		}
 		if len(gatedReleaseCandidates) == 0 {
+			// Update status with gated release candidates before returning
+			rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
+			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+				log.Error(err, "Failed to update rollout status with gated release candidates")
+			}
 			return ctrl.Result{}, nil // Status already updated in evaluateGates
 		}
+	} else {
+		// For wanted version, all release candidates are considered gated
+		gatedReleaseCandidates = releaseCandidates
 	}
+
+	// Update status with gated release candidates
+	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
 
 	// Use filteredReleases instead of releases for wantedRelease selection
 	wantedRelease, err := r.selectWantedRelease(&rollout, releases, gatedReleaseCandidates)
@@ -233,6 +253,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Wanted version set but no bake time configuration, ensuring proper monitoring")
 		// Return a short requeue to ensure we continue monitoring
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// Ensure status is updated with release candidates information
+	if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+		log.Error(err, "Failed to update rollout status with release candidates")
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
