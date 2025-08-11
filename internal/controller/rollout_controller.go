@@ -708,6 +708,11 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 					log.Info("HealthCheck error detected after deployment", "name", hc.Name, "lastErrorTime", hc.Status.LastErrorTime)
 					break
 				}
+				if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
+					healthChecksHealthy = false
+					log.Info("HealthCheck not healthy", "name", hc.Name, "status", hc.Status.Status)
+					break
+				}
 			}
 		}
 		// If no health checks found, consider them healthy (empty set is always healthy)
