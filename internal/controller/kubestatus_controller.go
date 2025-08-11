@@ -76,7 +76,7 @@ func (r *KubeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Get(ctx, targetKey, u); err != nil {
 		logger.Error(err, "failed to get target object", "gvk", gvk.String(), "name", targetKey)
 		now := metav1.Now()
-		return r.ensureHealthCheck(ctx, ks, "Error", &now)
+		return r.ensureHealthCheck(ctx, ks, kstatus.FailedStatus, &now)
 	}
 
 	// Evaluate kstatus on target
@@ -84,11 +84,10 @@ func (r *KubeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		logger.Error(err, "kstatus compute failed")
 		now := metav1.Now()
-		return r.ensureHealthCheck(ctx, ks, "Error", &now)
+		return r.ensureHealthCheck(ctx, ks, kstatus.FailedStatus, &now)
 	}
 
 	// Map kstatus result to HealthCheck status
-	statusStr := string(res.Status)
 	var lastErrTime *metav1.Time
 	if res.Status == kstatus.FailedStatus || res.Status == kstatus.InProgressStatus || res.Status == kstatus.UnknownStatus {
 		// treat non-current status as an error event
@@ -96,10 +95,10 @@ func (r *KubeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		lastErrTime = &now
 	}
 
-	return r.ensureHealthCheck(ctx, ks, statusStr, lastErrTime)
+	return r.ensureHealthCheck(ctx, ks, res.Status, lastErrTime)
 }
 
-func (r *KubeStatusReconciler) ensureHealthCheck(ctx context.Context, ks *kuberikcomv1alpha1.KubeStatus, status string, lastErrTime *metav1.Time) (ctrl.Result, error) {
+func (r *KubeStatusReconciler) ensureHealthCheck(ctx context.Context, ks *kuberikcomv1alpha1.KubeStatus, status kstatus.Status, lastErrTime *metav1.Time) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	name := fmt.Sprintf("ks-%s", ks.Name)
@@ -158,13 +157,32 @@ func (r *KubeStatusReconciler) ensureHealthCheck(ctx context.Context, ks *kuberi
 	}
 
 	// Update status fields
-	hc.Status.Status = status
+	hc.Status.Status = kstatusToHealthStatus(status)
 	hc.Status.LastErrorTime = lastErrTime
 	if err := r.Status().Update(ctx, &hc); err != nil {
 		logger.Error(err, "failed to update HealthCheck status", "name", hc.Name)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+func kstatusToHealthStatus(status kstatus.Status) kuberikcomv1alpha1.HealthStatus {
+	// The set of status conditions which can be assigned to resources.
+	switch status {
+	case kstatus.InProgressStatus:
+		return kuberikcomv1alpha1.HealthStatusPending
+	case kstatus.FailedStatus:
+		return kuberikcomv1alpha1.HealthStatusUnhealthy
+	case kstatus.CurrentStatus:
+		return kuberikcomv1alpha1.HealthStatusHealthy
+	case kstatus.TerminatingStatus:
+		return kuberikcomv1alpha1.HealthStatusPending
+	case kstatus.NotFoundStatus:
+		return kuberikcomv1alpha1.HealthStatusUnhealthy
+	case kstatus.UnknownStatus:
+		return kuberikcomv1alpha1.HealthStatusPending
+	}
+	return kuberikcomv1alpha1.HealthStatusPending
 }
 
 // SetupWithManager sets up the controller with the Manager.
