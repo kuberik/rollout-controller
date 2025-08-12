@@ -313,13 +313,6 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 		return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
 	}
 
-	// Check if ImagePolicy is ready
-	readyCondition := meta.FindStatusCondition(imagePolicy.Status.Conditions, "Ready")
-	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
-		log.Info("ImagePolicy is not ready", "imagePolicy", imagePolicy.Name, "status", readyCondition)
-		return r.updateRolloutStatusOnError(ctx, rollout, "ImagePolicyNotReady", "ImagePolicy is not ready")
-	}
-
 	// Extract available releases from ImagePolicy status
 	var newReleases []string
 	if imagePolicy.Status.LatestRef != nil && imagePolicy.Status.LatestRef.Tag != "" {
