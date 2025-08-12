@@ -24,11 +24,19 @@ import (
 type HealthCheckSpec struct {
 }
 
+type HealthStatus string
+
+const (
+	HealthStatusHealthy   HealthStatus = "Healthy"
+	HealthStatusUnhealthy HealthStatus = "Unhealthy"
+	HealthStatusPending   HealthStatus = "Pending"
+)
+
 // HealthCheckStatus defines the observed state of HealthCheck.
 type HealthCheckStatus struct {
-	// Status indicates the health state of the check (e.g., 'Healthy', 'Unhealthy', 'Error')
+	// Status indicates the health state of the check (e.g., 'Healthy', 'Unhealthy', 'Pending')
 	// +optional
-	Status string `json:"status,omitempty"`
+	Status HealthStatus `json:"status,omitempty"`
 
 	// LastErrorTime is the timestamp of the most recent error state
 	// +optional

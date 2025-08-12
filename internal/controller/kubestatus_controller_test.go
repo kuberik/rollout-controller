@@ -23,7 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,7 +103,7 @@ var _ = Describe("KubeStatus Controller", func() {
 			Expect(hc.Labels).To(HaveKeyWithValue("kuberik.com/kubestatus", resourceName))
 			Expect(hc.Labels).To(HaveKeyWithValue("app", "demo"))
 			Expect(hc.Labels).To(HaveKeyWithValue("team", "platform"))
-			Expect(hc.Status.Status == string(kstatus.CurrentStatus) || hc.Status.Status == string(kstatus.InProgressStatus)).To(BeTrue())
+			Expect(hc.Status.Status == kuberikcomv1alpha1.HealthStatusHealthy || hc.Status.Status == kuberikcomv1alpha1.HealthStatusPending).To(BeTrue())
 			Expect(hc.Status.LastErrorTime).To(BeNil())
 
 			// Now make the target Failed (Available False) and reconcile again
@@ -116,7 +115,7 @@ var _ = Describe("KubeStatus Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "ks-" + resourceName, Namespace: namespace}, hc)).To(Succeed())
-			Expect(hc.Status.Status == string(kstatus.FailedStatus) || hc.Status.Status == string(kstatus.InProgressStatus) || hc.Status.Status == string(kstatus.UnknownStatus)).To(BeTrue())
+			Expect(hc.Status.Status == kuberikcomv1alpha1.HealthStatusUnhealthy || hc.Status.Status == kuberikcomv1alpha1.HealthStatusPending).To(BeTrue())
 			Expect(hc.Status.LastErrorTime).NotTo(BeNil())
 		})
 
@@ -136,7 +135,7 @@ var _ = Describe("KubeStatus Controller", func() {
 			hc := &kuberikcomv1alpha1.HealthCheck{}
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "ks-" + resourceName, Namespace: namespace}, hc)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hc.Status.Status).To(Equal("Error"))
+			Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
 			Expect(hc.Status.LastErrorTime).NotTo(BeNil())
 		})
 	})

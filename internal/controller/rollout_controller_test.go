@@ -1031,6 +1031,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Advancing clock within bake window and ensuring no health errors")
 				fakeClock.Add(1 * time.Minute) // Still within bake window
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1067,7 +1068,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 				By("Advancing clock within bake window and simulating health check error")
-				fakeClock.Add(2 * time.Minute)                                                              // Still within bake window
+				fakeClock.Add(2 * time.Minute) // Still within bake window
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Minute)} // Error occurred after bake start
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1107,6 +1109,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 				By("Advancing clock past bake window and ensuring no recent health errors")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)} // Error before bake start
 				fakeClock.Add(10 * time.Minute)                                                              // Past bake window (assuming 5 min bakeTime)
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
@@ -1151,6 +1154,7 @@ var _ = Describe("Rollout Controller", func() {
 				rollout.Spec.WantedVersion = ptrutil.To(version0_2_0)
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 				fakeClock.Add(1 * time.Minute) // Still within bake window
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1223,6 +1227,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Advancing clock past bake window and ensuring health checks pass")
 				fakeClock.Add(10 * time.Minute) // Past bake window
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1270,6 +1275,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 				By("Advancing clock past bake window and ensuring LastErrorTime is nil")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = nil
 				fakeClock.Add(10 * time.Minute) // Past bake window (assuming 5 min bakeTime)
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
@@ -1303,6 +1309,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Setting health check error exactly at deployment time")
 				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1347,10 +1354,12 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Setting one health check to error after deployment time")
 				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(1 * time.Minute)}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				// Keep second health check healthy
+				healthCheck2.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck2.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck2)).To(Succeed())
 
@@ -1380,8 +1389,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
-				By("Setting health check error before deployment time")
+				By("Setting health check error before deployment time but keeping status healthy")
 				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(-1 * time.Minute)}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -1392,7 +1402,7 @@ var _ = Describe("Rollout Controller", func() {
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying that health check error before deployment time doesn't prevent success")
+				By("Verifying that health check error before deployment time doesn't prevent success when status is healthy")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
@@ -1477,6 +1487,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Advancing clock past bake window with healthy health checks")
 				fakeClock.Add(10 * time.Minute)
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				healthCheck.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -2315,6 +2326,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
 
 			// Set the health check status to report an error
+			healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 			healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now()} // Error at current time
 			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -2347,6 +2359,7 @@ var _ = Describe("Rollout Controller", func() {
 			fakeClock.Add(2 * time.Minute)
 
 			// Update the health check's LastErrorTime to be after the deployment time
+			healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 			healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)} // Error 1 minute after deployment
 			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
