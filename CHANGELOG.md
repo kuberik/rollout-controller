@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.2.0] - 2025-08-12
+
+### Added
+
+- Reconcile flux oci repository on deployment
+
+- Control deployment with gates (#1)
+
+- Print additional columns for Rollout
+
+- Add HealthCheck type
+
+- Eveluate health checks during bake time before continuing with rollout
+
+- Tightly integrate with flux (#3)
+
+- Always evaluate bake status (#10)
+
+- Kubestatus controller (#5)
+
+
+### Chore
+
+- Update the rest of project to use go 1.24
+
+- Upgrade kustomize oci/kustomization to v1 (#4)
+
+- Update flux kustomize dependency (#9)
+
+- Move gate status to spec (#12)
+
+- Display release candidates in status (#13)
+
+- Display release candidates in status (#14)
+
+- Update release candidates after deployment (#15)
+
+
+### Fixed
+
+- Kustomization indentation
+
+- Use SSA to patching kustomization and ocirepo (#7)
+
+- Gate release in status even when wanted version is set (#16)
+
+- Check also current health check status (#17)
+
+
+### Refactored
+
+- Rollout reconcile into smaller functions
+
+- Remove secondary way to set wanted version through status
+
+- Simplify rollout reconcile triggers (#11)
+
+
+### Tests
+
+- Bake succeeds even if last error is nil
+
+- Healthcheck controller basic test
+
 ## [0.1.0] - 2025-04-26
 
 ### Added
@@ -34,6 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integrate changelog with release workflow
 
 - Push main also when releasing
+
+- Release version v0.1.0
 
 
 ### Fixed
