@@ -88,6 +88,11 @@ type RolloutGateStatusSummary struct {
 	// Message is a message describing the status of the gate.
 	// +optional
 	Message string `json:"message,omitempty"`
+
+	// BypassGates indicates whether this gate was bypassed for the current deployment.
+	// +kubebuilder:validation:Optional
+	// +optional
+	BypassGates bool `json:"bypassGates,omitempty"`
 }
 
 // RolloutStatus defines the observed state of Rollout.

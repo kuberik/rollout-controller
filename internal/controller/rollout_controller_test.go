@@ -1628,6 +1628,127 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
 			})
 		})
+
+		It("should bypass gates when bypass-gates annotation is set", func() {
+			By("Setting available releases")
+			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Creating a blocking gate")
+			blockingGate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "blocking-gate",
+					Namespace: rollout.Namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: rollout.Name},
+					// Gate is not passing, so it should block all releases
+					Passing: k8sptr.To(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, blockingGate)).To(Succeed())
+
+			By("Setting bypass-gates annotation for a specific version")
+			rollout.Annotations = map[string]string{
+				"rollout.kuberik.com/bypass-gates": version0_2_0,
+			}
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the bypassed version was deployed")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have deployment history with the bypassed version
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+
+			// Should have gates status showing bypass
+			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
+			Expect(updatedRollout.Status.Gates[0].BypassGates).To(BeTrue())
+			Expect(updatedRollout.Status.Gates[0].Message).To(ContainSubstring("Gate bypassed for version"))
+
+			// Should have gates passing condition with bypass reason
+			gatesCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+			Expect(gatesCondition).NotTo(BeNil())
+			Expect(gatesCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(gatesCondition.Reason).To(Equal("GatesBypassed"))
+			Expect(gatesCondition.Message).To(ContainSubstring(version0_2_0))
+
+			// Should have ready condition indicating successful deployment with bypass
+			readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(readyCondition.Reason).To(Equal("RolloutSucceeded"))
+			Expect(readyCondition.Message).To(ContainSubstring("with gate bypass"))
+
+			By("Verifying that the bypass-gates annotation was cleared after deployment")
+			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
+		})
+
+		It("should ignore bypass-gates annotation for version not in candidates", func() {
+			By("Setting available releases")
+			rollout.Status.AvailableReleases = []string{version0_1_0}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Creating a blocking gate")
+			blockingGate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "blocking-gate",
+					Namespace: rollout.Namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{Name: rollout.Name},
+					// Gate is not passing, so it should block all releases
+					Passing: k8sptr.To(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, blockingGate)).To(Succeed())
+
+			By("Setting bypass-gates annotation for a version not in candidates")
+			rollout.Annotations = map[string]string{
+				"rollout.kuberik.com/bypass-gates": version0_2_0, // This version is not available
+			}
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that gates are still blocking since bypass version is not available")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should not have deployment history since gates are blocking
+			Expect(updatedRollout.Status.History).To(HaveLen(0))
+
+			// Should have gates not passing condition
+			gatesCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+			Expect(gatesCondition).NotTo(BeNil())
+			Expect(gatesCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(gatesCondition.Reason).To(Equal("SomeGatesBlocking"))
+
+			// Bypass-gates annotation should still be present since no deployment occurred
+			Expect(updatedRollout.Annotations).To(HaveKey("rollout.kuberik.com/bypass-gates"))
+		})
+
 	})
 
 	Describe("Helper Methods", func() {
