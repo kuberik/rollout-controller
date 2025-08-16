@@ -356,6 +356,14 @@ func (r *RolloutReconciler) updateRolloutStatusOnError(ctx context.Context, roll
 
 // evaluateGates lists and evaluates gates, updates rollout status, and returns filtered candidates and gatesPassing.
 func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, releaseCandidates []string) ([]string, bool, error) {
+	// Check for gate bypass annotation
+	bypassVersion := ""
+	if rollout.Annotations != nil {
+		if bypass, exists := rollout.Annotations["rollout.kuberik.com/bypass-gates"]; exists && bypass != "" {
+			bypassVersion = bypass
+		}
+	}
+
 	gateList := &rolloutv1alpha1.RolloutGateList{}
 	if err := r.List(ctx, gateList, client.InNamespace(namespace)); err != nil {
 		log := logf.FromContext(ctx)
@@ -365,6 +373,20 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	rollout.Status.Gates = nil
 	gatedReleaseCandidates := releaseCandidates
 	gatesPassing := true
+
+	// If bypass is enabled for a specific version, check if that version is in the candidates
+	bypassEnabled := false
+	if bypassVersion != "" {
+		if slices.Contains(releaseCandidates, bypassVersion) {
+			bypassEnabled = true
+			log := logf.FromContext(ctx)
+			log.Info("Gate bypass enabled for version", "bypassVersion", bypassVersion)
+		} else {
+			log := logf.FromContext(ctx)
+			log.Info("Gate bypass requested for version not in candidates, ignoring bypass", "bypassVersion", bypassVersion, "candidates", releaseCandidates)
+		}
+	}
+
 	for _, gate := range gateList.Items {
 		if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
 			summary := rolloutv1alpha1.RolloutGateStatusSummary{
@@ -372,51 +394,79 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 				Passing: gate.Spec.Passing,
 			}
 
+			// If bypass is enabled, mark gates as bypassed but still evaluate them for status reporting
+			if bypassEnabled {
+				summary.Message = "Gate bypassed for version " + bypassVersion
+				summary.BypassGates = true
+			} else {
+				summary.BypassGates = false
+			}
+
 			if gate.Spec.Passing != nil && !*gate.Spec.Passing {
-				summary.Message = "Gate is not passing"
-				gatesPassing = false
+				if !bypassEnabled {
+					summary.Message = "Gate is not passing"
+					gatesPassing = false
+				}
 			} else if gate.Spec.AllowedVersions != nil {
 				summary.AllowedVersions = *gate.Spec.AllowedVersions
-				// Filter gatedReleaseCandidates to only those in allowedVersions
-				var filtered []string
-				for _, r := range gatedReleaseCandidates {
-					if slices.Contains(*gate.Spec.AllowedVersions, r) {
-						filtered = append(filtered, r)
-					}
-				}
-				gatedReleaseCandidates = filtered
 
-				allowed := false
-				for _, r := range releaseCandidates {
-					if slices.Contains(*gate.Spec.AllowedVersions, r) {
-						allowed = true
-						break
+				if !bypassEnabled {
+					// Filter gatedReleaseCandidates to only those in allowedVersions
+					var filtered []string
+					for _, r := range gatedReleaseCandidates {
+						if slices.Contains(*gate.Spec.AllowedVersions, r) {
+							filtered = append(filtered, r)
+						}
 					}
-				}
-				if !allowed {
-					summary.Message = "Gate does not allow any release candidate"
-				} else {
-					summary.Message = "Gate is passing"
+					gatedReleaseCandidates = filtered
+
+					allowed := false
+					for _, r := range releaseCandidates {
+						if slices.Contains(*gate.Spec.AllowedVersions, r) {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						summary.Message = "Gate does not allow any release candidate"
+					} else {
+						summary.Message = "Gate is passing"
+					}
 				}
 			} else {
-				summary.Message = "Gate is passing"
+				if !bypassEnabled {
+					summary.Message = "Gate is passing"
+				}
 			}
 			rollout.Status.Gates = append(rollout.Status.Gates, summary)
 		}
 	}
+
+	// If bypass is enabled, allow the bypassed version through
+	if bypassEnabled {
+		gatedReleaseCandidates = []string{bypassVersion}
+		gatesPassing = true
+	}
+
 	condStatus := metav1.ConditionTrue
 	condReason := "AllGatesPassing"
 	condMsg := "All gates are passing"
-	if !gatesPassing {
+
+	if bypassEnabled {
+		condReason = "GatesBypassed"
+		condMsg = fmt.Sprintf("Gates bypassed for version %s", bypassVersion)
+	} else if !gatesPassing {
 		condStatus = metav1.ConditionFalse
 		condReason = "SomeGatesBlocking"
 		condMsg = "Some gates are blocking deployment"
 	}
-	if len(gatedReleaseCandidates) == 0 && gatesPassing {
+
+	if len(gatedReleaseCandidates) == 0 && gatesPassing && !bypassEnabled {
 		condStatus = metav1.ConditionFalse
 		condReason = "NoAllowedVersions"
 		condMsg = "No release candidates are allowed by all gates"
 	}
+
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 		Type:               rolloutv1alpha1.RolloutGatesPassing,
 		Status:             condStatus,
@@ -445,6 +495,15 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
 	log := logf.FromContext(ctx)
 
+	// Check if this deployment was done with gate bypass
+	bypassUsed := false
+	if rollout.Annotations != nil {
+		if bypass, exists := rollout.Annotations["rollout.kuberik.com/bypass-gates"]; exists && bypass != "" {
+			bypassUsed = true
+			log.Info("Deployment using gate bypass", "bypassVersion", bypass)
+		}
+	}
+
 	// Cancel any existing in-progress bake before starting new deployment
 	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 		log.Info("Cancelling existing in-progress bake due to new deployment", "previousVersion", rollout.Status.History[0].Version)
@@ -463,6 +522,15 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if err := r.patchKustomizations(ctx, rollout, wantedRelease); err != nil {
 		log.Error(err, "Failed to patch Kustomizations")
 		return err
+	}
+
+	// Clear the bypass annotation after deployment
+	if bypassUsed {
+		if rollout.Annotations == nil {
+			rollout.Annotations = make(map[string]string)
+		}
+		delete(rollout.Annotations, "rollout.kuberik.com/bypass-gates")
+		log.Info("Cleared gate bypass annotation after deployment")
 	}
 
 	// Always set bake status and start time
@@ -498,12 +566,19 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if int32(len(rollout.Status.History)) > versionHistoryLimit {
 		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
 	}
+
+	// Update the condition message to reflect if gates were bypassed
+	conditionMessage := fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout))
+	if bypassUsed {
+		conditionMessage = fmt.Sprintf("Release deployed successfully with gate bypass. %s", r.getBakeStatusSummary(rollout))
+	}
+
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 		Type:               rolloutv1alpha1.RolloutReady,
 		Status:             metav1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
 		Reason:             "RolloutSucceeded",
-		Message:            fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout)),
+		Message:            conditionMessage,
 	})
 
 	releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
@@ -513,7 +588,25 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 	rollout.Status.ReleaseCandidates = releaseCandidates
 
-	return r.Status().Update(ctx, rollout)
+	// Update the status first
+	if err := r.Status().Update(ctx, rollout); err != nil {
+		return err
+	}
+
+	// If bypass was used, also update the metadata to clear the annotation
+	if bypassUsed {
+		// Create a patch to only update the annotations
+		patch := client.MergeFrom(rollout.DeepCopy())
+		rollout.Annotations["rollout.kuberik.com/bypass-gates"] = ""
+		delete(rollout.Annotations, "rollout.kuberik.com/bypass-gates")
+
+		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
+			log.Error(err, "Failed to patch rollout to clear bypass annotation")
+			return err
+		}
+	}
+
+	return nil
 }
 
 // patchOCIRepositories finds OCIRepositories with rollout annotation and patches their tag.
