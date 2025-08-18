@@ -246,6 +246,10 @@ spec:
                       items:
                         type: string
                       type: array
+                    bypassGates:
+                      description: BypassGates indicates whether this gate was bypassed
+                        for the current deployment.
+                      type: boolean
                     message:
                       description: Message is a message describing the status of the
                         gate.

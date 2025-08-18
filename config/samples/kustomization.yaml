@@ -1,11 +1,12 @@
 ## Append samples of your project ##
 resources:
   - v1alpha1_rollout.yaml
+  - v1alpha1_rollout_bypass.yaml
   - v1alpha1_rolloutgate.yaml
   - v1alpha1_healthcheck.yaml
   - v1alpha1_imagepolicy.yaml
   - v1alpha1_imagerepository.yaml
   - v1alpha1_ocirepository.yaml
   - v1alpha1_kustomization.yaml
-- v1alpha1_kubestatus.yaml
+  - v1alpha1_kubestatus.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
