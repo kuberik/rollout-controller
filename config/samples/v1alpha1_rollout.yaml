@@ -9,9 +9,32 @@ spec:
   # wantedVersion: "1.2.3"
   # Optional: limit the number of history entries to keep
   # versionHistoryLimit: 10
-  # Optional: specify bake time for health checks
-  # bakeTime: "5m"
-  # Optional: specify health check selector
+  # Optional: specify minimum bake time for health checks
+  # minBakeTime: "5m"
+  # Optional: specify maximum bake time for health checks
+  # maxBakeTime: "30m"
+  # Optional: specify health check selector configuration
   # healthCheckSelector:
-  #   matchLabels:
-  #     app: my-app
+  #   # Select HealthChecks by labels (choose either matchLabels or matchExpressions)
+  #   selector:
+  #     matchLabels:
+  #       app: my-app
+  #       environment: production
+  #     # OR use matchExpressions for more complex matching:
+  #     # matchExpressions:
+  #     #   - key: app
+  #     #     operator: In
+  #     #     values: ["my-app", "my-other-app"]
+  #     #   - key: environment
+  #     #     operator: NotIn
+  #     #     values: ["staging"]
+  #
+  #   # Optional: select namespaces for HealthChecks (if not specified, only same namespace)
+  #   namespaceSelector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: production
+  #     # OR use matchExpressions:
+  #     # matchExpressions:
+  #     #   - key: kubernetes.io/metadata.name
+  #     #     operator: In
+  #     #     values: ["production", "staging"]

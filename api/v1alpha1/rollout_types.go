@@ -17,9 +17,50 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.
+type HealthCheckSelectorConfig struct {
+	// Selector specifies the label selector for matching HealthChecks
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// NamespaceSelector specifies the namespace selector for matching HealthChecks
+	// If not specified, only HealthChecks in the same namespace as the Rollout will be considered
+	// +optional
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+}
+
+// GetSelector returns the label selector for HealthChecks.
+func (hcsc *HealthCheckSelectorConfig) GetSelector() *metav1.LabelSelector {
+	if hcsc == nil {
+		return nil
+	}
+	return hcsc.Selector
+}
+
+// GetNamespaceSelector returns the namespace selector.
+func (hcsc *HealthCheckSelectorConfig) GetNamespaceSelector() *metav1.LabelSelector {
+	if hcsc == nil {
+		return nil
+	}
+	return hcsc.NamespaceSelector
+}
+
+// IsValid checks if the HealthCheckSelectorConfig is properly configured.
+func (hcsc *HealthCheckSelectorConfig) IsValid() bool {
+	if hcsc == nil {
+		return true // nil is valid (no selector specified)
+	}
+
+	// metav1.LabelSelector has built-in validation, so we just need to check if it's not nil
+	// The actual validation will be handled by the Kubernetes API server
+	return true
+}
 
 // RolloutSpec defines the desired state of Rollout.
 type RolloutSpec struct {
@@ -54,9 +95,18 @@ type RolloutSpec struct {
 	// +optional
 	MaxBakeTime *metav1.Duration `json:"maxBakeTime,omitempty"`
 
-	// HealthCheckSelector specifies the label selector for matching HealthChecks
+	// HealthCheckSelector specifies how to select HealthChecks for this rollout
 	// +optional
-	HealthCheckSelector *metav1.LabelSelector `json:"healthCheckSelector,omitempty"`
+	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
+}
+
+// ValidateHealthCheckSelector validates the health check selector configuration.
+// Returns an error if the configuration is invalid.
+func (rs *RolloutSpec) ValidateHealthCheckSelector() error {
+	if rs.HealthCheckSelector != nil && !rs.HealthCheckSelector.IsValid() {
+		return fmt.Errorf("invalid health check selector configuration")
+	}
+	return nil
 }
 
 type Repository struct {

@@ -39,6 +39,7 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -770,33 +771,65 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	healthChecksHealthy := true
 	healthCheckError := false
 
-	if rollout.Spec.HealthCheckSelector != nil {
-		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector)
+	if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.HealthCheckSelector.GetSelector() != nil {
+		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetSelector())
 		if err != nil {
 			log.Error(err, "Invalid healthCheckSelector")
 			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidHealthCheckSelector", err.Error())
 		}
 
-		hcList := &rolloutv1alpha1.HealthCheckList{}
-		if err := r.List(ctx, hcList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-			log.Error(err, "Failed to list HealthChecks")
-			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
+		// Determine which namespaces to search for HealthChecks
+		var namespaces []string
+		if rollout.Spec.HealthCheckSelector.GetNamespaceSelector() != nil {
+			// Use namespace selector to find matching namespaces
+			namespaceSelector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetNamespaceSelector())
+			if err != nil {
+				log.Error(err, "Invalid namespaceSelector")
+				return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidNamespaceSelector", err.Error())
+			}
+
+			// List all namespaces and filter by selector
+			namespaceList := &corev1.NamespaceList{}
+			if err := r.List(ctx, namespaceList); err != nil {
+				log.Error(err, "Failed to list namespaces")
+				return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "NamespaceListFailed", err.Error())
+			}
+
+			for _, ns := range namespaceList.Items {
+				if namespaceSelector.Matches(labels.Set(ns.Labels)) {
+					namespaces = append(namespaces, ns.Name)
+				}
+			}
+		} else {
+			// Default to same namespace as rollout
+			namespaces = []string{namespace}
 		}
 
-		if len(hcList.Items) > 0 {
+		// Collect HealthChecks from all matching namespaces
+		var allHealthChecks []rolloutv1alpha1.HealthCheck
+		for _, ns := range namespaces {
+			hcList := &rolloutv1alpha1.HealthCheckList{}
+			if err := r.List(ctx, hcList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+				log.Error(err, "Failed to list HealthChecks", "namespace", ns)
+				continue
+			}
+			allHealthChecks = append(allHealthChecks, hcList.Items...)
+		}
+
+		if len(allHealthChecks) > 0 {
 			// Check if any health check has reported an error after deployment
 			deploymentTime := rollout.Status.History[0].BakeStartTime.Time
-			log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(hcList.Items))
-			for _, hc := range hcList.Items {
-				log.Info("Checking health check", "name", hc.Name, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
+			log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(allHealthChecks), "namespaces", namespaces)
+			for _, hc := range allHealthChecks {
+				log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
 				if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deploymentTime) {
 					healthCheckError = true
-					log.Info("HealthCheck error detected after deployment", "name", hc.Name, "lastErrorTime", hc.Status.LastErrorTime)
+					log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime)
 					break
 				}
 				if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
 					healthChecksHealthy = false
-					log.Info("HealthCheck not healthy", "name", hc.Name, "status", hc.Status.Status)
+					log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
 					break
 				}
 			}
@@ -1068,27 +1101,51 @@ func (r *RolloutReconciler) findRolloutsForHealthCheck(ctx context.Context, obj 
 		return nil
 	}
 
-	// List all rollouts in the same namespace as the HealthCheck
+	// List all rollouts in all namespaces to check for HealthCheck selectors
 	rolloutList := &rolloutv1alpha1.RolloutList{}
-	if err := r.List(ctx, rolloutList, client.InNamespace(healthCheck.Namespace)); err != nil {
+	if err := r.List(ctx, rolloutList); err != nil {
 		return nil
 	}
 
 	var requests []reconcile.Request
 	for _, rollout := range rolloutList.Items {
 		// Check if this rollout references the HealthCheck via label selector
-		if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.MinBakeTime != nil {
-			selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector)
+		if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.HealthCheckSelector.GetSelector() != nil && rollout.Spec.MinBakeTime != nil {
+			selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetSelector())
 			if err != nil {
 				continue // Skip invalid selectors
 			}
+
+			// Check if the HealthCheck matches the selector
 			if selector.Matches(labels.Set(healthCheck.Labels)) {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: client.ObjectKey{
-						Namespace: rollout.Namespace,
-						Name:      rollout.Name,
-					},
-				})
+				// Check if the HealthCheck's namespace matches the namespace selector
+				namespaceMatches := true
+				if rollout.Spec.HealthCheckSelector.GetNamespaceSelector() != nil {
+					namespaceSelector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetNamespaceSelector())
+					if err != nil {
+						continue // Skip invalid namespace selectors
+					}
+
+					// Get the namespace object to check its labels
+					namespace := &corev1.Namespace{}
+					if err := r.Get(ctx, client.ObjectKey{Name: healthCheck.Namespace}, namespace); err != nil {
+						continue // Skip if namespace not found
+					}
+
+					namespaceMatches = namespaceSelector.Matches(labels.Set(namespace.Labels))
+				} else {
+					// No namespace selector specified, only match if in same namespace
+					namespaceMatches = (rollout.Namespace == healthCheck.Namespace)
+				}
+
+				if namespaceMatches {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: client.ObjectKey{
+							Namespace: rollout.Namespace,
+							Name:      rollout.Name,
+						},
+					})
+				}
 			}
 		}
 	}

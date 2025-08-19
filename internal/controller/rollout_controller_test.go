@@ -57,7 +57,7 @@ var _ = Describe("Rollout Controller", func() {
 		var rollout *rolloutv1alpha1.Rollout
 		var imagePolicy *imagev1beta2.ImagePolicy
 		var minBakeTime *metav1.Duration
-		var healthCheckSelector *metav1.LabelSelector
+		var healthCheckSelector *rolloutv1alpha1.HealthCheckSelectorConfig
 
 		JustBeforeEach(func() {
 			By("creating a unique namespace for the test")
@@ -985,9 +985,11 @@ var _ = Describe("Rollout Controller", func() {
 				fakeClock = &FakeClock{
 					now: metav1.NewTime(time.Now()),
 				}
-				healthCheckSelector = &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						"app": "test-app",
+				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "test-app",
+						},
 					},
 				}
 			})
@@ -1815,8 +1817,10 @@ var _ = Describe("Rollout Controller", func() {
 			It("should return true when HealthCheckSelector is configured", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						HealthCheckSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{"app": "test"},
+						HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
+							Selector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{"app": "test"},
+							},
 						},
 					},
 				}
@@ -2458,9 +2462,11 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(createdHealthCheck.Status.LastErrorTime).NotTo(BeNil())
 
 			// Update rollout to reference this health check
-			rollout.Spec.HealthCheckSelector = &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "test",
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "test",
+					},
 				},
 			}
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())

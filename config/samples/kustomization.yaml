@@ -2,6 +2,7 @@
 resources:
   - v1alpha1_rollout.yaml
   - v1alpha1_rollout_bypass.yaml
+  - v1alpha1_rollout_advanced_selectors.yaml
   - v1alpha1_rolloutgate.yaml
   - v1alpha1_healthcheck.yaml
   - v1alpha1_imagepolicy.yaml

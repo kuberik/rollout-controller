@@ -1,0 +1,64 @@
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: advanced-selector-rollout
+  labels:
+    app: my-application
+    environment: production
+spec:
+  releasesImagePolicy:
+    name: production-image-policy
+  
+  # Optional: specify a specific version to deploy
+  # wantedVersion: "2.1.0"
+  
+  # Optional: limit the number of history entries to keep
+  versionHistoryLimit: 10
+  
+  # Optional: specify minimum bake time for health checks
+  minBakeTime: "5m"
+  
+  # Optional: specify maximum bake time for health checks
+  maxBakeTime: "30m"
+  
+  # Health check selector configuration with namespace selection
+  healthCheckSelector:
+    # Select HealthChecks by labels using matchLabels (simple key-value matching)
+    selector:
+      matchLabels:
+        app: my-application
+        component: backend
+        environment: production
+    
+    # OR use matchExpressions for more complex matching (uncomment to use):
+    # selector:
+    #   matchExpressions:
+    #     - key: app
+    #       operator: In
+    #       values: ["my-application", "my-other-app"]
+    #     - key: component
+    #       operator: In
+    #       values: ["backend", "api"]
+    #     - key: environment
+    #       operator: NotIn
+    #       values: ["staging", "development"]
+    #     - key: critical
+    #       operator: Exists
+    
+    # Select namespaces for HealthChecks using matchLabels
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: production
+        team: platform
+    
+    # OR use matchExpressions for namespace selection (uncomment to use):
+    # namespaceSelector:
+    #   matchExpressions:
+    #     - key: kubernetes.io/metadata.name
+    #       operator: In
+    #       values: ["production", "staging"]
+    #     - key: team
+    #       operator: In
+    #       values: ["platform", "infrastructure"]
+    #     - key: environment
+    #       operator: Exists
