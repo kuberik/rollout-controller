@@ -144,10 +144,24 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					}
 				}
 			case rolloutv1alpha1.BakeStatusFailed:
-				// Block new deployment if no WantedVersion is specified
-				if rollout.Spec.WantedVersion == nil {
+				// Check if user has requested to unblock failed deployment via annotation
+				unblockRequested := false
+				if rollout.Annotations != nil {
+					if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+						unblockRequested = true
+						log.Info("User requested to unblock failed deployment via annotation")
+					}
+				}
+
+				// Block new deployment if no WantedVersion is specified and no unblock annotation
+				if rollout.Spec.WantedVersion == nil && !unblockRequested {
 					log.Info("Bake status is Failed, blocking new deployment")
 					return ctrl.Result{}, nil
+				}
+
+				// If unblock is requested, log the action and allow deployment to proceed
+				if unblockRequested {
+					log.Info("Allowing deployment despite failed bake status due to unblock annotation")
 				}
 			}
 		}
@@ -505,6 +519,15 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		}
 	}
 
+	// Check if this deployment was done with failed bake unblock
+	unblockUsed := false
+	if rollout.Annotations != nil {
+		if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+			unblockUsed = true
+			log.Info("Deployment using failed bake unblock")
+		}
+	}
+
 	// Cancel any existing in-progress bake before starting new deployment
 	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 		log.Info("Cancelling existing in-progress bake due to new deployment", "previousVersion", rollout.Status.History[0].Version)
@@ -573,6 +596,13 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if bypassUsed {
 		conditionMessage = fmt.Sprintf("Release deployed successfully with gate bypass. %s", r.getBakeStatusSummary(rollout))
 	}
+	if unblockUsed {
+		conditionMessage = fmt.Sprintf("Release deployed successfully with failed bake unblock. %s", r.getBakeStatusSummary(rollout))
+	}
+	// If both were used, combine the messages
+	if bypassUsed && unblockUsed {
+		conditionMessage = fmt.Sprintf("Release deployed successfully with gate bypass and failed bake unblock. %s", r.getBakeStatusSummary(rollout))
+	}
 
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 		Type:               rolloutv1alpha1.RolloutReady,
@@ -603,6 +633,18 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
 			log.Error(err, "Failed to patch rollout to clear bypass annotation")
+			return err
+		}
+	}
+
+	// If unblock was used, also update the metadata to clear the annotation
+	if unblockUsed {
+		// Create a patch to only update the annotations
+		patch := client.MergeFrom(rollout.DeepCopy())
+		delete(rollout.Annotations, "rollout.kuberik.com/unblock-failed")
+
+		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
+			log.Error(err, "Failed to patch rollout to clear unblock annotation")
 			return err
 		}
 	}

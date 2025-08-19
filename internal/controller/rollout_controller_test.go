@@ -1819,6 +1819,145 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
 		})
 
+		It("should allow deployment when unblock-failed annotation is present despite failed bake status", func() {
+			// Create a fresh rollout with failed bake status
+			freshRollout := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "unblock-test-rollout",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/unblock-failed": "true",
+					},
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+				},
+				Status: rolloutv1alpha1.RolloutStatus{
+					History: []rolloutv1alpha1.DeploymentHistoryEntry{
+						{
+							Version:       "1.0.0",
+							Timestamp:     metav1.Now(),
+							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
+							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+							BakeEndTime:   &metav1.Time{Time: time.Now().Add(-5 * time.Minute)},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
+
+			// Set up ImagePolicy with a new release
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "1.1.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			// Reconcile - should deploy despite failed bake status due to unblock annotation
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      freshRollout.Name,
+					Namespace: freshRollout.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should deploy despite failed bake status
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			// Verify deployment occurred by checking the rollout status
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      freshRollout.Name,
+				Namespace: freshRollout.Namespace,
+			}, updatedRollout)).To(Succeed())
+
+			// Should have new deployment history (the old failed one should be replaced)
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.1.0"))
+			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+
+			// The unblock-failed annotation should be cleared after deployment
+			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/unblock-failed"))
+		})
+
+		It("should handle combination of bypass-gates and unblock-failed annotations", func() {
+			// Create a fresh rollout with both annotations and failed bake status
+			combinedRollout := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "combined-annotations-rollout",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/bypass-gates":   "true",
+						"rollout.kuberik.com/unblock-failed": "true",
+					},
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+				},
+				Status: rolloutv1alpha1.RolloutStatus{
+					History: []rolloutv1alpha1.DeploymentHistoryEntry{
+						{
+							Version:       "1.0.0",
+							Timestamp:     metav1.Now(),
+							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
+							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+							BakeEndTime:   &metav1.Time{Time: time.Now().Add(-5 * time.Minute)},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, combinedRollout)).To(Succeed())
+
+			// Set up ImagePolicy with a new release
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "1.1.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			// Reconcile - should deploy despite failed bake status and gates due to both annotations
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      combinedRollout.Name,
+					Namespace: combinedRollout.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should deploy despite failed bake status and gates
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			// Verify deployment occurred by checking the rollout status
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      combinedRollout.Name,
+				Namespace: combinedRollout.Namespace,
+			}, updatedRollout)).To(Succeed())
+
+			// Should have new deployment history (the old failed one should be replaced)
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.1.0"))
+			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+
+			// Both annotations should be cleared after deployment
+			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
+			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/unblock-failed"))
+		})
 	})
 
 	Describe("Helper Methods", func() {
@@ -3085,6 +3224,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(foundRollout2).To(BeFalse(), "rollout-2 should not be found due to different app label")
 		})
+
 	})
 
 })
