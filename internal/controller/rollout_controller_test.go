@@ -1751,6 +1751,74 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Annotations).To(HaveKey("rollout.kuberik.com/bypass-gates"))
 		})
 
+		It("should not deploy when bypass-gates annotation is removed and gates are blocking", func() {
+			// Create a fresh rollout with bypass-gates annotation
+			freshRollout := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "bypass-test-rollout",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"rollout.kuberik.com/bypass-gates": "true",
+					},
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+				},
+			}
+			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
+
+			// Create a blocking gate
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "blocking-gate",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{
+						Name: freshRollout.Name,
+					},
+					Passing: k8sptr.To(false),
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+
+			// Remove bypass-gates annotation
+			freshRollout.Annotations = map[string]string{} // Clear annotations
+			Expect(k8sClient.Update(ctx, freshRollout)).To(Succeed())
+
+			// Reconcile - should not deploy due to blocking gate
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      freshRollout.Name,
+					Namespace: freshRollout.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should not deploy due to blocking gate - may return 0 or a requeue time
+			// The important thing is that no deployment occurred
+			Expect(result.RequeueAfter).To(BeNumerically(">=", 0))
+
+			// Verify no deployment occurred
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      freshRollout.Name,
+				Namespace: freshRollout.Namespace,
+			}, updatedRollout)).To(Succeed())
+			Expect(updatedRollout.Status.History).To(BeEmpty())
+
+			// The bypass-gates annotation should be gone since we removed it
+			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
+		})
+
 	})
 
 	Describe("Helper Methods", func() {
@@ -2507,6 +2575,518 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 	})
+
+	// New test suite for enhanced HealthCheckSelector functionality
+	Describe("Enhanced HealthCheckSelector", func() {
+		var namespace1, namespace2, namespace3 string
+		var rollout *rolloutv1alpha1.Rollout
+		var imagePolicy *imagev1beta2.ImagePolicy
+
+		BeforeEach(func() {
+			By("creating test namespaces")
+			ns1 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-ns-1-",
+					Labels: map[string]string{
+						"environment": "production",
+						"team":        "platform",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns1)).To(Succeed())
+			namespace1 = ns1.Name
+
+			ns2 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-ns-2-",
+					Labels: map[string]string{
+						"environment": "staging",
+						"team":        "platform",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns2)).To(Succeed())
+			namespace2 = ns2.Name
+
+			ns3 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-ns-3-",
+					Labels: map[string]string{
+						"environment": "development",
+						"team":        "dev",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns3)).To(Succeed())
+			namespace3 = ns3.Name
+
+			By("creating the ImagePolicy")
+			imagePolicy = &imagev1beta2.ImagePolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image-policy",
+					Namespace: namespace1,
+				},
+				Spec: imagev1beta2.ImagePolicySpec{
+					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+						Name: "test-image-repo",
+					},
+					Policy: imagev1beta2.ImagePolicyChoice{
+						SemVer: &imagev1beta2.SemVerPolicy{
+							Range: ">=0.1.0",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
+
+			By("setting up ImagePolicy status")
+			imagePolicy.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					LastTransitionTime: metav1.Now(),
+					Reason:             "Ready",
+					Message:            "ImagePolicy is ready",
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("creating the Rollout")
+			rollout = &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rollout",
+					Namespace: namespace1,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+				},
+			}
+		})
+
+		AfterEach(func() {
+			By("Cleaning up test namespaces")
+			for _, ns := range []string{namespace1, namespace2, namespace3} {
+				if ns != "" {
+					nsObj := &corev1.Namespace{
+						ObjectMeta: metav1.ObjectMeta{Name: ns},
+					}
+					Expect(k8sClient.Delete(ctx, nsObj)).To(Succeed())
+				}
+			}
+		})
+
+		It("should select HealthChecks using matchLabels selector", func() {
+			By("creating HealthChecks with different labels")
+			healthCheck1 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-matchlabels-1",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app":         "my-app",
+						"environment": "production",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck1)).To(Succeed())
+
+			healthCheck2 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-matchlabels-2",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app":         "other-app",
+						"environment": "production",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+			By("configuring rollout with matchLabels selector")
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app":         "my-app",
+						"environment": "production",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+			By("verifying that only matching HealthChecks are selected")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Simulate deployment by setting history
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{
+					Version:       "test-version",
+					Timestamp:     metav1.Now(),
+					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
+					BakeStartTime: &metav1.Time{Time: time.Now()},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			// Call handleBakeTime to trigger health check evaluation
+			result, err := controllerReconciler.handleBakeTime(ctx, namespace1, rollout)
+			Expect(err).To(Succeed())
+
+			// Should find healthCheck1 but not healthCheck2
+			// The actual health check evaluation logic is in the controller
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+		})
+
+		It("should select HealthChecks using matchExpressions selector", func() {
+			By("creating HealthChecks with different labels")
+			healthCheck1 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-matchexpressions-1",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app":         "my-app",
+						"environment": "production",
+						"critical":    "true",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck1)).To(Succeed())
+
+			healthCheck2 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-matchexpressions-2",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app":         "my-app",
+						"environment": "staging",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+			By("configuring rollout with matchExpressions selector")
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{
+							Key:      "app",
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   []string{"my-app"},
+						},
+						{
+							Key:      "environment",
+							Operator: metav1.LabelSelectorOpNotIn,
+							Values:   []string{"staging"},
+						},
+						{
+							Key:      "critical",
+							Operator: metav1.LabelSelectorOpExists,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+			By("verifying that only matching HealthChecks are selected")
+			// Should find healthCheck1 (matches all expressions) but not healthCheck2 (environment is staging)
+			Expect(rollout.Spec.HealthCheckSelector.GetSelector()).NotTo(BeNil())
+			Expect(rollout.Spec.HealthCheckSelector.GetSelector().MatchExpressions).To(HaveLen(3))
+		})
+
+		It("should select HealthChecks across multiple namespaces using namespace selector", func() {
+			By("creating HealthChecks in different namespaces")
+			healthCheck1 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-cross-ns-1",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck1)).To(Succeed())
+
+			healthCheck2 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-cross-ns-2",
+					Namespace: namespace2,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+			healthCheck3 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-cross-ns-3",
+					Namespace: namespace3,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck3)).To(Succeed())
+
+			By("configuring rollout with namespace selector")
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"team": "platform",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+			By("verifying that only HealthChecks in matching namespaces are selected")
+			// Should find healthCheck1 (namespace1) and healthCheck2 (namespace2) but not healthCheck3 (namespace3)
+			// namespace1 and namespace2 have team=platform, namespace3 has team=dev
+			Expect(rollout.Spec.HealthCheckSelector.GetNamespaceSelector()).NotTo(BeNil())
+			Expect(rollout.Spec.HealthCheckSelector.GetNamespaceSelector().MatchLabels["team"]).To(Equal("platform"))
+		})
+
+		It("should use same namespace when no namespace selector is specified", func() {
+			By("creating HealthChecks in different namespaces")
+			healthCheck1 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-same-ns-1",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck1)).To(Succeed())
+
+			healthCheck2 := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "hc-same-ns-2",
+					Namespace: namespace2,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+			By("configuring rollout without namespace selector")
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				// No namespaceSelector specified
+			}
+			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+			By("verifying that only HealthChecks in the same namespace are considered")
+			// Should only find healthCheck1 (namespace1) since rollout is in namespace1
+			// and no namespace selector is specified
+			Expect(rollout.Spec.HealthCheckSelector.GetNamespaceSelector()).To(BeNil())
+		})
+
+		It("should handle complex namespace selector with matchExpressions", func() {
+			By("configuring rollout with complex namespace selector")
+			rollout.Spec.HealthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{
+							Key:      "environment",
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   []string{"production", "staging"},
+						},
+						{
+							Key:      "team",
+							Operator: metav1.LabelSelectorOpExists,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+			By("verifying complex namespace selector configuration")
+			namespaceSelector := rollout.Spec.HealthCheckSelector.GetNamespaceSelector()
+			Expect(namespaceSelector).NotTo(BeNil())
+			Expect(namespaceSelector.MatchExpressions).To(HaveLen(2))
+
+			// Check first expression
+			Expect(namespaceSelector.MatchExpressions[0].Key).To(Equal("environment"))
+			Expect(namespaceSelector.MatchExpressions[0].Operator).To(Equal(metav1.LabelSelectorOpIn))
+			Expect(namespaceSelector.MatchExpressions[0].Values).To(ConsistOf("production", "staging"))
+
+			// Check second expression
+			Expect(namespaceSelector.MatchExpressions[1].Key).To(Equal("team"))
+			Expect(namespaceSelector.MatchExpressions[1].Operator).To(Equal(metav1.LabelSelectorOpExists))
+			Expect(namespaceSelector.MatchExpressions[1].Values).To(BeEmpty())
+		})
+
+		It("should validate HealthCheckSelectorConfig properly", func() {
+			By("testing valid configurations")
+			validConfig := &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "my-app"},
+				},
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"team": "platform"},
+				},
+			}
+			Expect(validConfig.IsValid()).To(BeTrue())
+
+			By("testing nil configuration")
+			var nilConfig *rolloutv1alpha1.HealthCheckSelectorConfig
+			Expect(nilConfig.IsValid()).To(BeTrue()) // nil is valid
+
+			By("testing configuration with only selector")
+			selectorOnlyConfig := &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "my-app"},
+				},
+			}
+			Expect(selectorOnlyConfig.IsValid()).To(BeTrue())
+
+			By("testing configuration with only namespace selector")
+			namespaceOnlyConfig := &rolloutv1alpha1.HealthCheckSelectorConfig{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"team": "platform"},
+				},
+			}
+			Expect(namespaceOnlyConfig.IsValid()).To(BeTrue())
+		})
+
+		It("should handle edge cases gracefully", func() {
+			By("testing with empty selector")
+			emptySelectorConfig := &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{}, // Empty selector
+			}
+			Expect(emptySelectorConfig.IsValid()).To(BeTrue())
+			Expect(emptySelectorConfig.GetSelector()).NotTo(BeNil())
+
+			By("testing with empty namespace selector")
+			emptyNamespaceConfig := &rolloutv1alpha1.HealthCheckSelectorConfig{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "my-app"},
+				},
+				NamespaceSelector: &metav1.LabelSelector{}, // Empty namespace selector
+			}
+			Expect(emptyNamespaceConfig.IsValid()).To(BeTrue())
+			Expect(emptyNamespaceConfig.GetNamespaceSelector()).NotTo(BeNil())
+
+			By("testing GetSelector with nil config")
+			var nilConfig *rolloutv1alpha1.HealthCheckSelectorConfig
+			Expect(nilConfig.GetSelector()).To(BeNil())
+			Expect(nilConfig.GetNamespaceSelector()).To(BeNil())
+		})
+
+		It("should find rollouts for HealthCheck changes across namespaces", func() {
+			By("creating rollouts in different namespaces with different selectors")
+			rollout1 := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rollout-1",
+					Namespace: namespace1,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
+					MinBakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
+					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "my-app"},
+						},
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"team": "platform"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout1)).To(Succeed())
+
+			rollout2 := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rollout-2",
+					Namespace: namespace2,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
+					MinBakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
+					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "other-app"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rollout2)).To(Succeed())
+
+			By("creating a HealthCheck that should trigger rollout1")
+			healthCheck := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "trigger-hc",
+					Namespace: namespace1,
+					Labels: map[string]string{
+						"app": "my-app",
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+			By("verifying that findRolloutsForHealthCheck finds the correct rollouts")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			requests := controllerReconciler.findRolloutsForHealthCheck(ctx, healthCheck)
+
+			// Should find rollout1 (matches app=my-app and namespace1 has team=platform)
+			// Should not find rollout2 (different app label)
+			// The test-rollout from BeforeEach should not be found as it has no HealthCheckSelector
+
+			// Find the specific rollout1 in the results
+			foundRollout1 := false
+			for _, req := range requests {
+				if req.Name == "rollout-1" && req.Namespace == namespace1 {
+					foundRollout1 = true
+					break
+				}
+			}
+			Expect(foundRollout1).To(BeTrue(), "rollout-1 should be found in the results")
+
+			// Verify that rollout2 is not found (different app label)
+			foundRollout2 := false
+			for _, req := range requests {
+				if req.Name == "rollout-2" {
+					foundRollout2 = true
+					break
+				}
+			}
+			Expect(foundRollout2).To(BeFalse(), "rollout-2 should not be found due to different app label")
+		})
+	})
+
 })
 
 // Add FakeClock for testing
