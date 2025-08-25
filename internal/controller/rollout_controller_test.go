@@ -23,20 +23,19 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
-	ptrutil "k8s.io/utils/ptr"
+	k8sptr "k8s.io/utils/ptr"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
-	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -584,7 +583,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
-					Passing:    ptrutil.To(false),
+					Passing:    k8sptr.To(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
@@ -612,7 +611,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
-					Passing:         ptrutil.To(true),
+					Passing:         k8sptr.To(true),
 					AllowedVersions: &[]string{version0_2_0, version0_3_0},
 				},
 			}
@@ -622,7 +621,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
-					Passing:         ptrutil.To(true),
+					Passing:         k8sptr.To(true),
 					AllowedVersions: &[]string{version0_2_0},
 				},
 			}
@@ -650,7 +649,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
-					Passing:         ptrutil.To(true),
+					Passing:         k8sptr.To(true),
 					AllowedVersions: &[]string{"0.9.9"},
 				},
 			}
@@ -676,14 +675,14 @@ var _ = Describe("Rollout Controller", func() {
 			rolloutWithWanted := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rolloutWithWanted)
 			Expect(err).NotTo(HaveOccurred())
-			rolloutWithWanted.Spec.WantedVersion = ptrutil.To(version0_1_0)
+			rolloutWithWanted.Spec.WantedVersion = k8sptr.To(version0_1_0)
 			Expect(k8sClient.Update(ctx, rolloutWithWanted)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
-					Passing:         ptrutil.To(false),
+					Passing:         k8sptr.To(false),
 					AllowedVersions: &[]string{version0_2_0, version0_3_0},
 				},
 			}
@@ -710,7 +709,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-gate", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
-					Passing:    ptrutil.To(true),
+					Passing:    k8sptr.To(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
@@ -736,7 +735,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gate1", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
-					Passing:    ptrutil.To(true),
+					Passing:    k8sptr.To(true),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate1)).To(Succeed())
@@ -745,7 +744,7 @@ var _ = Describe("Rollout Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "gate2", Namespace: namespace},
 				Spec: rolloutv1alpha1.RolloutGateSpec{
 					RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
-					Passing:    ptrutil.To(false),
+					Passing:    k8sptr.To(false),
 				},
 			}
 			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
@@ -1153,7 +1152,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 				By("Setting wantedVersion and advancing clock within bake window")
-				rollout.Spec.WantedVersion = ptrutil.To(version0_2_0)
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 				fakeClock.Add(1 * time.Minute) // Still within bake window
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
@@ -1555,7 +1554,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should requeue wanted version deployments to monitor bake time", func() {
 				By("Setting up a rollout with wanted version and bake time configuration")
-				rollout.Spec.WantedVersion = ptrutil.To(version0_2_0)
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
 				rollout.Spec.MinBakeTime = &metav1.Duration{Duration: 5 * time.Minute}
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
@@ -1600,7 +1599,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Setting wanted version to a different version")
-				rollout.Spec.WantedVersion = ptrutil.To(version0_2_0)
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
@@ -1958,6 +1957,95 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/unblock-failed"))
 		})
+
+		It("should continue status updates even when deployment is blocked by failed bake status", func() {
+			// Create a fresh rollout with failed bake status (no unblock annotation)
+			freshRollout := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "status-update-test-rollout",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+				},
+			}
+			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
+
+			// Update the status separately since status is ignored during creation
+			freshRollout.Status = rolloutv1alpha1.RolloutStatus{
+				History: []rolloutv1alpha1.DeploymentHistoryEntry{
+					{
+						Version:       "1.0.0",
+						Timestamp:     metav1.Now(),
+						BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
+						BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+						BakeEndTime:   &metav1.Time{Time: time.Now().Add(-5 * time.Minute)},
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, freshRollout)).To(Succeed())
+
+			// Set up ImagePolicy with a new release
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "1.1.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			// Create a gate that should be evaluated
+			gate := &rolloutv1alpha1.RolloutGate{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "status-update-gate",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutGateSpec{
+					RolloutRef: &corev1.LocalObjectReference{
+						Name: freshRollout.Name,
+					},
+					Passing: k8sptr.To(true),
+				},
+			}
+			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+
+			// Reconcile - should update status but block deployment
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      freshRollout.Name,
+					Namespace: freshRollout.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should block deployment due to failed bake status
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			// Verify that status was updated despite blocked deployment
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      freshRollout.Name,
+				Namespace: freshRollout.Namespace,
+			}, updatedRollout)).To(Succeed())
+
+			// Should still have the failed deployment history (no new deployment)
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.0.0"))
+			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusFailed)))
+
+			// But status should be updated with release candidates and gates
+			Expect(updatedRollout.Status.ReleaseCandidates).NotTo(BeEmpty())
+			Expect(updatedRollout.Status.GatedReleaseCandidates).NotTo(BeEmpty())
+
+			// Verify that the new release candidate is available
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElement("1.1.0"))
+		})
+
 	})
 
 	Describe("Helper Methods", func() {

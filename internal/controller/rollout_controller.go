@@ -154,9 +154,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 
 				// Block new deployment if no WantedVersion is specified and no unblock annotation
+				// But allow status updates to continue (gates, release candidates, etc.)
 				if rollout.Spec.WantedVersion == nil && !unblockRequested {
-					log.Info("Bake status is Failed, blocking new deployment")
-					return ctrl.Result{}, nil
+					log.Info("Bake status is Failed, blocking new deployment but continuing status updates")
+					// Don't return early - let the reconciliation continue to update status
+					// but we'll block the actual deployment later
 				}
 
 				// If unblock is requested, log the action and allow deployment to proceed
@@ -217,6 +219,38 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if len(rollout.Status.History) == 0 || *wantedRelease != rollout.Status.History[0].Version {
+		// Check if deployment should be blocked due to failed bake status
+		if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusFailed {
+			log.Info("Found failed bake status, checking if deployment should be blocked",
+				"currentVersion", rollout.Status.History[0].Version,
+				"bakeStatus", *rollout.Status.History[0].BakeStatus,
+				"wantedVersion", rollout.Spec.WantedVersion,
+				"hasUnblockAnnotation", rollout.Annotations != nil && rollout.Annotations["rollout.kuberik.com/unblock-failed"] == "true")
+
+			// Check if user has requested to unblock failed deployment via annotation
+			unblockRequested := false
+			if rollout.Annotations != nil {
+				if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+					unblockRequested = true
+				}
+			}
+
+			// Block actual deployment if no WantedVersion is specified and no unblock annotation
+			if rollout.Spec.WantedVersion == nil && !unblockRequested {
+				log.Info("Bake status is Failed, blocking deployment but status has been updated")
+				// Update status with release candidates information before returning
+				if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+					log.Error(err, "Failed to update rollout status with release candidates")
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			} else {
+				log.Info("Deployment allowed despite failed bake status",
+					"wantedVersion", rollout.Spec.WantedVersion,
+					"unblockRequested", unblockRequested)
+			}
+		}
+
 		if err := r.deployRelease(ctx, &rollout, *wantedRelease); err != nil {
 			log.Error(err, "Failed to deploy release")
 			return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
@@ -308,7 +342,9 @@ func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.Rollout
 		if latestReleaseIndex := slices.Index(releases, currentRelease); latestReleaseIndex != -1 {
 			return releases[:latestReleaseIndex], nil
 		} else {
-			return nil, fmt.Errorf("current release %q not found in available releases", currentRelease)
+			// Current release not found in available releases (e.g., old versions cleaned up)
+			// Return all available releases as candidates
+			return releases, nil
 		}
 	}
 	return releases, nil
