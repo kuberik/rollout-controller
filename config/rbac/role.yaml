@@ -4,96 +4,74 @@ kind: ClusterRole
 metadata:
   name: manager-role
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - '*'
-  resources:
-  - '*'
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - image.toolkit.fluxcd.io
-  resources:
-  - imagepolicies
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - kuberik.com
-  resources:
-  - healthchecks
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kuberik.com
-  resources:
-  - healthchecks/status
-  - kubestatuses/status
-  - rollouts/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - kubestatuses
-  - rollouts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - kuberik.com
-  resources:
-  - kubestatuses/finalizers
-  - rollouts/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - rolloutgates
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - kustomize.toolkit.fluxcd.io
-  resources:
-  - kustomizations
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - source.toolkit.fluxcd.io
-  resources:
-  - ocirepositories
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - image.toolkit.fluxcd.io
+    resources:
+      - imagepolicies
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kuberik.com
+    resources:
+      - healthchecks
+      - rolloutgates
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - kuberik.com
+    resources:
+      - rollouts
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - kuberik.com
+    resources:
+      - rollouts/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - kuberik.com
+    resources:
+      - rollouts/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - kustomize.toolkit.fluxcd.io
+    resources:
+      - kustomizations
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - source.toolkit.fluxcd.io
+    resources:
+      - ocirepositories
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
