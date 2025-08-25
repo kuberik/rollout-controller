@@ -23,9 +23,9 @@ kind: Kustomization
 metadata:
   name: my-app
   annotations:
-    rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
-    rollout.kuberik.com/backend-rollout.substitute: "backend_version"
-    rollout.kuberik.com/api-rollout.substitute: "api_version"
+    rollout.kuberik.com/substitute.frontend_version.from: "frontend-rollout"
+    rollout.kuberik.com/substitute.backend_version.from: "backend-rollout"
+    rollout.kuberik.com/substitute.api_version.from: "api-rollout"
 spec:
   # ... other spec fields
   postBuild:
@@ -61,7 +61,7 @@ spec:
 
 ### Annotation Format
 
-- **Kustomizations**: `rollout.kuberik.com/{rollout-name}.substitute`
+- **Kustomizations**: `rollout.kuberik.com/substitute.<variable>.from: <rollout-name>`
 - **OCIRepositories**: `rollout.kuberik.com/rollout`
 
 Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
@@ -162,7 +162,7 @@ spec:
 
 3. **Resource Patching**: The controller finds and patches Flux resources with specific annotations:
    - **OCIRepositories**: Updates `spec.ref.tag` for resources with `rollout.kuberik.com/rollout: <rollout-name>`
-   - **Kustomizations**: Updates `spec.postBuild.substitute.<NAME>` for resources with `rollout.kuberik.com/rollout: <rollout-name>` and `rollout.kuberik.com/substitute: <NAME>`
+   - **Kustomizations**: Updates `spec.postBuild.substitute.<NAME>` for resources with `rollout.kuberik.com/substitute.<NAME>.from: <rollout-name>`
 
 4. **Health Monitoring**: During bake time, the controller monitors HealthChecks to ensure deployment stability.
 
@@ -191,8 +191,7 @@ kind: Kustomization
 metadata:
   name: my-app-kustomization
   annotations:
-    rollout.kuberik.com/rollout: "my-app-rollout"  # References the rollout name
-    rollout.kuberik.com/substitute: "IMAGE_TAG"     # Specifies which substitute to update
+    rollout.kuberik.com/substitute.IMAGE_TAG.from: "my-app-rollout"  # References the rollout name
 spec:
   postBuild:
     substitute:

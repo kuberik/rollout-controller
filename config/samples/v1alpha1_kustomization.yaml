@@ -4,9 +4,9 @@ metadata:
   name: my-app-kustomization
   namespace: default
   annotations:
-    rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
-    rollout.kuberik.com/backend-rollout.substitute: "backend_version"
-    rollout.kuberik.com/api-rollout.substitute: "api_version"
+    rollout.kuberik.com/substitute.frontend_version.from: "frontend-rollout"
+    rollout.kuberik.com/substitute.backend_version.from: "backend-rollout"
+    rollout.kuberik.com/substitute.api_version.from: "api-rollout"
 spec:
   interval: 1m0s
   path: ./kustomize

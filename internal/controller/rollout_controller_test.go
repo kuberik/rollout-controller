@@ -772,7 +772,7 @@ var _ = Describe("Rollout Controller", func() {
 					Name:      "test-kustomization",
 					Namespace: namespace,
 					Annotations: map[string]string{
-						"rollout.kuberik.com/test-resource.substitute": "app_version",
+						"rollout.kuberik.com/substitute.app_version.from": "test-resource",
 					},
 				},
 				Spec: kustomizev1.KustomizationSpec{

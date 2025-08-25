@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 
@@ -753,8 +754,8 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 }
 
 // patchKustomizations finds Kustomizations with rollout-specific annotations and patches their substitutes.
-// Each rollout should have its own annotation in the format: rollout.kuberik.com/{rollout-name}.substitute
-// Example: rollout.kuberik.com/frontend-rollout.substitute: "frontend_version"
+// Each rollout should have its own annotation in the format: rollout.kuberik.com/substitute.<variable>.from: <rollout-name>
+// Example: rollout.kuberik.com/substitute.frontend_version.from: "frontend-rollout"
 func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
 	log := logf.FromContext(ctx)
 
@@ -770,9 +771,25 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 			continue
 		}
 
-		// Look for rollout-specific substitute annotation
-		substituteKey := fmt.Sprintf("rollout.kuberik.com/%s.substitute", rollout.Name)
-		substituteName, hasRolloutSubstitute := kustomization.Annotations[substituteKey]
+		// Look for rollout-specific substitute annotation in the new format
+		var substituteName string
+		var hasRolloutSubstitute bool
+
+		// Regex pattern to match rollout.kuberik.com/substitute.<variable>.from and extract the variable name
+		substitutePattern := regexp.MustCompile(`^rollout\.kuberik\.com/substitute\.([^.]+)\.from$`)
+
+		// Iterate through annotations to find rollout.kuberik.com/substitute.<variable>.from: <rollout-name>
+		for annotationKey, annotationValue := range kustomization.Annotations {
+			if annotationValue == rollout.Name {
+				matches := substitutePattern.FindStringSubmatch(annotationKey)
+				if len(matches) == 2 {
+					substituteName = matches[1]
+					hasRolloutSubstitute = true
+					break
+				}
+			}
+		}
+
 		if !hasRolloutSubstitute {
 			continue
 		}
