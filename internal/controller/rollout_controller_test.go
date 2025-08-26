@@ -425,12 +425,12 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_2_0))
 		})
 
-		It("should fail when wanted version is not available", func() {
+		It("should allow any wanted version to be set regardless of available releases", func() {
 			By("Setting available releases")
 			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
-			By("Setting a non-existent wanted version in spec")
+			By("Setting a wanted version that is not in available releases")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
 			Expect(err).NotTo(HaveOccurred())
@@ -446,18 +446,15 @@ var _ = Describe("Rollout Controller", func() {
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that the rollout failed with appropriate condition")
+			By("Verifying that the rollout succeeded and deployed the wanted version")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 
-			readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
-			Expect(readyCondition).NotTo(BeNil())
-			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
-			Expect(readyCondition.Message).To(ContainSubstring("wanted version \"" + version0_3_0 + "\" not found in available releases"))
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
 		})
 
 		It("should support rollback to a previous version", func() {

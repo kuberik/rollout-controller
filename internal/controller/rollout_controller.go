@@ -533,9 +533,8 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []string) (*string, error) {
 	wantedRelease := rollout.Spec.WantedVersion
 	if wantedRelease != nil {
-		if !slices.Contains(releases, *wantedRelease) {
-			return nil, fmt.Errorf("wanted version %q not found in available releases", *wantedRelease)
-		}
+		// Allow any wantedVersion to be set - it doesn't need to be in availableReleases
+		// This enables users to deploy any tag from the referenced Docker repository
 		return wantedRelease, nil
 	} else if len(gatedReleaseCandidates) > 0 {
 		return &gatedReleaseCandidates[0], nil
