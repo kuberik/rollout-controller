@@ -30,6 +30,11 @@ import (
 func (in *DeploymentHistoryEntry) DeepCopyInto(out *DeploymentHistoryEntry) {
 	*out = *in
 	in.Timestamp.DeepCopyInto(&out.Timestamp)
+	if in.Message != nil {
+		in, out := &in.Message, &out.Message
+		*out = new(string)
+		**out = **in
+	}
 	if in.BakeStatus != nil {
 		in, out := &in.BakeStatus, &out.BakeStatus
 		*out = new(string)

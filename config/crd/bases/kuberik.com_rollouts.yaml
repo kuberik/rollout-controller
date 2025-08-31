@@ -18,6 +18,9 @@ spec:
     - jsonPath: .status.history[0].version
       name: Version
       type: string
+    - jsonPath: .status.history[0].message
+      name: Message
+      type: string
     - jsonPath: .status.history[0].bakeStatus
       name: BakeStatus
       type: string
@@ -347,6 +350,14 @@ spec:
                       description: |-
                         BakeStatusMessage provides details about the bake state for this deployment
                         This field contains human-readable information about why the bake status is what it is.
+                      type: string
+                    message:
+                      description: |-
+                        Message provides a descriptive message about this deployment entry
+                        This field contains human-readable information about the deployment context.
+                        For automatic deployments, it includes information about gate bypass and failed bake unblock.
+                        For manual deployments (when wantedVersion is specified), it can contain a custom message
+                        provided via the "rollout.kuberik.com/deployment-message" annotation, or defaults to "Manual deployment".
                       type: string
                     timestamp:
                       description: Timestamp is the time when the deployment occurred.

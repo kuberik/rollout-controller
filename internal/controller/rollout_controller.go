@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -570,6 +571,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)
 		rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake cancelled due to new deployment.")
 		rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: r.now()}
+		// Update the message to reflect the cancellation
+		cancelledMessage := fmt.Sprintf("Deployment cancelled due to new deployment of version %s", wantedRelease)
+		rollout.Status.History[0].Message = &cancelledMessage
 	}
 
 	// Find and patch OCIRepositories
@@ -610,9 +614,13 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		bakeStatusMsg = k8sptr.To("Bake time started, waiting for minimum time and health checks.")
 	}
 
+	// Generate deployment message
+	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, unblockUsed)
+
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
 		Version:           wantedRelease,
 		Timestamp:         metav1.Now(),
+		Message:           &deploymentMessage,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     bakeStartTime,
@@ -1067,7 +1075,37 @@ func (r *RolloutReconciler) validateBakeTimeConfiguration(rollout *rolloutv1alph
 	return nil
 }
 
-// getBakeStatusSummary returns a human-readable summary of the current bake status
+// generateDeploymentMessage creates a descriptive message for a deployment history entry
+func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, wantedRelease string, bypassUsed, unblockUsed bool) string {
+	var messageParts []string
+
+	// Determine deployment type
+	if rollout.Spec.WantedVersion != nil {
+		// Check if user provided a custom message via annotation
+		if rollout.Annotations != nil {
+			if customMessage, exists := rollout.Annotations["rollout.kuberik.com/deployment-message"]; exists && customMessage != "" {
+				return customMessage
+			}
+		}
+		messageParts = append(messageParts, "Manual deployment")
+	} else {
+		messageParts = append(messageParts, "Automatic deployment")
+	}
+
+	// Add gate bypass information
+	if bypassUsed {
+		messageParts = append(messageParts, "with gate bypass")
+	}
+
+	// Add failed bake unblock information
+	if unblockUsed {
+		messageParts = append(messageParts, "with failed bake unblock")
+	}
+
+	return strings.Join(messageParts, ", ")
+}
+
+// ... existing code ...
 func (r *RolloutReconciler) getBakeStatusSummary(rollout *rolloutv1alpha1.Rollout) string {
 	if len(rollout.Status.History) == 0 {
 		return "No deployment history"

@@ -158,6 +158,9 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[0].Timestamp.IsZero()).To(BeFalse())
+			// Verify that the message field is populated
+			Expect(updatedRollout.Status.History[0].Message).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].Message).To(ContainSubstring("Automatic deployment"))
 
 			By("Updating ImagePolicy with a new version")
 			imagePolicy.Status.LatestRef.Tag = version0_2_0
@@ -316,6 +319,47 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
 			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
+		})
+
+		It("should use custom deployment message when annotation is provided", func() {
+			By("Setting up ImagePolicy with initial release")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: version0_1_0,
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("Setting wanted version with custom message annotation")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			wantedVersion := version0_1_0
+			rollout.Spec.WantedVersion = &wantedVersion
+			if rollout.Annotations == nil {
+				rollout.Annotations = make(map[string]string)
+			}
+			rollout.Annotations["rollout.kuberik.com/deployment-message"] = "Hotfix deployment for critical bug"
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying that the custom message was used")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History[0].Message).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].Message).To(Equal("Hotfix deployment for critical bug"))
 		})
 
 		It("should update available releases in status", func() {

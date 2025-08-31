@@ -194,6 +194,14 @@ type DeploymentHistoryEntry struct {
 	// +required
 	Timestamp metav1.Time `json:"timestamp"`
 
+	// Message provides a descriptive message about this deployment entry
+	// This field contains human-readable information about the deployment context.
+	// For automatic deployments, it includes information about gate bypass and failed bake unblock.
+	// For manual deployments (when wantedVersion is specified), it can contain a custom message
+	// provided via the "rollout.kuberik.com/deployment-message" annotation, or defaults to "Manual deployment".
+	// +optional
+	Message *string `json:"message,omitempty"`
+
 	// BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed, Cancelled)
 	// The bake process ensures that the deployment is stable and healthy before marking as successful.
 	// +optional
@@ -218,6 +226,7 @@ type DeploymentHistoryEntry struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.history[0].version`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.history[0].message`
 // +kubebuilder:printcolumn:name="BakeStatus",type=string,JSONPath=`.status.history[0].bakeStatus`
 // +kubebuilder:printcolumn:name="BakeTime",type=string,JSONPath=`.status.history[0].bakeStartTime`
 // +kubebuilder:printcolumn:name="Gates",type=string,JSONPath=`.status.conditions[?(@.type=="GatesPassing")].status`
