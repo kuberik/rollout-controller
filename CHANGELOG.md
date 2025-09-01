@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.3.0] - 2025-09-01
+
+### Added
+
+- Enable bypassing gates through an annotation (#19)
+
+- Improved healthcheck selector
+
+- Enhance health check selector with namespace selection and flexible label matching
+
+- Add unblock-failed annotation to allow deployment despite failed bake status
+
+- Update kustomization annotation format to use substitute.<variable>.from pattern
+
+- Allow wantedRelease to be set to any tag from Docker repo
+
+- Add message field to deployment history entries
+
+- Add Kubernetes event emission for rollout controller
+
+
+### CI
+
+- Release manifests install file
+
+
+### Chore
+
+- Deploy to kuberik-system
+
+
+### Fixed
+
+- Don't check if imagepolicy is ready (#18)
+
+- Resolve failing test for blocked deployment status updates
+
+
+### Refactored
+
+- Remove kubestatus resource and controller
+
+
+### Tests
+
+- Add comprehensive tests for enhanced HealthCheckSelector functionality
+
 ## [0.2.0] - 2025-08-12
 
 ### Added
@@ -40,6 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Display release candidates in status (#14)
 
 - Update release candidates after deployment (#15)
+
+- Release version v0.2.0
 
 
 ### Fixed
