@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,8 +57,9 @@ func (RealClock) Now() time.Time { return time.Now() }
 // RolloutReconciler reconciles a Rollout object
 type RolloutReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Clock  Clock
+	Scheme   *runtime.Scheme
+	Clock    Clock
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
@@ -314,6 +316,9 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize the EventRecorder
+	r.Recorder = mgr.GetEventRecorderFor("rollout-controller")
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
 		Watches(
@@ -404,6 +409,13 @@ func (r *RolloutReconciler) updateRolloutStatusOnError(ctx context.Context, roll
 		Reason:             reason,
 		Message:            message,
 	})
+
+	// Emit event for error
+	eventType := corev1.EventTypeWarning
+	eventReason := reason
+	eventMessage := message
+	r.Recorder.Event(rollout, eventType, eventReason, eventMessage)
+
 	return r.Status().Update(ctx, rollout)
 }
 
@@ -527,6 +539,14 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		Reason:             condReason,
 		Message:            condMsg,
 	})
+
+	// Emit event for gate evaluation results
+	eventType := corev1.EventTypeNormal
+	if condStatus == metav1.ConditionFalse {
+		eventType = corev1.EventTypeWarning
+	}
+	r.Recorder.Event(rollout, eventType, condReason, condMsg)
+
 	return gatedReleaseCandidates, gatesPassing, r.Status().Update(ctx, rollout)
 }
 
@@ -574,6 +594,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		// Update the message to reflect the cancellation
 		cancelledMessage := fmt.Sprintf("Deployment cancelled due to new deployment of version %s", wantedRelease)
 		rollout.Status.History[0].Message = &cancelledMessage
+
+		// Emit event for bake time cancellation
+		r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeCancelled", fmt.Sprintf("Bake time cancelled due to new deployment of version %s", wantedRelease))
 	}
 
 	// Find and patch OCIRepositories
@@ -612,6 +635,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		// Bake time configured - start the process
 		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
 		bakeStatusMsg = k8sptr.To("Bake time started, waiting for minimum time and health checks.")
+
+		// Emit event for bake time start
+		r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeStarted", "Bake time started, waiting for minimum time and health checks.")
 	}
 
 	// Generate deployment message
@@ -655,6 +681,18 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Reason:             "RolloutSucceeded",
 		Message:            conditionMessage,
 	})
+
+	// Emit event for successful deployment
+	eventType := corev1.EventTypeNormal
+	eventReason := "DeploymentSucceeded"
+	eventMessage := fmt.Sprintf("Successfully deployed version %s", wantedRelease)
+	if bypassUsed {
+		eventMessage += " (with gate bypass)"
+	}
+	if unblockUsed {
+		eventMessage += " (with failed bake unblock)"
+	}
+	r.Recorder.Event(rollout, eventType, eventReason, eventMessage)
 
 	releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
 	if err != nil {
@@ -966,6 +1004,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			Message:            "A HealthCheck reported an error after deployment.",
 		})
 
+		// Emit event for bake time failure
+		r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "A HealthCheck reported an error after deployment.")
+
 		err := r.Status().Update(ctx, rollout)
 		if err != nil {
 			log.Error(err, "Failed to update rollout status")
@@ -990,6 +1031,10 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			Reason:             "BakeTimeFailed",
 			Message:            "Bake timeout reached while waiting for health checks.",
 		})
+
+		// Emit event for bake time timeout
+		r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "Bake timeout reached while waiting for health checks.")
+
 		return ctrl.Result{}, r.Status().Update(ctx, rollout)
 	}
 
@@ -1009,6 +1054,10 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			Reason:             "BakeTimePassed",
 			Message:            "Bake time completed successfully.",
 		})
+
+		// Emit event for successful bake time
+		r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePassed", "Bake time completed successfully.")
+
 		return ctrl.Result{}, r.Status().Update(ctx, rollout)
 	}
 
