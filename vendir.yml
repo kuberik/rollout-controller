@@ -12,3 +12,6 @@ directories:
       - path: imagepolicies
         http:
           url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v0.35.2/config/crd/bases/image.toolkit.fluxcd.io_imagepolicies.yaml
+      - path: imagerepositories
+        http:
+          url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v0.35.2/config/crd/bases/image.toolkit.fluxcd.io_imagerepositories.yaml

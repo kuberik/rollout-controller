@@ -20,6 +20,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/docker/cli/cli/config/configfile"
+	dockertypes "github.com/docker/cli/cli/config/types"
+	"github.com/google/go-containerregistry/pkg/authn"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -156,7 +159,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[0].Timestamp.IsZero()).To(BeFalse())
 			// Verify that the message field is populated
 			Expect(updatedRollout.Status.History[0].Message).NotTo(BeNil())
@@ -181,10 +184,10 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
 
 			// The newest entry should be first in the history
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.History[0].Timestamp.IsZero()).To(BeFalse())
 
-			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.History[1].Timestamp.IsZero()).To(BeFalse())
 
 			By("Reconciling the resources again without any new version")
@@ -201,8 +204,8 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(2), "History should still have only 2 entries")
 
 			// Verify the history entries remain the same
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
-			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 		})
 
 		It("should respect the history limit", func() {
@@ -265,14 +268,18 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(3), "History should be limited to 3 entries")
 
 			// Verify the most recent versions are present
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.4.0"))
-			Expect(updatedRollout.Status.History[1].Version).To(Equal("0.3.0"))
-			Expect(updatedRollout.Status.History[2].Version).To(Equal("0.2.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.4.0"))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("0.3.0"))
+			Expect(updatedRollout.Status.History[2].Version.Tag).To(Equal("0.2.0"))
 		})
 
 		It("should respect the wanted version override", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0, version0_3_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+				{Tag: version0_3_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting a specific wanted version")
@@ -300,7 +307,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.1.0"))
 
 			By("Removing the wanted version override")
 			updatedRollout.Spec.WantedVersion = nil
@@ -318,7 +325,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.3.0"))
 		})
 
 		It("should use custom deployment message when annotation is provided", func() {
@@ -357,7 +364,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.1.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.1.0"))
 			Expect(updatedRollout.Status.History[0].Message).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].Message).To(Equal("Hotfix deployment for critical bug"))
 		})
@@ -385,7 +392,9 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.AvailableReleases).To(HaveLen(1))
-			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]string{version0_1_0}))
+			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+			}))
 
 			By("Setting up ImagePolicy with a release")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
@@ -403,7 +412,10 @@ var _ = Describe("Rollout Controller", func() {
 			updatedRollout = &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]string{version0_1_0, version0_2_0}))
+			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}))
 		})
 
 		It("should update release candidates in status", func() {
@@ -444,7 +456,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should have release candidates (all available releases since no history)
 			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_1_0))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_1_0}))
 
 			By("Adding more releases to ImagePolicy")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
@@ -466,12 +478,15 @@ var _ = Describe("Rollout Controller", func() {
 			// After first reconciliation, a version was deployed, creating deployment history
 			// So getNextReleaseCandidates only returns releases newer than the deployed version
 			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(2))
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(version0_2_0))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_2_0}))
 		})
 
 		It("should allow any wanted version to be set regardless of available releases", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting a wanted version that is not in available releases")
@@ -498,7 +513,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRollout.Status.History).NotTo(BeEmpty())
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("0.3.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.3.0"))
 		})
 
 		It("should support rollback to a previous version", func() {
@@ -523,7 +538,7 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 
 			By("Publishing version 0.2.0")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
@@ -541,8 +556,8 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
-			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 
 			By("Setting wanted version back to 0.1.0 to perform rollback")
 			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
@@ -561,14 +576,17 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(3))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
-			Expect(updatedRollout.Status.History[1].Version).To(Equal(version0_2_0))
-			Expect(updatedRollout.Status.History[2].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[2].Version.Tag).To(Equal(version0_1_0))
 		})
 
 		It("should deploy the latest release if there are no gates", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -581,12 +599,16 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 		})
 
 		It("should only deploy versions allowed by a passing gate with allowedVersions", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0, version0_3_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+				{Tag: version0_3_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -607,7 +629,7 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
 			Expect(updatedRollout.Status.Gates[0].Name).To(Equal("test-gate"))
 			Expect(updatedRollout.Status.Gates[0].AllowedVersions).To(ContainElements(version0_1_0, version0_2_0))
@@ -617,7 +639,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should block deployment if a single gate is not passing", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -645,7 +670,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should only deploy intersection of allowedVersions from multiple passing gates", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0, version0_3_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+				{Tag: version0_3_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate1 := &rolloutv1alpha1.RolloutGate{
@@ -677,13 +706,16 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
 		})
 
 		It("should block deployment if no allowed releases remain after gate filtering", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -710,7 +742,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should ignore gates if wantedVersion is set", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0, version0_3_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+				{Tag: version0_3_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			rolloutWithWanted := &rolloutv1alpha1.Rollout{}
@@ -738,12 +774,15 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 		})
 
 		It("should deploy the latest release if a single passing gate has no allowedVersions", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -764,12 +803,15 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 		})
 
 		It("should block deployment if one of multiple gates is not passing", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate1 := &rolloutv1alpha1.RolloutGate{
@@ -804,7 +846,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should patch Kustomization with rollout-specific substitute annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a Kustomization with rollout-specific annotation")
@@ -849,12 +894,15 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 		})
 
 		It("should patch OCIRepository with rollout annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating an OCIRepository with rollout annotation")
@@ -892,12 +940,15 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 		})
 
 		It("should not patch OCIRepository with non-matching rollout annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating an OCIRepository with different rollout annotation")
@@ -935,7 +986,7 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 		})
 
 		It("should find rollouts that reference a given ImagePolicy", func() {
@@ -1081,7 +1132,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying new release was not deployed")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			})
 
 			It("should block new deployment if previous bake failed", func() {
@@ -1120,7 +1171,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
 			})
 
@@ -1162,8 +1213,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History).To(HaveLen(2))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))
-				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
 			})
 
@@ -1204,8 +1255,8 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying the wanted version was deployed")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(2))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))
-				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 			})
 
 			It("should cancel existing in-progress bake when deploying new version", func() {
@@ -1238,7 +1289,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying that new deployment was blocked during bake time")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))                                                 // Should still only have one deployment
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_1_0))                             // Should still be the original version
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))                         // Should still be the original version
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress)) // Bake should still be in progress
 			})
 
@@ -1256,7 +1307,7 @@ var _ = Describe("Rollout Controller", func() {
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
@@ -1280,12 +1331,12 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History).To(HaveLen(2))
 
 				// Previous deployment should now be succeeded
-				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
 
 				// New deployment should be in progress
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
@@ -1611,7 +1662,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying the deployment was created and bake time started")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
@@ -1656,13 +1707,13 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History).To(HaveLen(2))
 
 				// Previous deployment (now second in history) should have cancelled bake status
-				Expect(rollout.Status.History[1].Version).To(Equal(version0_1_0))
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusCancelled))
 				Expect(*rollout.Status.History[1].BakeStatusMessage).To(Equal("Bake cancelled due to new deployment."))
 				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
 
 				// New deployment should be in progress
-				Expect(rollout.Status.History[0].Version).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
@@ -1671,7 +1722,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should bypass gates when bypass-gates annotation is set", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0, version0_2_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+				{Tag: version0_2_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a blocking gate")
@@ -1711,7 +1765,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should have deployment history with the bypassed version
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 
 			// Should have gates status showing bypass
 			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
@@ -1738,7 +1792,9 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should ignore bypass-gates annotation for version not in candidates", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []string{version0_1_0}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: version0_1_0},
+			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a blocking gate")
@@ -1876,7 +1932,7 @@ var _ = Describe("Rollout Controller", func() {
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
 						{
-							Version:       "1.0.0",
+							Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
 							Timestamp:     metav1.Now(),
 							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -1919,7 +1975,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should have new deployment history (the old failed one should be replaced)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.1.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.1.0"))
 			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
 
 			// The unblock-failed annotation should be cleared after deployment
@@ -1946,7 +2002,7 @@ var _ = Describe("Rollout Controller", func() {
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
 						{
-							Version:       "1.0.0",
+							Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
 							Timestamp:     metav1.Now(),
 							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -1989,7 +2045,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should have new deployment history (the old failed one should be replaced)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.1.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.1.0"))
 			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
 
 			// Both annotations should be cleared after deployment
@@ -2017,7 +2073,7 @@ var _ = Describe("Rollout Controller", func() {
 			freshRollout.Status = rolloutv1alpha1.RolloutStatus{
 				History: []rolloutv1alpha1.DeploymentHistoryEntry{
 					{
-						Version:       "1.0.0",
+						Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
 						Timestamp:     metav1.Now(),
 						BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 						BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -2074,7 +2130,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should still have the failed deployment history (no new deployment)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version).To(Equal("1.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
 			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusFailed)))
 
 			// But status should be updated with release candidates and gates
@@ -2082,7 +2138,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.GatedReleaseCandidates).NotTo(BeEmpty())
 
 			// Verify that the new release candidate is available
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElement("1.1.0"))
+			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElement(rolloutv1alpha1.VersionInfo{Tag: "1.1.0"}))
 		})
 
 	})
@@ -2407,7 +2463,7 @@ var _ = Describe("Rollout Controller", func() {
 				rollout.Status = rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
 						{
-							Version:           "test-version",
+							Version:           rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 							Timestamp:         metav1.Now(),
 							BakeStatus:        k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 							BakeStatusMessage: k8sptr.To("Previous failure"),
@@ -2712,7 +2768,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Simulate deployment by setting history
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version:       "test-version",
+					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
 					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
@@ -2741,7 +2797,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Simulate deployment by setting history
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version:       "test-version",
+					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
 					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
@@ -2806,7 +2862,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Simulate deployment by setting history
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version:       "test-version",
+					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
 					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
@@ -2990,7 +3046,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Simulate deployment by setting history
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version:       "test-version",
+					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
 					BakeStartTime: &metav1.Time{Time: time.Now()},
@@ -3352,6 +3408,216 @@ var _ = Describe("Rollout Controller", func() {
 
 	})
 
+	Context("OCI Annotation Parsing", func() {
+		var (
+			reconciler *RolloutReconciler
+			ctx        context.Context
+			namespace  string
+		)
+
+		BeforeEach(func() {
+			reconciler = &RolloutReconciler{
+				Client: k8sClient,
+			}
+			ctx = context.Background()
+
+			By("creating a unique namespace for the test")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "oci-test-ns-",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			namespace = ns.Name
+		})
+
+		Context("getImageRepositoryAuthentication", func() {
+			It("should return default keychain when no secret is configured", func() {
+				// Create ImagePolicy without secret
+				imagePolicy := &imagev1beta2.ImagePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-policy",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImagePolicySpec{
+						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+							Name: "test-repo",
+						},
+					},
+				}
+
+				// Create ImageRepository without secret
+				imageRepo := &imagev1beta2.ImageRepository{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-repo",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImageRepositorySpec{
+						Image: "test-registry.com/test/image",
+					},
+				}
+
+				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
+				Expect(k8sClient.Create(ctx, imageRepo)).To(Succeed())
+
+				keychain, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(keychain).ToNot(BeNil())
+			})
+
+			It("should return dockerConfigKeychain when secret is configured", func() {
+				// Create secret with docker config
+				dockerConfig := `{
+					"auths": {
+						"test-registry.com": {
+							"username": "testuser",
+							"password": "testpass"
+						}
+					}
+				}`
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-secret",
+						Namespace: namespace,
+					},
+					Type: corev1.SecretTypeDockerConfigJson,
+					Data: map[string][]byte{
+						".dockerconfigjson": []byte(dockerConfig),
+					},
+				}
+
+				// Create ImagePolicy with secret
+				imagePolicy := &imagev1beta2.ImagePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-policy",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImagePolicySpec{
+						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+							Name: "test-repo",
+						},
+					},
+				}
+
+				// Create ImageRepository with secret
+				imageRepo := &imagev1beta2.ImageRepository{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-repo",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImageRepositorySpec{
+						Image: "test-registry.com/test/image",
+						SecretRef: &fluxmeta.LocalObjectReference{
+							Name: "test-secret",
+						},
+					},
+				}
+
+				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
+				Expect(k8sClient.Create(ctx, imageRepo)).To(Succeed())
+
+				keychain, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(keychain).ToNot(BeNil())
+
+				// Verify it's a dockerConfigKeychain
+				_, ok := keychain.(*dockerConfigKeychain)
+				Expect(ok).To(BeTrue())
+			})
+
+			It("should return error when ImageRepository is not found", func() {
+				imagePolicy := &imagev1beta2.ImagePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-policy",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImagePolicySpec{
+						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+							Name: "nonexistent-repo",
+						},
+					},
+				}
+
+				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
+
+				_, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("failed to get ImageRepository"))
+			})
+		})
+
+		Context("parseOCIAnnotations", func() {
+			It("should handle invalid image references gracefully", func() {
+				// Create a minimal ImagePolicy for testing
+				imagePolicy := &imagev1beta2.ImagePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-policy",
+						Namespace: namespace,
+					},
+					Spec: imagev1beta2.ImagePolicySpec{
+						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
+							Name: "nonexistent-repo",
+						},
+					},
+				}
+
+				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
+
+				// Test with invalid image reference to trigger error path
+				version, revision, err := reconciler.parseOCIAnnotations(ctx, "invalid-image-ref", imagePolicy)
+				Expect(err).To(HaveOccurred())
+				Expect(version).To(BeNil())
+				Expect(revision).To(BeNil())
+			})
+		})
+
+		Context("dockerConfigKeychain", func() {
+			It("should resolve authentication for matching registry", func() {
+				// Create a mock config file
+				configFile := &configfile.ConfigFile{
+					AuthConfigs: map[string]dockertypes.AuthConfig{
+						"test-registry.com": {
+							Username: "testuser",
+							Password: "testpass",
+						},
+					},
+				}
+
+				keychain := &dockerConfigKeychain{config: configFile}
+
+				// Create a mock resource
+				resource := &mockResource{registry: "test-registry.com"}
+				auth, err := keychain.Resolve(resource)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(auth).ToNot(BeNil())
+
+				// Verify it's not anonymous (should have credentials)
+				Expect(auth).ToNot(Equal(authn.Anonymous))
+			})
+
+			It("should return anonymous authenticator for non-matching registry", func() {
+				configFile := &configfile.ConfigFile{
+					AuthConfigs: map[string]dockertypes.AuthConfig{
+						"other-registry.com": {
+							Username: "testuser",
+							Password: "testpass",
+						},
+					},
+				}
+
+				keychain := &dockerConfigKeychain{config: configFile}
+				resource := &mockResource{registry: "test-registry.com"}
+				auth, err := keychain.Resolve(resource)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(auth).ToNot(BeNil())
+
+				// Should be anonymous authenticator
+				Expect(auth).To(Equal(authn.Anonymous))
+			})
+		})
+	})
+
 })
 
 // Add FakeClock for testing
@@ -3373,4 +3639,17 @@ func NewFakeClock() *FakeClock {
 	return &FakeClock{
 		now: metav1.NewTime(now),
 	}
+}
+
+// mockResource implements authn.Resource for testing
+type mockResource struct {
+	registry string
+}
+
+func (m *mockResource) RegistryStr() string {
+	return m.registry
+}
+
+func (m *mockResource) String() string {
+	return m.registry
 }

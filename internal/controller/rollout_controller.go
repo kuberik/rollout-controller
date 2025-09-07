@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -25,7 +27,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/configfile"
 	"github.com/go-logr/logr"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -54,6 +61,25 @@ type RealClock struct{}
 
 func (RealClock) Now() time.Time { return time.Now() }
 
+// dockerConfigKeychain implements authn.Keychain interface for Docker config JSON
+type dockerConfigKeychain struct {
+	config *configfile.ConfigFile
+}
+
+func (k *dockerConfigKeychain) Resolve(resource authn.Resource) (authn.Authenticator, error) {
+	// Find the registry in our config
+	for registry, auth := range k.config.AuthConfigs {
+		if resource.RegistryStr() == registry {
+			return authn.FromConfig(authn.AuthConfig{
+				Username: auth.Username,
+				Password: auth.Password,
+			}), nil
+		}
+	}
+	// Return anonymous authenticator if no match found
+	return authn.Anonymous, nil
+}
+
 // RolloutReconciler reconciles a Rollout object
 type RolloutReconciler struct {
 	client.Client
@@ -69,6 +95,7 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagepolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagerepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -142,7 +169,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					log.Info("Wanted version deployment proceeding while monitoring bake time")
 					// For wanted versions with in-progress bake, we need to ensure we requeue to monitor bake time
 					// even if no new deployment is needed
-					if len(rollout.Status.History) > 0 && rollout.Status.History[0].Version == *rollout.Spec.WantedVersion {
+					if len(rollout.Status.History) > 0 && rollout.Status.History[0].Version.Tag == *rollout.Spec.WantedVersion {
 						requeueAfter := r.calculateRequeueTime(&rollout)
 						log.Info("Wanted version already deployed, requeuing to monitor bake time", "requeueAfter", requeueAfter)
 						return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -176,7 +203,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Gating logic: if wantedVersion is set in spec, ignore gates
 	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
-	var gatedReleaseCandidates []string
+	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
 	var gatesPassing bool
 	if err != nil {
 		log.Error(err, "Failed to get next release candidates")
@@ -223,11 +250,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No release candidates found")
 	}
 
-	if len(rollout.Status.History) == 0 || *wantedRelease != rollout.Status.History[0].Version {
+	if len(rollout.Status.History) == 0 || *wantedRelease != rollout.Status.History[0].Version.Tag {
 		// Check if deployment should be blocked due to failed bake status
 		if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusFailed {
 			log.Info("Found failed bake status, checking if deployment should be blocked",
-				"currentVersion", rollout.Status.History[0].Version,
+				"currentVersion", rollout.Status.History[0].Version.Tag,
 				"bakeStatus", *rollout.Status.History[0].BakeStatus,
 				"wantedVersion", rollout.Spec.WantedVersion,
 				"hasUnblockAnnotation", rollout.Annotations != nil && rollout.Annotations["rollout.kuberik.com/unblock-failed"] == "true")
@@ -276,7 +303,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		// Check if the current deployment is the wanted version and bake time is in progress
 		if len(rollout.Status.History) > 0 &&
-			rollout.Status.History[0].Version == *rollout.Spec.WantedVersion &&
+			rollout.Status.History[0].Version.Tag == *rollout.Spec.WantedVersion &&
 			rollout.Status.History[0].BakeStatus != nil &&
 			*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 			requeueAfter := r.calculateRequeueTime(&rollout)
@@ -287,7 +314,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				"hasHistory", len(rollout.Status.History) > 0,
 				"currentVersion", func() string {
 					if len(rollout.Status.History) > 0 {
-						return rollout.Status.History[0].Version
+						return rollout.Status.History[0].Version.Tag
 					}
 					return "none"
 				}(),
@@ -338,7 +365,7 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.RolloutStatus) ([]string, error) {
+func getNextReleaseCandidates(releases []rolloutv1alpha1.VersionInfo, status *rolloutv1alpha1.RolloutStatus) ([]rolloutv1alpha1.VersionInfo, error) {
 	// If there are no releases, return an error
 	if len(releases) == 0 {
 		return nil, fmt.Errorf("no releases available")
@@ -346,8 +373,10 @@ func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.Rollout
 	releases = slices.Clone(releases)
 	slices.Reverse(releases)
 	if len(status.History) > 0 {
-		currentRelease := status.History[0].Version
-		if latestReleaseIndex := slices.Index(releases, currentRelease); latestReleaseIndex != -1 {
+		currentRelease := status.History[0].Version.Tag
+		if latestReleaseIndex := slices.IndexFunc(releases, func(r rolloutv1alpha1.VersionInfo) bool {
+			return r.Tag == currentRelease
+		}); latestReleaseIndex != -1 {
 			return releases[:latestReleaseIndex], nil
 		} else {
 			// Current release not found in available releases (e.g., old versions cleaned up)
@@ -356,6 +385,122 @@ func getNextReleaseCandidates(releases []string, status *rolloutv1alpha1.Rollout
 		}
 	}
 	return releases, nil
+}
+
+// getImageRepositoryAuthentication extracts authentication information from ImageRepository
+func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context, imagePolicy *imagev1beta2.ImagePolicy) (authn.Keychain, error) {
+	// Get the ImageRepository referenced by the ImagePolicy
+	imageRepoRef := imagePolicy.Spec.ImageRepositoryRef
+	imageRepoNamespace := imagePolicy.Namespace
+	if imageRepoRef.Namespace != "" {
+		imageRepoNamespace = imageRepoRef.Namespace
+	}
+
+	imageRepo := &imagev1beta2.ImageRepository{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: imageRepoNamespace,
+		Name:      imageRepoRef.Name,
+	}, imageRepo); err != nil {
+		return nil, fmt.Errorf("failed to get ImageRepository: %w", err)
+	}
+
+	// Handle secretRef authentication
+	if imageRepo.Spec.SecretRef != nil {
+		secret := &corev1.Secret{}
+		if err := r.Client.Get(ctx, client.ObjectKey{
+			Namespace: imageRepoNamespace,
+			Name:      imageRepo.Spec.SecretRef.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get secret: %w", err)
+		}
+
+		// Parse Docker config JSON using the same approach as crane
+		if dockerConfigJSON, exists := secret.Data[".dockerconfigjson"]; exists {
+			reader := bytes.NewReader(dockerConfigJSON)
+			configFile, err := config.LoadFromReader(reader)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load Docker config: %w", err)
+			}
+
+			// Create a keychain that can resolve authentication for any registry
+			return &dockerConfigKeychain{config: configFile}, nil
+		}
+	}
+
+	// Return anonymous keychain if no authentication found
+	return authn.DefaultKeychain, nil
+}
+
+// parseOCIAnnotations extracts version and revision information from OCI image annotations.
+func (r *RolloutReconciler) parseOCIAnnotations(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision *string, err error) {
+	log := logf.FromContext(ctx)
+
+	// Get authentication keychain from ImageRepository
+	keychain, err := r.getImageRepositoryAuthentication(ctx, imagePolicy)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
+	}
+
+	// Parse the image reference
+	ref, err := name.ParseReference(imageRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
+	}
+
+	// Fetch the manifest with authentication using keychain
+	manifest, err := crane.Manifest(ref.String(), crane.WithAuthFromKeychain(keychain))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
+	}
+
+	// Parse the manifest JSON
+	var manifestData struct {
+		Annotations map[string]string `json:"annotations"`
+		Config      struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(manifest, &manifestData); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
+	}
+
+	// Extract version and revision from annotations
+	var versionStr, revisionStr *string
+
+	// Check manifest annotations first
+	if annotations := manifestData.Annotations; annotations != nil {
+		// Look for version
+		if v, exists := annotations["org.opencontainers.image.version"]; exists && v != "" {
+			versionStr = &v
+		}
+
+		// Look for revision
+		if r, exists := annotations["org.opencontainers.image.revision"]; exists && r != "" {
+			revisionStr = &r
+		}
+	}
+
+	// Check config annotations if not found in manifest
+	if versionStr == nil || revisionStr == nil {
+		if annotations := manifestData.Config.Annotations; annotations != nil {
+			// Look for version
+			if versionStr == nil {
+				if v, exists := annotations["org.opencontainers.image.version"]; exists && v != "" {
+					versionStr = &v
+				}
+			}
+
+			// Look for revision
+			if revisionStr == nil {
+				if r, exists := annotations["org.opencontainers.image.revision"]; exists && r != "" {
+					revisionStr = &r
+				}
+			}
+		}
+	}
+
+	log.V(5).Info("Parsed OCI annotations", "imageRef", imageRef, "version", versionStr, "revision", revisionStr)
+	return versionStr, revisionStr, nil
 }
 
 // updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
@@ -373,15 +518,44 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	}
 
 	// Extract available releases from ImagePolicy status
-	var newReleases []string
+	var newReleases []rolloutv1alpha1.VersionInfo
 	if imagePolicy.Status.LatestRef != nil && imagePolicy.Status.LatestRef.Tag != "" {
-		newReleases = []string{imagePolicy.Status.LatestRef.Tag}
+		versionInfo := rolloutv1alpha1.VersionInfo{
+			Tag: imagePolicy.Status.LatestRef.Tag,
+		}
+
+		// Extract digest if available
+		if imagePolicy.Status.LatestRef.Digest != "" {
+			versionInfo.Digest = &imagePolicy.Status.LatestRef.Digest
+		}
+
+		// Extract version and revision from OCI annotations if available
+		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
+		if version, revision, err := r.parseOCIAnnotations(ctx, imageRef, imagePolicy); err == nil {
+			versionInfo.Version = version
+			versionInfo.Revision = revision
+			if version != nil || revision != nil {
+				log.V(4).Info("Successfully extracted OCI annotations", "imageRef", imageRef, "version", version, "revision", revision)
+			}
+		} else {
+			log.V(5).Info("Could not parse OCI annotations, continuing without additional metadata", "imageRef", imageRef, "error", err)
+		}
+
+		newReleases = []rolloutv1alpha1.VersionInfo{versionInfo}
 	}
 
 	// Append new releases to existing ones if they're not already present
 	existingReleases := rollout.Status.AvailableReleases
 	for _, newRelease := range newReleases {
-		if !slices.Contains(existingReleases, newRelease) {
+		// Check if this release already exists by comparing tags
+		found := false
+		for _, existing := range existingReleases {
+			if existing.Tag == newRelease.Tag {
+				found = true
+				break
+			}
+		}
+		if !found {
 			existingReleases = append(existingReleases, newRelease)
 		}
 	}
@@ -423,7 +597,7 @@ func (r *RolloutReconciler) updateRolloutStatusOnError(ctx context.Context, roll
 }
 
 // evaluateGates lists and evaluates gates, updates rollout status, and returns filtered candidates and gatesPassing.
-func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, releaseCandidates []string) ([]string, bool, error) {
+func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, releaseCandidates []rolloutv1alpha1.VersionInfo) ([]rolloutv1alpha1.VersionInfo, bool, error) {
 	// Check for gate bypass annotation
 	bypassVersion := ""
 	if rollout.Annotations != nil {
@@ -445,7 +619,9 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	// If bypass is enabled for a specific version, check if that version is in the candidates
 	bypassEnabled := false
 	if bypassVersion != "" {
-		if slices.Contains(releaseCandidates, bypassVersion) {
+		if slices.IndexFunc(releaseCandidates, func(r rolloutv1alpha1.VersionInfo) bool {
+			return r.Tag == bypassVersion
+		}) != -1 {
 			bypassEnabled = true
 			log := logf.FromContext(ctx)
 			log.Info("Gate bypass enabled for version", "bypassVersion", bypassVersion)
@@ -480,9 +656,9 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 
 				if !bypassEnabled {
 					// Filter gatedReleaseCandidates to only those in allowedVersions
-					var filtered []string
+					var filtered []rolloutv1alpha1.VersionInfo
 					for _, r := range gatedReleaseCandidates {
-						if slices.Contains(*gate.Spec.AllowedVersions, r) {
+						if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
 							filtered = append(filtered, r)
 						}
 					}
@@ -490,7 +666,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 
 					allowed := false
 					for _, r := range releaseCandidates {
-						if slices.Contains(*gate.Spec.AllowedVersions, r) {
+						if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
 							allowed = true
 							break
 						}
@@ -512,7 +688,13 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 
 	// If bypass is enabled, allow the bypassed version through
 	if bypassEnabled {
-		gatedReleaseCandidates = []string{bypassVersion}
+		// Find the bypassed version in the original release candidates
+		for _, candidate := range releaseCandidates {
+			if candidate.Tag == bypassVersion {
+				gatedReleaseCandidates = []rolloutv1alpha1.VersionInfo{candidate}
+				break
+			}
+		}
 		gatesPassing = true
 	}
 
@@ -556,14 +738,14 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 }
 
 // selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
-func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []string) (*string, error) {
+func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []rolloutv1alpha1.VersionInfo) (*string, error) {
 	wantedRelease := rollout.Spec.WantedVersion
 	if wantedRelease != nil {
 		// Allow any wantedVersion to be set - it doesn't need to be in availableReleases
 		// This enables users to deploy any tag from the referenced Docker repository
 		return wantedRelease, nil
 	} else if len(gatedReleaseCandidates) > 0 {
-		return &gatedReleaseCandidates[0], nil
+		return &gatedReleaseCandidates[0].Tag, nil
 	}
 	return nil, nil
 }
@@ -652,8 +834,20 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Generate deployment message
 	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, unblockUsed)
 
+	// Find the version info for the wanted release
+	var versionInfo rolloutv1alpha1.VersionInfo
+	versionInfo.Tag = wantedRelease
+
+	// Try to find additional version information from available releases
+	for _, release := range rollout.Status.AvailableReleases {
+		if release.Tag == wantedRelease {
+			versionInfo = release
+			break
+		}
+	}
+
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
-		Version:           wantedRelease,
+		Version:           versionInfo,
 		Timestamp:         metav1.Now(),
 		Message:           &deploymentMessage,
 		BakeStatus:        bakeStatus,

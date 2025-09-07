@@ -167,6 +167,10 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 	git checkout -- config/manager
 
+.PHONY: dev-deploy
+dev-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	IMG=ghcr.io/kuberik/kuberik/rolloutcontroller:$(shell git rev-parse HEAD)-$(shell date +%s) make docker-build kind-load deploy
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
