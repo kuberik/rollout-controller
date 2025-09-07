@@ -1022,9 +1022,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			BeforeEach(func() {
 				minBakeTime = &metav1.Duration{Duration: 5 * time.Minute}
-				fakeClock = &FakeClock{
-					now: metav1.NewTime(time.Now()),
-				}
+				fakeClock = NewFakeClock()
 				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
@@ -2095,9 +2093,7 @@ var _ = Describe("Rollout Controller", func() {
 		var helperNamespace string
 
 		BeforeEach(func() {
-			fakeClock = &FakeClock{
-				now: metav1.NewTime(time.Now()),
-			}
+			fakeClock = NewFakeClock()
 			controllerReconciler = &RolloutReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -2679,7 +2675,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			fakeClock = &FakeClock{now: metav1.Now()}
+			fakeClock = NewFakeClock()
 			controllerReconciler = &RolloutReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -3364,9 +3360,17 @@ type FakeClock struct {
 }
 
 func (f *FakeClock) Now() time.Time {
-	return f.now.Rfc3339Copy().Time
+	return f.now.Time
 }
 
 func (f *FakeClock) Add(d time.Duration) {
 	f.now = metav1.NewTime(f.now.Add(d))
+}
+
+// NewFakeClock creates a FakeClock with time truncated to second precision
+func NewFakeClock() *FakeClock {
+	now := time.Now().Truncate(time.Second)
+	return &FakeClock{
+		now: metav1.NewTime(now),
+	}
 }
