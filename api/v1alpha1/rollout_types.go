@@ -23,6 +23,26 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// VersionInfo represents detailed information about a version.
+type VersionInfo struct {
+	// Tag is the image tag (e.g., "v1.2.3", "latest").
+	// +kubebuilder:validation:Required
+	// +required
+	Tag string `json:"tag"`
+
+	// Digest is the image digest if available from the ImagePolicy.
+	// +optional
+	Digest *string `json:"digest,omitempty"`
+
+	// Version is the semantic version extracted from OCI annotations if available.
+	// +optional
+	Version *string `json:"version,omitempty"`
+
+	// Revision is the revision information extracted from OCI annotations if available.
+	// +optional
+	Revision *string `json:"revision,omitempty"`
+}
+
 // HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.
 type HealthCheckSelectorConfig struct {
 	// Selector specifies the label selector for matching HealthChecks
@@ -162,20 +182,17 @@ type RolloutStatus struct {
 
 	// AvailableReleases is a list of all releases available in the releases repository.
 	// +optional
-	// +listType=set
-	AvailableReleases []string `json:"availableReleases,omitempty"`
+	AvailableReleases []VersionInfo `json:"availableReleases,omitempty"`
 
 	// ReleaseCandidates is a list of releases that are candidates for the next deployment.
 	// These are filtered from AvailableReleases based on deployment history and version ordering.
 	// +optional
-	// +listType=set
-	ReleaseCandidates []string `json:"releaseCandidates,omitempty"`
+	ReleaseCandidates []VersionInfo `json:"releaseCandidates,omitempty"`
 
 	// GatedReleaseCandidates is a list of release candidates that have passed through all gates.
 	// This shows which versions are actually available for deployment after gate evaluation.
 	// +optional
-	// +listType=set
-	GatedReleaseCandidates []string `json:"gatedReleaseCandidates,omitempty"`
+	GatedReleaseCandidates []VersionInfo `json:"gatedReleaseCandidates,omitempty"`
 
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
@@ -184,10 +201,10 @@ type RolloutStatus struct {
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.
 type DeploymentHistoryEntry struct {
-	// Version is the version that was deployed.
+	// Version is the version information that was deployed.
 	// +kubebuilder:validation:Required
 	// +required
-	Version string `json:"version"`
+	Version VersionInfo `json:"version"`
 
 	// Timestamp is the time when the deployment occurred.
 	// +kubebuilder:validation:Required
@@ -225,7 +242,7 @@ type DeploymentHistoryEntry struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.history[0].version`
+// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.history[0].version.tag`
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.history[0].message`
 // +kubebuilder:printcolumn:name="BakeStatus",type=string,JSONPath=`.status.history[0].bakeStatus`
 // +kubebuilder:printcolumn:name="BakeTime",type=string,JSONPath=`.status.history[0].bakeStartTime`

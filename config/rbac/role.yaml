@@ -23,6 +23,7 @@ rules:
   - image.toolkit.fluxcd.io
   resources:
   - imagepolicies
+  - imagerepositories
   verbs:
   - get
   - list

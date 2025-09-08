@@ -83,6 +83,7 @@ var _ = BeforeSuite(func() {
 			filepath.Join("..", "..", "vendir", "ocirepositories"),
 			filepath.Join("..", "..", "vendir", "kustomizations"),
 			filepath.Join("..", "..", "vendir", "imagepolicies"),
+			filepath.Join("..", "..", "vendir", "imagerepositories"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}
