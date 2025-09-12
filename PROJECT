@@ -4,33 +4,35 @@
 # More info: https://book.kubebuilder.io/reference/project-config.html
 domain: kuberik.com
 layout:
-  - go.kubebuilder.io/v4
+- go.kubebuilder.io/v4
 projectName: rollout-controller
 repo: github.com/kuberik/rollout-controller
 resources:
-  - api:
-      crdVersion: v1
-      namespaced: true
-    controller: true
-    domain: kuberik.com
-    kind: Rollout
-    path: github.com/kuberik/rollout-controller/api/v1alpha1
-    version: v1alpha1
-  - api:
-      crdVersion: v1
-      namespaced: true
-    controller: false
-    domain: kuberik.com
-    kind: RolloutGate
-    path: github.com/kuberik/rollout-controller/api/v1alpha1
-    version: v1alpha1
-  - api:
-      crdVersion: v1
-      namespaced: true
-    controller: false
-    domain: kuberik.com
-    kind: HealthCheck
-    path: github.com/kuberik/rollout-controller/api/v1alpha1
-    version: v1alpha1
-
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kuberik.com
+  kind: Rollout
+  path: github.com/kuberik/rollout-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: kuberik.com
+  kind: RolloutGate
+  path: github.com/kuberik/rollout-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kuberik.com
+  kind: HealthCheck
+  path: github.com/kuberik/rollout-controller/api/v1alpha1
+  version: v1alpha1
+- controller: true
+  domain: kuberik.com
+  kind: KustomizationHealth
+  version: v1alpha1
 version: "3"
