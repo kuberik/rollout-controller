@@ -133,10 +133,25 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 	}
 }
 
-// checkKustomizationHealth checks the health of all resources managed by a kustomization
+// checkKustomizationHealth checks the health of the kustomization itself and all resources it manages
 func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, error) {
+	// First, check the kustomization resource itself
+	kustomizationHealth, kustomizationMessage, err := r.checkKustomizationResourceHealth(ctx, kustomization)
+	if err != nil {
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil
+	}
+
+	// If kustomization itself is unhealthy, return that status
+	if kustomizationHealth == rolloutv1alpha1.HealthStatusUnhealthy {
+		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), nil
+	}
+
 	// Check if kustomization has inventory
 	if kustomization.Status.Inventory == nil || len(kustomization.Status.Inventory.Entries) == 0 {
+		// If kustomization is healthy but has no inventory, it might be pending
+		if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
+			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
+		}
 		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil
 	}
 
@@ -190,7 +205,7 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 		}
 	}
 
-	// Determine overall health status
+	// Determine overall health status based on both kustomization and managed resources
 	if len(errorResources) > 0 {
 		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), nil
 	}
@@ -203,7 +218,43 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil
 	}
 
-	return rolloutv1alpha1.HealthStatusHealthy, "All managed resources are healthy", nil
+	// All resources are healthy, but check if kustomization itself has any pending status
+	if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
+	}
+
+	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil
+}
+
+// checkKustomizationResourceHealth checks the health of the kustomization resource itself using kstatus
+func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, error) {
+	// Convert the kustomization to unstructured for kstatus
+	obj := &unstructured.Unstructured{}
+	err := r.Scheme.Convert(kustomization, obj, nil)
+	if err != nil {
+		return rolloutv1alpha1.HealthStatusUnhealthy, "", fmt.Errorf("failed to convert kustomization to unstructured: %v", err)
+	}
+
+	// Compute status using kstatus
+	result, err := status.Compute(obj)
+	if err != nil {
+		return rolloutv1alpha1.HealthStatusUnhealthy, "", fmt.Errorf("failed to compute kustomization status: %v", err)
+	}
+
+	// Map kstatus result to our health status
+	switch result.Status {
+	case status.CurrentStatus:
+		return rolloutv1alpha1.HealthStatusHealthy, result.Message, nil
+	case status.InProgressStatus:
+		return rolloutv1alpha1.HealthStatusPending, result.Message, nil
+	case status.FailedStatus:
+		return rolloutv1alpha1.HealthStatusUnhealthy, result.Message, nil
+	case status.TerminatingStatus:
+		return rolloutv1alpha1.HealthStatusPending, result.Message, nil
+	default:
+		// Unknown status, treat as unhealthy
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unknown status: %s - %s", result.Status, result.Message), nil
+	}
 }
 
 // updateHealthCheckStatus updates the HealthCheck status using the base controller

@@ -215,7 +215,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
-			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("no managed resources"))
+			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("Kustomization pending"))
 		})
 
 		It("should handle kustomization with pending managed resources", func() {
@@ -503,7 +503,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
-			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("no managed resources"))
+			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("Kustomization pending"))
 		})
 
 		It("should set consistent requeue interval regardless of health status", func() {
