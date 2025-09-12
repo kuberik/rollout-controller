@@ -26,11 +26,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/cli-utils/pkg/object"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // KustomizationHealthReconciler reconciles a KustomizationHealth object
@@ -263,10 +267,83 @@ func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Cont
 	return r.HealthCheckController.UpdateHealthCheckStatus(ctx, healthCheck, status, message)
 }
 
+// findHealthChecksForKustomization maps Kustomization events to HealthCheck reconciliation requests
+func (r *KustomizationHealthReconciler) findHealthChecksForKustomization(ctx context.Context, obj client.Object) []reconcile.Request {
+	var requests []reconcile.Request
+
+	kustomization, ok := obj.(*kustomizev1.Kustomization)
+	if !ok {
+		return requests
+	}
+
+	// List all HealthChecks to find ones that reference this Kustomization
+	healthCheckList := &rolloutv1alpha1.HealthCheckList{}
+	if err := r.List(ctx, healthCheckList); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list HealthChecks")
+		return requests
+	}
+
+	for _, healthCheck := range healthCheckList.Items {
+		// Check if this is a kustomization health check
+		if healthCheck.Spec.Class == nil || *healthCheck.Spec.Class != "kustomization" {
+			continue
+		}
+
+		// Check if this HealthCheck references the Kustomization
+		if r.healthCheckReferencesKustomization(&healthCheck, kustomization) {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: healthCheck.Namespace,
+					Name:      healthCheck.Name,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
+// healthCheckReferencesKustomization checks if a HealthCheck references a specific Kustomization
+func (r *KustomizationHealthReconciler) healthCheckReferencesKustomization(healthCheck *rolloutv1alpha1.HealthCheck, kustomization *kustomizev1.Kustomization) bool {
+	if healthCheck.Annotations == nil {
+		return false
+	}
+
+	kustomizationAnnotation := "healthcheck.kuberik.com/kustomization"
+	kustomizationValue, exists := healthCheck.Annotations[kustomizationAnnotation]
+	if !exists {
+		return false
+	}
+
+	// Parse the kustomization reference
+	parts := strings.Split(kustomizationValue, "/")
+	var referencedNamespace, referencedName string
+
+	if len(parts) == 1 {
+		// Only name provided, use same namespace as HealthCheck
+		referencedNamespace = healthCheck.Namespace
+		referencedName = parts[0]
+	} else if len(parts) == 2 {
+		// Namespace and name provided
+		referencedNamespace = parts[0]
+		referencedName = parts[1]
+	} else {
+		// Invalid format
+		return false
+	}
+
+	// Check if the referenced Kustomization matches the current one
+	return referencedNamespace == kustomization.Namespace && referencedName == kustomization.Name
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *KustomizationHealthReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.HealthCheck{}).
+		Watches(
+			&kustomizev1.Kustomization{},
+			handler.EnqueueRequestsFromMapFunc(r.findHealthChecksForKustomization),
+		).
 		Named("kustomizationhealth").
 		Complete(r)
 }

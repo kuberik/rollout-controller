@@ -882,6 +882,91 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			By("verifying that the default requeue interval is used when format is invalid")
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 		})
+
+		It("should watch for Kustomization changes and trigger HealthCheck reconciliation", func() {
+			By("creating a HealthCheck that references a Kustomization")
+			healthCheck := &rolloutv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-healthcheck-watch",
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"healthcheck.kuberik.com/kustomization": kustomization.Name,
+					},
+				},
+				Spec: rolloutv1alpha1.HealthCheckSpec{
+					Class: stringPtr("kustomization"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+			By("setting initial status")
+			healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+				Status:  rolloutv1alpha1.HealthStatusPending,
+				Message: stringPtr("Initial status"),
+			}
+			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+			By("reconciling the HealthCheck initially")
+			controllerReconciler := &KustomizationHealthReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				HealthCheckController: &HealthCheckReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+					Clock:  &RealClock{},
+				},
+			}
+			healthCheckNamespacedName := types.NamespacedName{
+				Name:      healthCheck.Name,
+				Namespace: healthCheck.Namespace,
+			}
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: healthCheckNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+
+			By("verifying initial HealthCheck status")
+			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
+			err = k8sClient.Get(ctx, healthCheckNamespacedName, updatedHealthCheck)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
+			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("Kustomization pending"))
+
+			By("testing the mapping function to find HealthChecks for Kustomization")
+			requests := controllerReconciler.findHealthChecksForKustomization(ctx, kustomization)
+			Expect(requests).To(HaveLen(2), "Expected to find 2 HealthChecks referencing the Kustomization (original + new), but found %d", len(requests))
+
+			// Check that our new HealthCheck is in the list
+			found := false
+			for _, req := range requests {
+				if req.NamespacedName == healthCheckNamespacedName {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "Expected to find our test HealthCheck in the requests")
+
+			By("testing healthCheckReferencesKustomization function")
+			Expect(controllerReconciler.healthCheckReferencesKustomization(updatedHealthCheck, kustomization)).To(BeTrue())
+
+			By("testing with a different Kustomization")
+			differentKustomization := &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "different-kustomization",
+					Namespace: namespace,
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Path: "./test",
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind: "GitRepository",
+						Name: "test-repo",
+					},
+				},
+			}
+			Expect(controllerReconciler.healthCheckReferencesKustomization(updatedHealthCheck, differentKustomization)).To(BeFalse())
+		})
 	})
 
 	Context("When testing helper functions", func() {
@@ -922,6 +1007,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("invalid kustomization reference format"))
 		})
+
 	})
 })
 
