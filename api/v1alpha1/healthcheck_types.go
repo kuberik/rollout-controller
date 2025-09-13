@@ -22,6 +22,9 @@ import (
 
 // HealthCheckSpec defines the desired state of HealthCheck.
 type HealthCheckSpec struct {
+	// Class specifies the type of health check (e.g., 'kustomization')
+	// +optional
+	Class *string `json:"class,omitempty"`
 }
 
 type HealthStatus string
@@ -41,6 +44,14 @@ type HealthCheckStatus struct {
 	// LastErrorTime is the timestamp of the most recent error state
 	// +optional
 	LastErrorTime *metav1.Time `json:"lastErrorTime,omitempty"`
+
+	// Message provides additional details about the health status
+	// +optional
+	Message *string `json:"message,omitempty"`
+
+	// LastChangeTime is the timestamp when the health status last changed
+	// +optional
+	LastChangeTime *metav1.Time `json:"lastChangeTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

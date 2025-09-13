@@ -1,0 +1,13 @@
+apiVersion: kuberik.com/v1alpha1
+kind: HealthCheck
+metadata:
+  name: kustomization-health-sample
+  namespace: default
+  annotations:
+    # Reference to the Flux Kustomization to monitor
+    healthcheck.kuberik.com/kustomization: "default/my-app-kustomization"
+    # Optional: Custom requeue interval (default: 30s, minimum: 5s)
+    # Examples: "60s", "2m", "300s", "1h"
+    healthcheck.kuberik.com/requeue-interval: "60s"
+spec:
+  class: "kustomization"
