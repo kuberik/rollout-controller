@@ -226,6 +226,11 @@ spec:
                   description: VersionInfo represents detailed information about a
                     version.
                   properties:
+                    created:
+                      description: Created is the creation timestamp extracted from
+                        OCI annotations if available.
+                      format: date-time
+                      type: string
                     digest:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
@@ -314,6 +319,11 @@ spec:
                   description: VersionInfo represents detailed information about a
                     version.
                   properties:
+                    created:
+                      description: Created is the creation timestamp extracted from
+                        OCI annotations if available.
+                      format: date-time
+                      type: string
                     digest:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
@@ -410,6 +420,11 @@ spec:
                     version:
                       description: Version is the version information that was deployed.
                       properties:
+                        created:
+                          description: Created is the creation timestamp extracted
+                            from OCI annotations if available.
+                          format: date-time
+                          type: string
                         digest:
                           description: Digest is the image digest if available from
                             the ImagePolicy.
@@ -441,6 +456,11 @@ spec:
                   description: VersionInfo represents detailed information about a
                     version.
                   properties:
+                    created:
+                      description: Created is the creation timestamp extracted from
+                        OCI annotations if available.
+                      format: date-time
+                      type: string
                     digest:
                       description: Digest is the image digest if available from the
                         ImagePolicy.

@@ -41,6 +41,10 @@ type VersionInfo struct {
 	// Revision is the revision information extracted from OCI annotations if available.
 	// +optional
 	Revision *string `json:"revision,omitempty"`
+
+	// Created is the creation timestamp extracted from OCI annotations if available.
+	// +optional
+	Created *metav1.Time `json:"created,omitempty"`
 }
 
 // HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.
