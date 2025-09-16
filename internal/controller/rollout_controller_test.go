@@ -4031,7 +4031,7 @@ var _ = Describe("Rollout Controller", func() {
 			})
 		})
 
-		Context("parseOCIAnnotations", func() {
+		Context("parseOCIManifest", func() {
 			It("should handle invalid image references gracefully", func() {
 				// Create a minimal ImagePolicy for testing
 				imagePolicy := &imagev1beta2.ImagePolicy{
@@ -4049,10 +4049,12 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
 
 				// Test with invalid image reference to trigger error path
-				version, revision, err := reconciler.parseOCIAnnotations(ctx, "invalid-image-ref", imagePolicy)
+				version, revision, artifactType, source, err := reconciler.parseOCIManifest(ctx, "invalid-image-ref", imagePolicy)
 				Expect(err).To(HaveOccurred())
 				Expect(version).To(BeNil())
 				Expect(revision).To(BeNil())
+				Expect(artifactType).To(BeNil())
+				Expect(source).To(BeNil())
 			})
 		})
 

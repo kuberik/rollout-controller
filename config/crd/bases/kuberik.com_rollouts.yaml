@@ -213,6 +213,12 @@ spec:
           status:
             description: RolloutStatus defines the observed state of Rollout.
             properties:
+              artifactType:
+                description: |-
+                  ArtifactType is the media/artifact type of the image extracted from the manifest.
+                  This includes OCI artifact types, container image types, and other media types.
+                  This field is set once for the entire rollout based on the latest available release.
+                type: string
               availableReleases:
                 description: AvailableReleases is a list of all releases available
                   in the releases repository.
@@ -454,6 +460,12 @@ spec:
                   - tag
                   type: object
                 type: array
+              source:
+                description: |-
+                  Source is the source information extracted from OCI annotations.
+                  This typically contains the repository URL or source code location.
+                  This field is set once for the entire rollout based on the latest available release.
+                type: string
             type: object
         type: object
     served: true

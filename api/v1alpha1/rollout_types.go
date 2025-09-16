@@ -197,6 +197,18 @@ type RolloutStatus struct {
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
 	Gates []RolloutGateStatusSummary `json:"gates,omitempty"`
+
+	// ArtifactType is the media/artifact type of the image extracted from the manifest.
+	// This includes OCI artifact types, container image types, and other media types.
+	// This field is set once for the entire rollout based on the latest available release.
+	// +optional
+	ArtifactType *string `json:"artifactType,omitempty"`
+
+	// Source is the source information extracted from OCI annotations.
+	// This typically contains the repository URL or source code location.
+	// This field is set once for the entire rollout based on the latest available release.
+	// +optional
+	Source *string `json:"source,omitempty"`
 }
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.

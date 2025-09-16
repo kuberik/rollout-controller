@@ -426,41 +426,53 @@ func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context
 	return authn.DefaultKeychain, nil
 }
 
-// parseOCIAnnotations extracts version and revision information from OCI image annotations.
-func (r *RolloutReconciler) parseOCIAnnotations(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision *string, err error) {
+// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, and source.
+func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision, artifactType, source *string, err error) {
 	log := logf.FromContext(ctx)
 
 	// Get authentication keychain from ImageRepository
 	keychain, err := r.getImageRepositoryAuthentication(ctx, imagePolicy)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
 	}
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
 	}
 
 	// Fetch the manifest with authentication using keychain
 	manifest, err := crane.Manifest(ref.String(), crane.WithAuthFromKeychain(keychain))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
 	}
 
 	// Parse the manifest JSON
 	var manifestData struct {
-		Annotations map[string]string `json:"annotations"`
-		Config      struct {
+		MediaType    string            `json:"mediaType"`
+		ArtifactType string            `json:"artifactType"`
+		Annotations  map[string]string `json:"annotations"`
+		Config       struct {
+			MediaType   string            `json:"mediaType"`
 			Annotations map[string]string `json:"annotations"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(manifest, &manifestData); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
 	}
 
-	// Extract version and revision from annotations
-	var versionStr, revisionStr *string
+	// Extract all metadata
+	var versionStr, revisionStr, artifactTypeStr, sourceStr *string
+
+	// Determine artifact type (preference order: artifactType, config.mediaType, manifest.mediaType)
+	if manifestData.ArtifactType != "" {
+		artifactTypeStr = &manifestData.ArtifactType
+	} else if manifestData.Config.MediaType != "" {
+		artifactTypeStr = &manifestData.Config.MediaType
+	} else if manifestData.MediaType != "" {
+		artifactTypeStr = &manifestData.MediaType
+	}
 
 	// Check manifest annotations first
 	if annotations := manifestData.Annotations; annotations != nil {
@@ -473,10 +485,15 @@ func (r *RolloutReconciler) parseOCIAnnotations(ctx context.Context, imageRef st
 		if r, exists := annotations["org.opencontainers.image.revision"]; exists && r != "" {
 			revisionStr = &r
 		}
+
+		// Look for source
+		if s, exists := annotations["org.opencontainers.image.source"]; exists && s != "" {
+			sourceStr = &s
+		}
 	}
 
 	// Check config annotations if not found in manifest
-	if versionStr == nil || revisionStr == nil {
+	if versionStr == nil || revisionStr == nil || sourceStr == nil {
 		if annotations := manifestData.Config.Annotations; annotations != nil {
 			// Look for version
 			if versionStr == nil {
@@ -491,11 +508,18 @@ func (r *RolloutReconciler) parseOCIAnnotations(ctx context.Context, imageRef st
 					revisionStr = &r
 				}
 			}
+
+			// Look for source
+			if sourceStr == nil {
+				if s, exists := annotations["org.opencontainers.image.source"]; exists && s != "" {
+					sourceStr = &s
+				}
+			}
 		}
 	}
 
-	log.V(5).Info("Parsed OCI annotations", "imageRef", imageRef, "version", versionStr, "revision", revisionStr)
-	return versionStr, revisionStr, nil
+	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr)
+	return versionStr, revisionStr, artifactTypeStr, sourceStr, nil
 }
 
 // updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
@@ -524,16 +548,23 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 			versionInfo.Digest = &imagePolicy.Status.LatestRef.Digest
 		}
 
-		// Extract version and revision from OCI annotations if available
+		// Extract version, revision, artifact type, and source from OCI manifest if available
 		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if version, revision, err := r.parseOCIAnnotations(ctx, imageRef, imagePolicy); err == nil {
+		if version, revision, artifactType, source, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 			versionInfo.Version = version
 			versionInfo.Revision = revision
 			if version != nil || revision != nil {
 				log.V(4).Info("Successfully extracted OCI annotations", "imageRef", imageRef, "version", version, "revision", revision)
 			}
+
+			// Set rollout-level metadata from the latest release
+			rollout.Status.ArtifactType = artifactType
+			rollout.Status.Source = source
+			if artifactType != nil || source != nil {
+				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", artifactType, "source", source)
+			}
 		} else {
-			log.V(5).Info("Could not parse OCI annotations, continuing without additional metadata", "imageRef", imageRef, "error", err)
+			log.V(5).Info("Could not parse OCI manifest, continuing without additional metadata", "imageRef", imageRef, "error", err)
 		}
 
 		newReleases = []rolloutv1alpha1.VersionInfo{versionInfo}
