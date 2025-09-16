@@ -426,6 +426,55 @@ func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context
 	return authn.DefaultKeychain, nil
 }
 
+// parseVersionInfoFromOCI extracts version information from OCI image for a specific tag.
+// It handles getting ImagePolicy, ImageRepository, and parsing the OCI manifest.
+func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout *rolloutv1alpha1.Rollout, tag string, log logr.Logger) (rolloutv1alpha1.VersionInfo, error) {
+	versionInfo := rolloutv1alpha1.VersionInfo{
+		Tag: tag,
+	}
+
+	// Get the ImagePolicy
+	imagePolicyNamespace := rollout.Namespace
+	imagePolicy := &imagev1beta2.ImagePolicy{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: imagePolicyNamespace,
+		Name:      rollout.Spec.ReleasesImagePolicy.Name,
+	}, imagePolicy); err != nil {
+		return versionInfo, fmt.Errorf("failed to get ImagePolicy: %w", err)
+	}
+
+	// Get the ImageRepository to construct the image reference
+	imageRepoRef := imagePolicy.Spec.ImageRepositoryRef
+	imageRepoNamespace := imagePolicy.Namespace
+	if imageRepoRef.Namespace != "" {
+		imageRepoNamespace = imageRepoRef.Namespace
+	}
+
+	imageRepo := &imagev1beta2.ImageRepository{}
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Namespace: imageRepoNamespace,
+		Name:      imageRepoRef.Name,
+	}, imageRepo); err != nil {
+		return versionInfo, fmt.Errorf("failed to get ImageRepository: %w", err)
+	}
+
+	// Construct the full image reference
+	imageRef := imageRepo.Spec.Image + ":" + tag
+
+	// Parse OCI manifest to extract version information
+	if version, revision, _, _, created, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		versionInfo.Version = version
+		versionInfo.Revision = revision
+		versionInfo.Created = created
+		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", version, "revision", revision, "created", created)
+	} else {
+		log.V(5).Info("Could not parse OCI manifest", "imageRef", imageRef, "error", err)
+		// Return the versionInfo even if parsing failed - we still have the tag
+	}
+
+	return versionInfo, nil
+}
+
 // parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, and source.
 func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision, artifactType, source *string, created *metav1.Time, err error) {
 	log := logf.FromContext(ctx)
@@ -556,25 +605,24 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	// Extract available releases from ImagePolicy status
 	var newReleases []rolloutv1alpha1.VersionInfo
 	if imagePolicy.Status.LatestRef != nil && imagePolicy.Status.LatestRef.Tag != "" {
-		versionInfo := rolloutv1alpha1.VersionInfo{
-			Tag: imagePolicy.Status.LatestRef.Tag,
+		// Use the reusable function to parse version info from OCI
+		versionInfo, err := r.parseVersionInfoFromOCI(ctx, rollout, imagePolicy.Status.LatestRef.Tag, log)
+		if err != nil {
+			log.V(5).Info("Could not parse version info from OCI, using basic info", "error", err)
+			versionInfo = rolloutv1alpha1.VersionInfo{
+				Tag: imagePolicy.Status.LatestRef.Tag,
+			}
 		}
 
-		// Extract digest if available
+		// Extract digest if available (this is specific to ImagePolicy status)
 		if imagePolicy.Status.LatestRef.Digest != "" {
 			versionInfo.Digest = &imagePolicy.Status.LatestRef.Digest
 		}
 
-		// Extract version, revision, artifact type, source, and created timestamp from OCI manifest if available
+		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type and source
+		// This is a limitation of the current design - we could optimize this further
 		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if version, revision, artifactType, source, created, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
-			versionInfo.Version = version
-			versionInfo.Revision = revision
-			versionInfo.Created = created
-			if version != nil || revision != nil || created != nil {
-				log.V(4).Info("Successfully extracted OCI annotations", "imageRef", imageRef, "version", version, "revision", revision, "created", created)
-			}
-
+		if _, _, artifactType, source, _, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 			// Set rollout-level metadata from the latest release
 			rollout.Status.ArtifactType = artifactType
 			rollout.Status.Source = source
@@ -582,7 +630,7 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", artifactType, "source", source)
 			}
 		} else {
-			log.V(5).Info("Could not parse OCI manifest, continuing without additional metadata", "imageRef", imageRef, "error", err)
+			log.V(5).Info("Could not parse OCI manifest for rollout metadata", "imageRef", imageRef, "error", err)
 		}
 
 		newReleases = []rolloutv1alpha1.VersionInfo{versionInfo}
@@ -936,10 +984,24 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	versionInfo.Tag = wantedRelease
 
 	// Try to find additional version information from available releases
+	foundInReleases := false
 	for _, release := range rollout.Status.AvailableReleases {
 		if release.Tag == wantedRelease {
 			versionInfo = release
+			foundInReleases = true
 			break
+		}
+	}
+
+	// If not found in available releases, try to parse it from OCI image
+	if !foundInReleases {
+		log.V(4).Info("Version info not found in available releases, attempting to parse from OCI image", "wantedRelease", wantedRelease)
+
+		// Use the reusable function to parse version info from OCI
+		if parsedVersionInfo, err := r.parseVersionInfoFromOCI(ctx, rollout, wantedRelease, log); err == nil {
+			versionInfo = parsedVersionInfo
+		} else {
+			log.V(5).Info("Could not parse version info from OCI image", "wantedRelease", wantedRelease, "error", err)
 		}
 	}
 
