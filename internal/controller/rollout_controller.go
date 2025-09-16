@@ -148,32 +148,27 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 				// Check if bake status changed to Failed
 				if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusFailed {
-					if rollout.Spec.WantedVersion == nil {
+					if !r.hasManualDeployment(&rollout) {
 						log.Info("Bake status is now Failed, blocking new deployment")
 						return ctrl.Result{}, nil
 					}
-					// For wanted version, we still want to requeue to continue monitoring bake time
+					// For manual deployments, we still want to requeue to continue monitoring bake time
 					// but don't block the deployment
 				}
 
-				// For wanted versions, we want to continue monitoring bake time but not block deployment
+				// For manual deployments, we want to continue monitoring bake time but not block deployment
 				// For automatic deployments, block if bake is still in progress
-				if rollout.Spec.WantedVersion == nil && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+				if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 					return result, nil
 				}
 
-				// If this is a wanted version and bake is in progress, we should requeue to continue monitoring
+				// If this is a manual deployment and bake is in progress, we should requeue to continue monitoring
 				// but allow the deployment to proceed
-				if rollout.Spec.WantedVersion != nil && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+				if r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 					// Continue with deployment but ensure we requeue for bake time monitoring
-					log.Info("Wanted version deployment proceeding while monitoring bake time")
-					// For wanted versions with in-progress bake, we need to ensure we requeue to monitor bake time
-					// even if no new deployment is needed
-					if len(rollout.Status.History) > 0 && rollout.Status.History[0].Version.Tag == *rollout.Spec.WantedVersion {
-						requeueAfter := r.calculateRequeueTime(&rollout)
-						log.Info("Wanted version already deployed, requeuing to monitor bake time", "requeueAfter", requeueAfter)
-						return ctrl.Result{RequeueAfter: requeueAfter}, nil
-					}
+					log.Info("Manual deployment proceeding while monitoring bake time")
+					// For manual deployments with in-progress bake, we need to ensure we requeue to monitor bake time
+					// even if no new deployment is needed - we'll check the specific version later after wantedRelease is determined
 				}
 			case rolloutv1alpha1.BakeStatusFailed:
 				// Check if user has requested to unblock failed deployment via annotation
@@ -214,7 +209,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	rollout.Status.ReleaseCandidates = releaseCandidates
 
 	gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
-	if rollout.Spec.WantedVersion == nil {
+	if !r.hasManualDeployment(&rollout) {
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -267,8 +262,8 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 			}
 
-			// Block actual deployment if no WantedVersion is specified and no unblock annotation
-			if rollout.Spec.WantedVersion == nil && !unblockRequested {
+			// Block actual deployment if no manual deployment is specified and no unblock annotation
+			if !r.hasManualDeployment(&rollout) && !unblockRequested {
 				log.Info("Bake status is Failed, blocking deployment but status has been updated")
 				// Update status with release candidates information before returning
 				if err := r.Client.Status().Update(ctx, &rollout); err != nil {
@@ -278,7 +273,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return ctrl.Result{}, nil
 			} else {
 				log.Info("Deployment allowed despite failed bake status",
-					"wantedVersion", rollout.Spec.WantedVersion,
+					"hasManualDeployment", r.hasManualDeployment(&rollout),
 					"unblockRequested", unblockRequested)
 			}
 		}
@@ -294,23 +289,23 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"bakeStatus", rollout.Status.History[0].BakeStatus)
 	}
 
-	// If this is a wanted version with bake time configuration, ensure we requeue to monitor bake time
+	// If this is a manual deployment with bake time configuration, ensure we requeue to monitor bake time
 	// This covers both cases: when a new deployment was made and when the wanted version is already deployed
-	if rollout.Spec.WantedVersion != nil && r.hasBakeTimeConfiguration(&rollout) {
-		log.Info("Checking if requeue is needed for wanted version bake time monitoring",
-			"wantedVersion", *rollout.Spec.WantedVersion,
+	if r.hasManualDeployment(&rollout) && r.hasBakeTimeConfiguration(&rollout) {
+		log.Info("Checking if requeue is needed for manual deployment bake time monitoring",
+			"hasManualDeployment", r.hasManualDeployment(&rollout),
 			"hasBakeTimeConfig", r.hasBakeTimeConfiguration(&rollout))
 
 		// Check if the current deployment is the wanted version and bake time is in progress
 		if len(rollout.Status.History) > 0 &&
-			rollout.Status.History[0].Version.Tag == *rollout.Spec.WantedVersion &&
+			rollout.Status.History[0].Version.Tag == *wantedRelease &&
 			rollout.Status.History[0].BakeStatus != nil &&
 			*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 			requeueAfter := r.calculateRequeueTime(&rollout)
-			log.Info("Wanted version already deployed with in-progress bake time, requeuing to monitor", "requeueAfter", requeueAfter)
+			log.Info("Manual deployment already deployed with in-progress bake time, requeuing to monitor", "requeueAfter", requeueAfter)
 			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		} else {
-			log.Info("No requeue needed for wanted version",
+			log.Info("No requeue needed for manual deployment",
 				"hasHistory", len(rollout.Status.History) > 0,
 				"currentVersion", func() string {
 					if len(rollout.Status.History) > 0 {
@@ -737,14 +732,55 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	return gatedReleaseCandidates, gatesPassing, r.Status().Update(ctx, rollout)
 }
 
+// hasManualDeployment checks if there's a manual deployment requested (WantedVersion or force deploy)
+func (r *RolloutReconciler) hasManualDeployment(rollout *rolloutv1alpha1.Rollout) bool {
+	// Check for WantedVersion in spec
+	if rollout.Spec.WantedVersion != nil {
+		return true
+	}
+
+	// Check for force-deploy annotation
+	if rollout.Annotations != nil {
+		if forceDeployVersion, exists := rollout.Annotations["rollout.kuberik.com/force-deploy"]; exists && forceDeployVersion != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
 func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []rolloutv1alpha1.VersionInfo) (*string, error) {
+	// Check for WantedVersion in spec first (highest priority)
 	wantedRelease := rollout.Spec.WantedVersion
 	if wantedRelease != nil {
 		// Allow any wantedVersion to be set - it doesn't need to be in availableReleases
 		// This enables users to deploy any tag from the referenced Docker repository
 		return wantedRelease, nil
-	} else if len(gatedReleaseCandidates) > 0 {
+	}
+
+	// Check for force-deploy annotation second
+	if rollout.Annotations != nil {
+		if forceDeployVersion, exists := rollout.Annotations["rollout.kuberik.com/force-deploy"]; exists && forceDeployVersion != "" {
+			// Check if the force deploy version exists in the available releases
+			versionExists := false
+			for _, release := range releases {
+				if release.Tag == forceDeployVersion {
+					versionExists = true
+					break
+				}
+			}
+
+			if !versionExists {
+				return nil, fmt.Errorf("force deploy version %s is not in available releases", forceDeployVersion)
+			}
+
+			return &forceDeployVersion, nil
+		}
+	}
+
+	// Regular release selection (lowest priority)
+	if len(gatedReleaseCandidates) > 0 {
 		return &gatedReleaseCandidates[0].Tag, nil
 	}
 	return nil, nil
@@ -760,6 +796,18 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		if bypass, exists := rollout.Annotations["rollout.kuberik.com/bypass-gates"]; exists && bypass != "" {
 			bypassUsed = true
 			log.Info("Deployment using gate bypass", "bypassVersion", bypass)
+		}
+	}
+
+	// Check if this deployment was done with force deploy
+	forceDeployUsed := false
+	if rollout.Annotations != nil {
+		if forceDeploy, exists := rollout.Annotations["rollout.kuberik.com/force-deploy"]; exists && forceDeploy != "" {
+			// Only consider force deploy as "used" if the deployed version matches the force deploy version
+			if forceDeploy == wantedRelease {
+				forceDeployUsed = true
+				log.Info("Deployment using force deploy", "forceDeployVersion", forceDeploy)
+			}
 		}
 	}
 
@@ -832,7 +880,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	// Generate deployment message
-	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, unblockUsed)
+	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, forceDeployUsed, unblockUsed)
 
 	// Find the version info for the wanted release
 	var versionInfo rolloutv1alpha1.VersionInfo
@@ -932,6 +980,28 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
 			log.Error(err, "Failed to patch rollout to clear unblock annotation")
+			return err
+		}
+	}
+
+	// Clear annotations based on deployment type
+	if forceDeployUsed {
+		// Clear both force-deploy and deploy-message annotations when force deploy was used
+		patch := client.MergeFrom(rollout.DeepCopy())
+		delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
+		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+
+		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
+			log.Error(err, "Failed to patch rollout to clear force deploy annotations")
+			return err
+		}
+	} else if r.hasManualDeployment(rollout) {
+		// Clear only deploy-message annotation when WantedVersion was used
+		patch := client.MergeFrom(rollout.DeepCopy())
+		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+
+		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
+			log.Error(err, "Failed to patch rollout to clear deploy-message annotation")
 			return err
 		}
 	}
@@ -1336,20 +1406,25 @@ func (r *RolloutReconciler) validateBakeTimeConfiguration(rollout *rolloutv1alph
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
-func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, wantedRelease string, bypassUsed, unblockUsed bool) string {
+func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, wantedRelease string, bypassUsed, forceDeployUsed, unblockUsed bool) string {
 	var messageParts []string
 
 	// Determine deployment type
-	if rollout.Spec.WantedVersion != nil {
+	if r.hasManualDeployment(rollout) {
 		// Check if user provided a custom message via annotation
 		if rollout.Annotations != nil {
-			if customMessage, exists := rollout.Annotations["rollout.kuberik.com/deployment-message"]; exists && customMessage != "" {
+			if customMessage, exists := rollout.Annotations["rollout.kuberik.com/deploy-message"]; exists && customMessage != "" {
 				return customMessage
 			}
 		}
 		messageParts = append(messageParts, "Manual deployment")
 	} else {
 		messageParts = append(messageParts, "Automatic deployment")
+	}
+
+	// Add force deploy information
+	if forceDeployUsed {
+		messageParts = append(messageParts, "with force deploy")
 	}
 
 	// Add gate bypass information

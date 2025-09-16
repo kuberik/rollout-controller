@@ -344,7 +344,7 @@ var _ = Describe("Rollout Controller", func() {
 			if rollout.Annotations == nil {
 				rollout.Annotations = make(map[string]string)
 			}
-			rollout.Annotations["rollout.kuberik.com/deployment-message"] = "Hotfix deployment for critical bug"
+			rollout.Annotations["rollout.kuberik.com/deploy-message"] = "Hotfix deployment for critical bug"
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 			By("Reconciling the resources")
@@ -2051,6 +2051,490 @@ var _ = Describe("Rollout Controller", func() {
 			// Both annotations should be cleared after deployment
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/unblock-failed"))
+		})
+
+		Context("Force Deploy Annotation", func() {
+			It("should force deploy version and cancel current deployment when force-deploy annotation is set", func() {
+				By("Setting up a rollout with in-progress bake")
+				forceDeployRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "force-deploy-rollout",
+						Namespace: namespace,
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "3.0.0"},
+							{Tag: "2.0.0"},
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, forceDeployRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, forceDeployRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with multiple releases")
+				// Get the existing ImagePolicy and update it with multiple releases
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up ImagePolicy status with multiple releases
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "3.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				// Update to add more releases
+				imagePolicy.Status.LatestRef.Tag = "2.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "3.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Updating rollout status with all available releases")
+				// Update the rollout status to include all available releases
+				var rolloutToUpdate rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "force-deploy-rollout",
+					Namespace: namespace,
+				}, &rolloutToUpdate)
+				Expect(err).NotTo(HaveOccurred())
+
+				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}
+				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
+
+				By("Creating initial deployment")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				// First reconciliation to create initial deployment
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "force-deploy-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Adding force-deploy annotation")
+				// Get the rollout and add force-deploy annotation
+				var rollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "force-deploy-rollout",
+					Namespace: namespace,
+				}, &rollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				if rollout.Annotations == nil {
+					rollout.Annotations = make(map[string]string)
+				}
+				rollout.Annotations["rollout.kuberik.com/force-deploy"] = "2.0.0"
+				Expect(k8sClient.Update(ctx, &rollout)).To(Succeed())
+
+				By("Creating a blocking gate")
+				gate := &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "blocking-gate",
+						Namespace: namespace,
+					},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef: &corev1.LocalObjectReference{Name: "force-deploy-rollout"},
+						Passing:    k8sptr.To(false), // Gate is blocking
+					},
+				}
+				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+
+				By("Checking initial history before reconciliation")
+				var initialRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "force-deploy-rollout",
+					Namespace: namespace,
+				}, &initialRollout)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(initialRollout.Status.History).To(HaveLen(1))
+				Expect(initialRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(initialRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+
+				By("Reconciling with force-deploy annotation")
+				result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "force-deploy-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Verifying that the current deployment was cancelled and force deploy version deployed")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "force-deploy-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Should have 2 history entries: cancelled previous deployment and new deployment
+				Expect(updatedRollout.Status.History).To(HaveLen(2))
+
+				// Previous deployment should be cancelled
+				Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[1].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)))
+
+				// New deployment should be the force deploy version
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(*updatedRollout.Status.History[0].Message).To(ContainSubstring("with force deploy"))
+
+				// Force deploy annotation should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/force-deploy"))
+			})
+
+			It("should use custom deploy message when deploy-message annotation is provided", func() {
+				By("Setting up a rollout with force-deploy and custom message annotations")
+				customMessageRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "custom-message-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/force-deploy":   "2.0.0",
+							"rollout.kuberik.com/deploy-message": "emergency hotfix deployment",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "3.0.0"},
+							{Tag: "2.0.0"},
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, customMessageRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, customMessageRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with multiple releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up ImagePolicy status with multiple releases
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "3.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "2.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "3.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Updating rollout status with all available releases")
+				var rolloutToUpdate rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "custom-message-rollout",
+					Namespace: namespace,
+				}, &rolloutToUpdate)
+				Expect(err).NotTo(HaveOccurred())
+
+				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}
+				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
+
+				By("Creating initial deployment")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				// First reconciliation to create initial deployment
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "custom-message-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Reconciling with force-deploy annotation")
+				result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "custom-message-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Verifying that the custom message was used in deployment history")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "custom-message-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Should have 1 history entry: the force deploy deployment
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+
+				// New deployment should use the custom message
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(*updatedRollout.Status.History[0].Message).To(Equal("emergency hotfix deployment"))
+
+				// Both annotations should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/force-deploy"))
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+			})
+
+			It("should fail when force-deploy version is not in next available releases", func() {
+				By("Setting up a rollout with force-deploy annotation for unavailable version")
+				forceDeployRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "force-deploy-unavailable-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/force-deploy": "3.0.0", // This version is not available
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "2.0.0"},
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, forceDeployRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, forceDeployRollout)).To(Succeed())
+
+				By("Updating ImagePolicy with releases (but not 3.0.0)")
+				// Get the existing ImagePolicy and update it with releases
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up ImagePolicy status with releases (but not 3.0.0)
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "2.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with force-deploy annotation")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "force-deploy-unavailable-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).To(HaveOccurred()) // The controller should return an error when force deploy version is not available
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Verifying that the rollout status indicates failure")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "force-deploy-unavailable-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Should have failed condition
+				readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+				Expect(readyCondition).NotTo(BeNil())
+				Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+				Expect(readyCondition.Reason).To(Equal("RolloutFailed"))
+				Expect(readyCondition.Message).To(ContainSubstring("force deploy version 3.0.0 is not in available releases"))
+			})
+
+			It("should prioritize WantedVersion over force-deploy annotation", func() {
+				By("Setting up a rollout with both WantedVersion and force-deploy annotation")
+				priorityRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "priority-test-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/force-deploy": "2.0.0", // This should be ignored
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						WantedVersion: stringPtr("1.0.0"), // This should take priority
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "2.0.0"},
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, priorityRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, priorityRollout)).To(Succeed())
+
+				By("Updating ImagePolicy with releases")
+				// Get the existing ImagePolicy and update it with releases
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up ImagePolicy status with releases
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "2.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with both WantedVersion and force-deploy annotation")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "priority-test-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Verifying that WantedVersion takes priority over force-deploy")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "priority-test-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Should deploy version 1.0.0 (from WantedVersion), not 2.0.0 (from force-deploy)
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(*updatedRollout.Status.History[0].Message).To(Equal("Manual deployment"))
+
+				// Force-deploy annotation should still be present (not cleared since it wasn't used)
+				Expect(updatedRollout.Annotations).To(HaveKey("rollout.kuberik.com/force-deploy"))
+			})
+
+			It("should clear deploy-message annotation when WantedVersion is used", func() {
+				By("Setting up a rollout with WantedVersion and deploy-message annotation")
+				wantedVersionRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "wanted-version-message-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/deploy-message": "planned maintenance deployment",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						WantedVersion: stringPtr("1.0.0"),
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, wantedVersionRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, wantedVersionRollout)).To(Succeed())
+
+				By("Updating ImagePolicy with releases")
+				// Get the existing ImagePolicy and update it with releases
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Set up ImagePolicy status with releases
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "1.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with WantedVersion and deploy-message annotation")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "wanted-version-message-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Requeue).To(BeFalse())
+
+				By("Verifying that deploy-message annotation is cleared")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "wanted-version-message-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Should deploy version 1.0.0 with custom message
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(*updatedRollout.Status.History[0].Message).To(Equal("planned maintenance deployment"))
+
+				// Deploy-message annotation should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+			})
 		})
 
 		It("should continue status updates even when deployment is blocked by failed bake status", func() {
