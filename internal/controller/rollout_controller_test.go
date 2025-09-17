@@ -2555,6 +2555,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Update the status separately since status is ignored during creation
 			freshRollout.Status = rolloutv1alpha1.RolloutStatus{
+				AvailableReleases: []rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				},
 				History: []rolloutv1alpha1.DeploymentHistoryEntry{
 					{
 						Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
@@ -2623,6 +2626,65 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Verify that the new release candidate is available
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElement(rolloutv1alpha1.VersionInfo{Tag: "1.1.0"}))
+		})
+
+		It("should return empty release candidates when custom version is deployed", func() {
+			// Create a rollout with a custom version that's not in available releases
+			customRollout := &rolloutv1alpha1.Rollout{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "custom-version-rollout",
+					Namespace: namespace,
+				},
+				Spec: rolloutv1alpha1.RolloutSpec{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
+						Name: "test-image-policy",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, customRollout)).To(Succeed())
+
+			// Set up status with a custom version in history that's not in available releases
+			customRollout.Status = rolloutv1alpha1.RolloutStatus{
+				AvailableReleases: []rolloutv1alpha1.VersionInfo{
+					{Tag: "1.1.0"}, // Only newer releases available
+					{Tag: "1.2.0"},
+				},
+				History: []rolloutv1alpha1.DeploymentHistoryEntry{
+					{
+						Version:       rolloutv1alpha1.VersionInfo{Tag: "custom-v1.0.0"}, // Custom version not in available releases
+						Timestamp:     metav1.Now(),
+						BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded),
+						BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+						BakeEndTime:   &metav1.Time{Time: time.Now().Add(-5 * time.Minute)},
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, customRollout)).To(Succeed())
+
+			// Reconcile
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      customRollout.Name,
+					Namespace: customRollout.Namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Requeue).To(BeFalse())
+
+			// Verify that release candidates are empty since we don't know how to upgrade from custom version
+			var updatedRollout rolloutv1alpha1.Rollout
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      customRollout.Name,
+				Namespace: customRollout.Namespace,
+			}, &updatedRollout)).To(Succeed())
+
+			Expect(updatedRollout.Status.ReleaseCandidates).To(BeEmpty())
+			Expect(updatedRollout.Status.GatedReleaseCandidates).To(BeEmpty())
 		})
 
 	})

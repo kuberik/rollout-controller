@@ -375,8 +375,8 @@ func getNextReleaseCandidates(releases []rolloutv1alpha1.VersionInfo, status *ro
 			return releases[:latestReleaseIndex], nil
 		} else {
 			// Current release not found in available releases (e.g., old versions cleaned up)
-			// Return all available releases as candidates
-			return releases, nil
+			// A custom version may be deployed, return empty slice since we don't know how to upgrade
+			return []rolloutv1alpha1.VersionInfo{}, nil
 		}
 	}
 	return releases, nil
