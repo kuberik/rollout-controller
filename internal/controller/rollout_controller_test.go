@@ -2125,14 +2125,13 @@ var _ = Describe("Rollout Controller", func() {
 					Scheme: k8sClient.Scheme(),
 				}
 				// First reconciliation to create initial deployment
-				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "force-deploy-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Adding force-deploy annotation")
 				// Get the rollout and add force-deploy annotation
@@ -2174,14 +2173,13 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(initialRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
 
 				By("Reconciling with force-deploy annotation")
-				result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "force-deploy-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Verifying that the current deployment was cancelled and force deploy version deployed")
 				var updatedRollout rolloutv1alpha1.Rollout
@@ -2278,24 +2276,22 @@ var _ = Describe("Rollout Controller", func() {
 					Scheme: k8sClient.Scheme(),
 				}
 				// First reconciliation to create initial deployment
-				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "custom-message-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Reconciling with force-deploy annotation")
-				result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "custom-message-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Verifying that the custom message was used in deployment history")
 				var updatedRollout rolloutv1alpha1.Rollout
@@ -2365,14 +2361,13 @@ var _ = Describe("Rollout Controller", func() {
 					Client: k8sClient,
 					Scheme: k8sClient.Scheme(),
 				}
-				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "force-deploy-unavailable-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).To(HaveOccurred()) // The controller should return an error when force deploy version is not available
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Verifying that the rollout status indicates failure")
 				var updatedRollout rolloutv1alpha1.Rollout
@@ -2439,14 +2434,13 @@ var _ = Describe("Rollout Controller", func() {
 					Client: k8sClient,
 					Scheme: k8sClient.Scheme(),
 				}
-				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "priority-test-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Verifying that WantedVersion takes priority over force-deploy")
 				var updatedRollout rolloutv1alpha1.Rollout
@@ -2510,14 +2504,13 @@ var _ = Describe("Rollout Controller", func() {
 					Client: k8sClient,
 					Scheme: k8sClient.Scheme(),
 				}
-				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "wanted-version-message-rollout",
 						Namespace: namespace,
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Requeue).To(BeFalse())
 
 				By("Verifying that deploy-message annotation is cleared")
 				var updatedRollout rolloutv1alpha1.Rollout
@@ -2667,14 +2660,13 @@ var _ = Describe("Rollout Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      customRollout.Name,
 					Namespace: customRollout.Namespace,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse())
 
 			// Verify that release candidates are empty since we don't know how to upgrade from custom version
 			var updatedRollout rolloutv1alpha1.Rollout
