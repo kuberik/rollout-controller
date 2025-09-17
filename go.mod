@@ -3,7 +3,6 @@ module github.com/kuberik/rollout-controller
 go 1.24.2
 
 require (
-	github.com/benbjohnson/clock v1.3.5
 	github.com/docker/cli v28.4.0+incompatible
 	github.com/fluxcd/image-reflector-controller/api v0.35.0
 	github.com/fluxcd/kustomize-controller/api v1.6.1

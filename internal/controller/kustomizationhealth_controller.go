@@ -32,7 +32,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -279,7 +278,7 @@ func (r *KustomizationHealthReconciler) findHealthChecksForKustomization(ctx con
 	// List all HealthChecks to find ones that reference this Kustomization
 	healthCheckList := &rolloutv1alpha1.HealthCheckList{}
 	if err := r.List(ctx, healthCheckList); err != nil {
-		log.FromContext(ctx).Error(err, "failed to list HealthChecks")
+		logf.FromContext(ctx).Error(err, "failed to list HealthChecks")
 		return requests
 	}
 
