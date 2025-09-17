@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.4.0] - 2025-09-17
+
+### Added
+
+- Enhance version info with OCI annotations (#21)
+
+- Implement sophisticated HealthCheck-Rollout association logic (#22)
+
+- Add Kustomization watching to KustomizationHealth controller
+
+- Add ArtifactType and Source fields to RolloutStatus
+
+- Add org.opencontainers.image.created annotation support to VersionInfo
+
+
+### Fixed
+
+- Add missing rbac to record events
+
+- Add nil checks for event recorder to prevent panics
+
+- Resolve time precision issues in FakeClock tests (#20)
+
+- Remove duplicate import in kustomizationhealth_controller
+
+
+### Refactored
+
+- Extract OCI parsing logic and add fallback for version info
+
 ## [0.3.0] - 2025-09-01
 
 ### Added
@@ -33,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Chore
 
 - Deploy to kuberik-system
+
+- Release version v0.3.0
 
 
 ### Fixed
