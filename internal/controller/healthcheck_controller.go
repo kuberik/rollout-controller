@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -56,29 +55,19 @@ type HealthCheckReconciler struct {
 func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// First, try to fetch as a HealthCheck
+	// Fetch the HealthCheck resource
 	var healthCheck rolloutv1alpha1.HealthCheck
-	if err := r.Get(ctx, req.NamespacedName, &healthCheck); err == nil {
-		// This is a HealthCheck resource
-		return r.reconcileHealthCheck(ctx, &healthCheck, log)
-	}
-
-	// If not found as HealthCheck, try as Rollout
-	var rollout rolloutv1alpha1.Rollout
-	if err := r.Get(ctx, req.NamespacedName, &rollout); err == nil {
-		// This is a Rollout resource
-		return r.reconcileRollout(ctx, &rollout, log)
-	}
-
-	// If neither found, ignore not-found errors
-	if err := r.Get(ctx, req.NamespacedName, &rollout); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, &healthCheck); err != nil {
+		// If not found, ignore not-found errors
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	return ctrl.Result{}, nil
-}
 
-// reconcileHealthCheck handles HealthCheck resources
-func (r *HealthCheckReconciler) reconcileHealthCheck(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, log logr.Logger) (ctrl.Result, error) {
+	// Check if there are any rollout deployments that should trigger a reset
+	if err := r.checkAndResetForRecentDeployments(ctx, &healthCheck, log); err != nil {
+		log.Error(err, "Failed to check for recent deployments")
+		return ctrl.Result{}, err
+	}
+
 	// Delegate to specialized controllers based on class
 	if healthCheck.Spec.Class != nil {
 		switch *healthCheck.Spec.Class {
@@ -97,78 +86,73 @@ func (r *HealthCheckReconciler) reconcileHealthCheck(ctx context.Context, health
 	return ctrl.Result{}, nil
 }
 
-// reconcileRollout handles Rollout resources to detect new deployments
-func (r *HealthCheckReconciler) reconcileRollout(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) (ctrl.Result, error) {
-	// Check if this rollout has deployed a new version
-	if len(rollout.Status.History) == 0 {
-		// No deployment history yet, nothing to reset
-		return ctrl.Result{}, nil
+// checkAndResetForRecentDeployments checks if there are any rollout deployments
+// that should trigger a reset of this health check based on timing
+func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, log logr.Logger) error {
+	// Find all rollouts in the same namespace
+	rolloutList := &rolloutv1alpha1.RolloutList{}
+	if err := r.Client.List(ctx, rolloutList, client.InNamespace(healthCheck.Namespace)); err != nil {
+		return err
 	}
 
-	// Get the latest deployment
-	latestDeployment := rollout.Status.History[0]
-
-	// Check if this is a new deployment by looking at the deployment time
-	// If the deployment time is very recent (within last minute), consider it a new deployment
-	if latestDeployment.Timestamp.IsZero() {
-		return ctrl.Result{}, nil
-	}
-
-	deploymentTime := latestDeployment.Timestamp.Time
-	now := time.Now()
-
-	// If deployment happened within the last minute, reset health checks
-	if now.Sub(deploymentTime) < time.Minute {
-		log.Info("Detected new rollout deployment, resetting health checks",
-			"rollout", rollout.Name,
-			"version", latestDeployment.Version.Tag,
-			"deploymentTime", deploymentTime)
-
-		if err := r.resetHealthChecksForRollout(ctx, rollout, log); err != nil {
-			log.Error(err, "Failed to reset health checks for rollout")
-			// Don't fail reconciliation for this
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
-// resetHealthChecksForRollout resets all health checks associated with a rollout
-func (r *HealthCheckReconciler) resetHealthChecksForRollout(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
-	// Find health checks in the same namespace
-	healthCheckList := &rolloutv1alpha1.HealthCheckList{}
-	if err := r.Client.List(ctx, healthCheckList, client.InNamespace(rollout.Namespace)); err != nil {
-		return fmt.Errorf("failed to list health checks: %w", err)
-	}
-
-	for _, healthCheck := range healthCheckList.Items {
+	for _, rollout := range rolloutList.Items {
 		// Check if this health check is associated with the rollout
-		if r.isHealthCheckForRollout(&healthCheck, rollout) {
-			log.Info("Resetting health check after deployment",
+		if !r.isHealthCheckForRollout(healthCheck, &rollout) {
+			continue
+		}
+
+		// Check if this rollout has deployed a new version
+		if len(rollout.Status.History) == 0 {
+			continue
+		}
+
+		latestDeployment := rollout.Status.History[0]
+		if latestDeployment.Timestamp.IsZero() {
+			continue
+		}
+
+		deploymentTime := latestDeployment.Timestamp.Time
+
+		// Check if health check's last change or last error is older than deployment
+		shouldReset := false
+		var reason string
+
+		if healthCheck.Status.LastChangeTime != nil {
+			if healthCheck.Status.LastChangeTime.Time.Before(deploymentTime) {
+				shouldReset = true
+				reason = "last change time is older than deployment"
+			}
+		}
+
+		if healthCheck.Status.LastErrorTime != nil {
+			if healthCheck.Status.LastErrorTime.Time.Before(deploymentTime) {
+				shouldReset = true
+				reason = "last error time is older than deployment"
+			}
+		}
+
+		// If neither LastChangeTime nor LastErrorTime is set, also reset
+		if healthCheck.Status.LastChangeTime == nil && healthCheck.Status.LastErrorTime == nil {
+			shouldReset = true
+			reason = "no previous status timestamps"
+		}
+
+		if shouldReset {
+			log.Info("Resetting health check due to deployment",
 				"healthCheck", healthCheck.Name,
 				"rollout", rollout.Name,
-				"newVersion", func() string {
-					if len(rollout.Status.History) > 0 {
-						return rollout.Status.History[0].Version.Tag
-					}
-					return "unknown"
-				}())
+				"version", latestDeployment.Version.Tag,
+				"deploymentTime", deploymentTime,
+				"reason", reason,
+				"lastChangeTime", healthCheck.Status.LastChangeTime,
+				"lastErrorTime", healthCheck.Status.LastErrorTime)
 
-			// Get the latest version of the health check before resetting to avoid conflicts
-			latestHealthCheck := &rolloutv1alpha1.HealthCheck{}
-			err := r.Client.Get(ctx, client.ObjectKey{
-				Namespace: healthCheck.Namespace,
-				Name:      healthCheck.Name,
-			}, latestHealthCheck)
-			if err != nil {
-				log.Error(err, "Failed to get latest health check", "healthCheck", healthCheck.Name)
-				continue
+			// Reset the health check status
+			if err := r.ResetHealthCheckStatus(ctx, healthCheck); err != nil {
+				log.Error(err, "Failed to reset health check status")
+				return err
 			}
-
-			if err := r.ResetHealthCheckStatus(ctx, latestHealthCheck); err != nil {
-				log.Error(err, "Failed to reset health check", "healthCheck", healthCheck.Name)
-				// Continue with other health checks even if one fails
-			}
+			break // Only reset once per reconciliation
 		}
 	}
 
