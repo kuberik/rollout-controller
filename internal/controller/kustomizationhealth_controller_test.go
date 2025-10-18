@@ -113,11 +113,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -141,11 +137,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -171,11 +163,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -197,11 +185,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -287,11 +271,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -385,11 +365,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -429,11 +405,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -485,11 +457,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -582,11 +550,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -677,11 +641,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -772,11 +732,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -867,11 +823,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -910,11 +862,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			controllerReconciler := &KustomizationHealthReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				HealthCheckController: &HealthCheckReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-					Clock:  &RealClock{},
-				},
+				Clock:  &RealClock{},
 			}
 			healthCheckNamespacedName := types.NamespacedName{
 				Name:      healthCheck.Name,

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -157,66 +156,6 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 	}
 
 	return nil
-}
-
-// UpdateHealthCheckStatus updates the HealthCheck status with proper change tracking
-// This function should be used by specialized health check controllers
-func (r *HealthCheckReconciler) UpdateHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string) (ctrl.Result, error) {
-	now := metav1.NewTime(r.Clock.Now())
-
-	// Check if status has changed
-	statusChanged := healthCheck.Status.Status != newStatus
-
-	// Update status fields
-	healthCheck.Status.Status = newStatus
-	healthCheck.Status.Message = &newMessage
-
-	// Update LastChangeTime only if status changed
-	if statusChanged {
-		healthCheck.Status.LastChangeTime = &now
-	}
-
-	// Update LastErrorTime if unhealthy
-	if newStatus == rolloutv1alpha1.HealthStatusUnhealthy {
-		healthCheck.Status.LastErrorTime = &now
-	}
-
-	// Update the status
-	if err := r.Status().Update(ctx, healthCheck); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Set requeue interval - use configured value or default to 30 seconds
-	requeueAfter := r.getRequeueInterval(healthCheck)
-
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
-}
-
-// getRequeueInterval extracts the requeue interval from HealthCheck annotations
-func (r *HealthCheckReconciler) getRequeueInterval(healthCheck *rolloutv1alpha1.HealthCheck) time.Duration {
-	// Default requeue interval
-	defaultInterval := 30 * time.Second
-
-	if healthCheck.Annotations == nil {
-		return defaultInterval
-	}
-
-	// Look for requeue interval annotation
-	// Format: healthcheck.kuberik.com/requeue-interval: "60s", "2m", "300s", etc.
-	requeueIntervalAnnotation := "healthcheck.kuberik.com/requeue-interval"
-
-	if intervalStr, exists := healthCheck.Annotations[requeueIntervalAnnotation]; exists {
-		if interval, err := time.ParseDuration(intervalStr); err == nil {
-			// Ensure minimum interval of 5 seconds to prevent excessive load
-			if interval < 5*time.Second {
-				return 5 * time.Second
-			}
-			return interval
-		}
-		// If parsing fails, use default interval
-	}
-
-	return defaultInterval
 }
 
 // ResetHealthCheckStatus resets the HealthCheck status to Pending
