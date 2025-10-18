@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,8 +42,7 @@ import (
 type KustomizationHealthReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// Reference to the base HealthCheck controller for common functionality
-	HealthCheckController *HealthCheckReconciler
+	Clock  Clock
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths,verbs=get;list;watch;create;update;patch;delete
@@ -260,10 +261,63 @@ func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx con
 	}
 }
 
-// updateHealthCheckStatus updates the HealthCheck status using the base controller
-func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, status rolloutv1alpha1.HealthStatus, message string) (ctrl.Result, error) {
-	// Use the base HealthCheck controller's helper function
-	return r.HealthCheckController.UpdateHealthCheckStatus(ctx, healthCheck, status, message)
+// updateHealthCheckStatus updates the HealthCheck status with proper timestamp handling
+func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string) (ctrl.Result, error) {
+	now := metav1.NewTime(r.Clock.Now())
+
+	// Check if status has changed
+	statusChanged := healthCheck.Status.Status != newStatus
+
+	// Update status fields
+	healthCheck.Status.Status = newStatus
+	healthCheck.Status.Message = &newMessage
+
+	// Update LastChangeTime only if status changed
+	if statusChanged {
+		healthCheck.Status.LastChangeTime = &now
+	}
+
+	// Update LastErrorTime if unhealthy
+	if newStatus == rolloutv1alpha1.HealthStatusUnhealthy {
+		healthCheck.Status.LastErrorTime = &now
+	}
+
+	// Update the status
+	if err := r.Status().Update(ctx, healthCheck); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Set requeue interval - use configured value or default to 30 seconds
+	requeueAfter := r.getRequeueInterval(healthCheck)
+
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// getRequeueInterval extracts the requeue interval from HealthCheck annotations
+func (r *KustomizationHealthReconciler) getRequeueInterval(healthCheck *rolloutv1alpha1.HealthCheck) time.Duration {
+	// Default requeue interval
+	defaultInterval := 30 * time.Second
+
+	if healthCheck.Annotations == nil {
+		return defaultInterval
+	}
+
+	// Look for requeue interval annotation
+	// Format: healthcheck.kuberik.com/requeue-interval: "60s", "2m", "300s", etc.
+	requeueIntervalAnnotation := "healthcheck.kuberik.com/requeue-interval"
+
+	if intervalStr, exists := healthCheck.Annotations[requeueIntervalAnnotation]; exists {
+		if interval, err := time.ParseDuration(intervalStr); err == nil {
+			// Ensure minimum interval of 5 seconds to prevent excessive load
+			if interval < 5*time.Second {
+				return 5 * time.Second
+			}
+			return interval
+		}
+		// If parsing fails, use default interval
+	}
+
+	return defaultInterval
 }
 
 // findHealthChecksForKustomization maps Kustomization events to HealthCheck reconciliation requests

@@ -233,9 +233,9 @@ func main() {
 
 	// Create KustomizationHealth controller with reference to HealthCheck controller
 	if err := (&controller.KustomizationHealthReconciler{
-		Client:                mgr.GetClient(),
-		Scheme:                mgr.GetScheme(),
-		HealthCheckController: healthCheckController,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Clock:  controller.RealClock{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KustomizationHealth")
 		os.Exit(1)
