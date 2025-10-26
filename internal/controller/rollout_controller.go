@@ -234,6 +234,28 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Update status with gated release candidates
 	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
 
+	// Evaluate health checks - block deployment if health checks are not healthy
+	// For manual deployments (WantedVersion or force-deploy), skip this check
+	if !r.hasManualDeployment(&rollout) {
+		healthChecksHealthy, healthCheckMessage, err := r.evaluateHealthChecks(ctx, req.Namespace, &rollout)
+		if err != nil {
+			log.Error(err, "Failed to evaluate health checks")
+			return ctrl.Result{}, err
+		}
+		if !healthChecksHealthy {
+			log.Info("Health checks are not healthy, blocking deployment", "message", healthCheckMessage)
+			// Update status before returning
+			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+				log.Error(err, "Failed to update rollout status")
+			}
+			// Emit event for health check blocking
+			if r.Recorder != nil {
+				r.Recorder.Event(&rollout, corev1.EventTypeWarning, "HealthCheckBlocking", healthCheckMessage)
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// Use filteredReleases instead of releases for wantedRelease selection
 	wantedRelease, err := r.selectWantedRelease(&rollout, releases, gatedReleaseCandidates)
 	if err != nil {
@@ -829,6 +851,94 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	return gatedReleaseCandidates, gatesPassing, r.Status().Update(ctx, rollout)
 }
 
+// listHealthChecks lists all health checks matching the rollout's health check selector.
+// Returns the list of health checks and an error if any.
+func (r *RolloutReconciler) listHealthChecks(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) ([]rolloutv1alpha1.HealthCheck, error) {
+	log := logf.FromContext(ctx)
+
+	// If no health check selector is configured, return empty list
+	if rollout.Spec.HealthCheckSelector == nil || rollout.Spec.HealthCheckSelector.GetSelector() == nil {
+		return []rolloutv1alpha1.HealthCheck{}, nil
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetSelector())
+	if err != nil {
+		log.Error(err, "Invalid healthCheckSelector")
+		return nil, fmt.Errorf("invalid health check selector: %w", err)
+	}
+
+	// Determine which namespaces to search for HealthChecks
+	var namespaces []string
+	if rollout.Spec.HealthCheckSelector.GetNamespaceSelector() != nil {
+		// Use namespace selector to find matching namespaces
+		namespaceSelector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetNamespaceSelector())
+		if err != nil {
+			log.Error(err, "Invalid namespaceSelector")
+			return nil, fmt.Errorf("invalid namespace selector: %w", err)
+		}
+
+		// List all namespaces and filter by selector
+		namespaceList := &corev1.NamespaceList{}
+		if err := r.List(ctx, namespaceList); err != nil {
+			log.Error(err, "Failed to list namespaces")
+			return nil, fmt.Errorf("failed to list namespaces: %w", err)
+		}
+
+		for _, ns := range namespaceList.Items {
+			if namespaceSelector.Matches(labels.Set(ns.Labels)) {
+				namespaces = append(namespaces, ns.Name)
+			}
+		}
+	} else {
+		// Default to same namespace as rollout
+		namespaces = []string{namespace}
+	}
+
+	// Collect HealthChecks from all matching namespaces
+	var allHealthChecks []rolloutv1alpha1.HealthCheck
+	for _, ns := range namespaces {
+		hcList := &rolloutv1alpha1.HealthCheckList{}
+		if err := r.List(ctx, hcList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+			log.Error(err, "Failed to list HealthChecks", "namespace", ns)
+			continue
+		}
+		allHealthChecks = append(allHealthChecks, hcList.Items...)
+	}
+
+	return allHealthChecks, nil
+}
+
+// evaluateHealthChecks checks if health checks are healthy and returns whether deployment should proceed.
+func (r *RolloutReconciler) evaluateHealthChecks(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (bool, string, error) {
+	log := logf.FromContext(ctx)
+
+	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
+	if err != nil {
+		return false, "", err
+	}
+
+	// If no health checks found, consider them all healthy (empty set is always healthy)
+	if len(allHealthChecks) == 0 {
+		return true, "", nil
+	}
+
+	// Check if any health check is explicitly unhealthy
+	// We only block deployment if status is explicitly Unhealthy
+	// Pending or empty status is not considered blocking
+	for _, hc := range allHealthChecks {
+		if hc.Status.Status == rolloutv1alpha1.HealthStatusUnhealthy {
+			message := fmt.Sprintf("HealthCheck '%s' in namespace '%s' is not healthy (status: %s)", hc.Name, hc.Namespace, hc.Status.Status)
+			if hc.Status.Message != nil {
+				message += ": " + *hc.Status.Message
+			}
+			log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
+			return false, message, nil
+		}
+	}
+
+	return true, "", nil
+}
+
 // hasManualDeployment checks if there's a manual deployment requested (WantedVersion or force deploy)
 func (r *RolloutReconciler) hasManualDeployment(rollout *rolloutv1alpha1.Rollout) bool {
 	// Check for WantedVersion in spec
@@ -1297,74 +1407,31 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	healthChecksHealthy := true
 	healthCheckError := false
 
-	if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.HealthCheckSelector.GetSelector() != nil {
-		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetSelector())
-		if err != nil {
-			log.Error(err, "Invalid healthCheckSelector")
-			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidHealthCheckSelector", err.Error())
-		}
-
-		// Determine which namespaces to search for HealthChecks
-		var namespaces []string
-		if rollout.Spec.HealthCheckSelector.GetNamespaceSelector() != nil {
-			// Use namespace selector to find matching namespaces
-			namespaceSelector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetNamespaceSelector())
-			if err != nil {
-				log.Error(err, "Invalid namespaceSelector")
-				return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidNamespaceSelector", err.Error())
-			}
-
-			// List all namespaces and filter by selector
-			namespaceList := &corev1.NamespaceList{}
-			if err := r.List(ctx, namespaceList); err != nil {
-				log.Error(err, "Failed to list namespaces")
-				return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "NamespaceListFailed", err.Error())
-			}
-
-			for _, ns := range namespaceList.Items {
-				if namespaceSelector.Matches(labels.Set(ns.Labels)) {
-					namespaces = append(namespaces, ns.Name)
-				}
-			}
-		} else {
-			// Default to same namespace as rollout
-			namespaces = []string{namespace}
-		}
-
-		// Collect HealthChecks from all matching namespaces
-		var allHealthChecks []rolloutv1alpha1.HealthCheck
-		for _, ns := range namespaces {
-			hcList := &rolloutv1alpha1.HealthCheckList{}
-			if err := r.List(ctx, hcList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-				log.Error(err, "Failed to list HealthChecks", "namespace", ns)
-				continue
-			}
-			allHealthChecks = append(allHealthChecks, hcList.Items...)
-		}
-
-		if len(allHealthChecks) > 0 {
-			// Check if any health check has reported an error after deployment
-			deploymentTime := rollout.Status.History[0].BakeStartTime.Time
-			log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(allHealthChecks), "namespaces", namespaces)
-			for _, hc := range allHealthChecks {
-				log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
-				if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deploymentTime) {
-					healthCheckError = true
-					log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime)
-					break
-				}
-				if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
-					healthChecksHealthy = false
-					log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
-					break
-				}
-			}
-		}
-		// If no health checks found, consider them healthy (empty set is always healthy)
-	} else {
-		// No health checks specified = always healthy
-		healthChecksHealthy = true
+	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
+	if err != nil {
+		log.Error(err, "Failed to list health checks")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
 	}
+
+	if len(allHealthChecks) > 0 {
+		// Check if any health check has reported an error after deployment
+		deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+		log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(allHealthChecks))
+		for _, hc := range allHealthChecks {
+			log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
+			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deploymentTime) {
+				healthCheckError = true
+				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime)
+				break
+			}
+			if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
+				healthChecksHealthy = false
+				log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
+				break
+			}
+		}
+	}
+	// If no health checks found, consider them healthy (empty set is always healthy)
 
 	// Check for timeout (if specified)
 	timeoutReached := false

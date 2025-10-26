@@ -1720,6 +1720,191 @@ var _ = Describe("Rollout Controller", func() {
 			})
 		})
 
+		When("using health checks to block deployments", func() {
+			var healthCheck *rolloutv1alpha1.HealthCheck
+			var fakeClock *FakeClock
+
+			BeforeEach(func() {
+				fakeClock = NewFakeClock()
+				minBakeTime = nil // No bake time for these tests
+				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "test-app",
+						},
+					},
+				}
+			})
+
+			JustBeforeEach(func() {
+				By("Creating a health check")
+				healthCheck = &rolloutv1alpha1.HealthCheck{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-health-check",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test-app",
+						},
+					},
+					Status: rolloutv1alpha1.HealthCheckStatus{
+						Status: rolloutv1alpha1.HealthStatusHealthy,
+					},
+				}
+				Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+			})
+
+			It("should block automatic deployment when health check is unhealthy", func() {
+				By("Setting image policy status")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Setting health check to unhealthy status")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment was blocked")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(0), "Deployment should be blocked by unhealthy health check")
+			})
+
+			It("should allow automatic deployment when health check is healthy", func() {
+				By("Setting image policy status")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Ensuring health check is healthy")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment was allowed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1), "Deployment should be allowed when health check is healthy")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
+
+			It("should bypass health checks for manual deployments (wantedVersion)", func() {
+				By("Setting available releases")
+				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+					{Tag: version0_1_0},
+					{Tag: version0_2_0},
+				}
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+				By("Setting health check to unhealthy")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Setting wantedVersion to force manual deployment")
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying manual deployment bypassed health check blocking")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1), "Manual deployment should bypass health check blocking")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+			})
+
+			It("should not block deployment when health check has pending status", func() {
+				By("Setting image policy status")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Setting health check to pending status (not unhealthy)")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusPending
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment was allowed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1), "Pending status should not block deployment")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
+
+			It("should not block deployment when no health checks are configured", func() {
+				By("Removing health check selector")
+				rollout.Spec.HealthCheckSelector = nil
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Setting image policy status")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment was allowed")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1), "No health check selector should not block deployment")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
+
+			It("should block deployment when at least one health check is unhealthy", func() {
+				By("Creating a second health check")
+				healthCheck2 := &rolloutv1alpha1.HealthCheck{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-health-check-2",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test-app",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+				By("Setting second health check to unhealthy")
+				healthCheck2.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck2)).To(Succeed())
+
+				By("Setting first health check to healthy")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Setting image policy status")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment was blocked by second unhealthy check")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(0), "Should be blocked by one unhealthy health check")
+			})
+		})
+
 		It("should bypass gates when bypass-gates annotation is set", func() {
 			By("Setting available releases")
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
