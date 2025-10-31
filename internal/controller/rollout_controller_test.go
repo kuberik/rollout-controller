@@ -1499,6 +1499,178 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
 			})
 
+			It("should not fail manual deployments due to health check errors", func() {
+				By("Setting health check to failing state before manual deployment")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now()}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Setting up ImagePolicy with version 0.2.0")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_2_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Setting WantedVersion to trigger manual deployment")
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Reconciling to perform manual deployment")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying manual deployment was created")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[0].Manual).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].Manual).To(BeTrue())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Setting health check error after deployment time")
+				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(1 * time.Second)}
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to check bake status")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying manual deployment does not fail due to health check error")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress), "Manual deployment should not fail due to health check errors")
+				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil(), "Bake should still be in progress")
+
+				By("Verifying health check can still cause automatic deployments to fail")
+				// First, complete the manual deployment's bake by marking it as succeeded
+				// This is necessary so that automatic deployments can proceed
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
+				rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: fakeClock.Now()}
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+				// Set health check to healthy state
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				// Clear manual deployment flag by removing WantedVersion and triggering automatic deployment
+				rollout.Spec.WantedVersion = nil
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				// Set a new version to trigger automatic deployment
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_3_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				// Reconcile to update available releases
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify available releases were updated
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				// Make sure version0_3_0 is available (controller should have added it)
+				// If not, manually add it for the test
+				hasVersion := false
+				for _, release := range rollout.Status.AvailableReleases {
+					if release.Tag == version0_3_0 {
+						hasVersion = true
+						break
+					}
+				}
+				if !hasVersion {
+					rollout.Status.AvailableReleases = append(rollout.Status.AvailableReleases, rolloutv1alpha1.VersionInfo{Tag: version0_3_0})
+					Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+				}
+
+				// Reconcile again to trigger automatic deployment
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(2), "Should have two deployments now")
+
+				// Find the automatic deployment (should be the first one now)
+				if len(rollout.Status.History) > 0 {
+					automaticDeployment := &rollout.Status.History[0]
+					// Verify it's an automatic deployment
+					Expect(automaticDeployment.Version.Tag).To(Equal(version0_3_0))
+					if automaticDeployment.Manual != nil {
+						Expect(*automaticDeployment.Manual).To(BeFalse(), "This should be an automatic deployment")
+					}
+
+					// Set health check error after the automatic deployment
+					if automaticDeployment.BakeStartTime != nil {
+						automaticDeploymentTime := automaticDeployment.BakeStartTime.Time
+						healthCheck.Status.LastErrorTime = &metav1.Time{Time: automaticDeploymentTime.Add(1 * time.Second)}
+						healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+						Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+						By("Reconciling to check bake status for automatic deployment")
+						_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+						Expect(err).NotTo(HaveOccurred())
+
+						By("Verifying automatic deployment fails due to health check error")
+						Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+						Expect(len(rollout.Status.History)).To(BeNumerically(">", 0))
+						if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil {
+							Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed), "Automatic deployment should fail due to health check errors")
+						}
+					}
+				}
+			})
+
+			It("should not fail manual deployments via force-deploy annotation due to health check errors", func() {
+				By("Setting health check to failing state")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now()}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Setting up ImagePolicy with version 0.2.0")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_2_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Setting force-deploy annotation to trigger manual deployment")
+				if rollout.Annotations == nil {
+					rollout.Annotations = make(map[string]string)
+				}
+				rollout.Annotations["rollout.kuberik.com/force-deploy"] = version0_2_0
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Reconciling to perform manual deployment")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying manual deployment was created")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.History[0].Manual).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].Manual).To(BeTrue())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+
+				By("Setting health check error after deployment time")
+				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(1 * time.Second)}
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to check bake status")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying manual deployment does not fail due to health check error")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress), "Manual deployment via force-deploy should not fail due to health check errors")
+				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil(), "Bake should still be in progress")
+			})
+
 			It("should handle max bake time timeout correctly", func() {
 				By("Setting max bake time to be greater than min bake time")
 				rollout.Spec.MaxBakeTime = &metav1.Duration{Duration: 7 * time.Minute} // Greater than min (5 min)

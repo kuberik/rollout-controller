@@ -405,6 +405,12 @@ spec:
                         BakeStatusMessage provides details about the bake state for this deployment
                         This field contains human-readable information about why the bake status is what it is.
                       type: string
+                    manual:
+                      description: |-
+                        Manual indicates if this deployment was triggered manually
+                        (via WantedVersion or force-deploy annotation). Manual deployments
+                        will not be failed due to health check errors.
+                      type: boolean
                     message:
                       description: |-
                         Message provides a descriptive message about this deployment entry
