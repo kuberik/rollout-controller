@@ -254,6 +254,12 @@ type DeploymentHistoryEntry struct {
 	// This is when the bake process completed (either successfully or with failure).
 	// +optional
 	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
+
+	// Manual indicates if this deployment was triggered manually
+	// (via WantedVersion or force-deploy annotation). Manual deployments
+	// will not be failed due to health check errors.
+	// +optional
+	Manual *bool `json:"manual,omitempty"`
 }
 
 // +kubebuilder:object:root=true

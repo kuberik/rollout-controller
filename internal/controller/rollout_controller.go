@@ -1115,6 +1115,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		}
 	}
 
+	// Determine if this is a manual deployment
+	isManualDeployment := r.hasManualDeployment(rollout)
+
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
 		Version:           versionInfo,
 		Timestamp:         metav1.Now(),
@@ -1123,6 +1126,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     bakeStartTime,
 		BakeEndTime:       nil, // Will be set when bake completes (succeeds, fails, or times out)
+		Manual:            k8sptr.To(isManualDeployment),
 	}}, rollout.Status.History...)
 	// Limit history size if specified
 	versionHistoryLimit := int32(5) // default value
@@ -1441,7 +1445,25 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	// Determine final status
 	if healthCheckError {
-		// Health check failed - mark as failed
+		// Check if this is a manual deployment - manual deployments never fail due to health checks
+		isManualDeployment := false
+		if len(rollout.Status.History) > 0 && rollout.Status.History[0].Manual != nil {
+			isManualDeployment = *rollout.Status.History[0].Manual
+		}
+
+		if isManualDeployment {
+			// For manual deployments, log the health check issue but don't fail
+			log.Info("Health check error detected for manual deployment, but not failing",
+				"healthCheckError", healthCheckError)
+
+			// Continue monitoring - health checks might recover
+			// Still check for timeout and success conditions below
+			requeueAfter := r.calculateRequeueTime(rollout)
+			log.Info("Bake time in progress for manual deployment, waiting", "requeueAfter", requeueAfter)
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+
+		// For automatic deployments, fail as before
 		log.Info("Health check error detected, marking rollout as failed")
 		if len(rollout.Status.History) > 0 {
 			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
