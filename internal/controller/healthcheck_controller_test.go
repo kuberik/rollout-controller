@@ -245,7 +245,7 @@ var _ = Describe("HealthCheck Controller", func() {
 				Namespace: healthCheck.Namespace,
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnknown))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
@@ -292,7 +292,7 @@ var _ = Describe("HealthCheck Controller", func() {
 				Namespace: healthCheck.Namespace,
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnknown))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
@@ -382,7 +382,7 @@ var _ = Describe("HealthCheck Controller", func() {
 				Namespace: healthCheck.Namespace,
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnknown))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
@@ -487,7 +487,7 @@ var _ = Describe("HealthCheck Controller", func() {
 				Namespace: healthCheck.Namespace,
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnknown))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())

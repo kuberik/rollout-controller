@@ -158,13 +158,13 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 	return nil
 }
 
-// ResetHealthCheckStatus resets the HealthCheck status to Pending
+// ResetHealthCheckStatus resets the HealthCheck status to Unknown
 // This should be called when a new deployment is detected
 func (r *HealthCheckReconciler) ResetHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck) error {
 	now := metav1.NewTime(r.Clock.Now())
 
-	// Reset to pending status
-	healthCheck.Status.Status = rolloutv1alpha1.HealthStatusPending
+	// Reset to unknown status
+	healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnknown
 	resetMessage := "Health check reset due to new deployment"
 	healthCheck.Status.Message = &resetMessage
 	healthCheck.Status.LastChangeTime = &now
