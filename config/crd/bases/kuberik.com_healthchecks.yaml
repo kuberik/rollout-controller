@@ -62,7 +62,7 @@ spec:
                 type: string
               status:
                 description: Status indicates the health state of the check (e.g.,
-                  'Healthy', 'Unhealthy', 'Pending')
+                  'Healthy', 'Unhealthy', 'Pending', 'Unknown')
                 type: string
             type: object
         type: object

@@ -1076,6 +1076,48 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
 		bakeStatusMsg = k8sptr.To("No bake time configured, deployment completed immediately.")
 	} else {
+		// Before starting bake, check that all healthchecks are either Pending or Healthy
+		allHealthChecks, err := r.listHealthChecks(ctx, rollout.Namespace, rollout)
+		if err != nil {
+			log.Error(err, "Failed to list health checks before starting bake")
+			return err
+		}
+
+		// Check if any healthcheck is still Unknown or empty (not yet evaluated)
+		// Allow Unknown/empty status if it was just reset or created (within last 30 seconds) to give time for evaluation
+		for _, hc := range allHealthChecks {
+			if hc.Status.Status == rolloutv1alpha1.HealthStatusUnknown || hc.Status.Status == "" {
+				// Check if it was just reset (LastChangeTime is very recent) or just created
+				allowUnknown := false
+
+				// If Unknown, check LastChangeTime
+				if hc.Status.Status == rolloutv1alpha1.HealthStatusUnknown && hc.Status.LastChangeTime != nil {
+					timeSinceReset := now.Sub(hc.Status.LastChangeTime.Time)
+					// Allow Unknown if reset within last 30 seconds (gives time for evaluation by specialized controllers)
+					if timeSinceReset < 30*time.Second {
+						allowUnknown = true
+						log.Info("Allowing Unknown healthcheck status as it was just reset", "healthCheck", hc.Name, "namespace", hc.Namespace, "timeSinceReset", timeSinceReset)
+					}
+				}
+
+				// If empty status, check creation time
+				if hc.Status.Status == "" {
+					timeSinceCreation := now.Sub(hc.CreationTimestamp.Time)
+					// Allow empty status if created within last 30 seconds (gives time for initial evaluation)
+					if timeSinceCreation < 30*time.Second {
+						allowUnknown = true
+						log.Info("Allowing empty healthcheck status as it was just created", "healthCheck", hc.Name, "namespace", hc.Namespace, "timeSinceCreation", timeSinceCreation)
+					}
+				}
+
+				if !allowUnknown {
+					log.Info("Cannot start bake: healthcheck is still Unknown or not evaluated", "healthCheck", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
+					// Don't start bake yet, return without error to allow requeue
+					return nil
+				}
+			}
+		}
+
 		// Bake time configured - start the process
 		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
 		bakeStatusMsg = k8sptr.To("Bake time started, waiting for minimum time and health checks.")
@@ -1418,16 +1460,33 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		deploymentTime := rollout.Status.History[0].BakeStartTime.Time
 		log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(allHealthChecks))
 		for _, hc := range allHealthChecks {
-			log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
+			log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime, "status", hc.Status.Status)
+
+			// Only fail if healthcheck became unhealthy AFTER deployment (not initially)
+			// Check if LastErrorTime is set and is after deployment time
 			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deploymentTime) {
 				healthCheckError = true
 				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime)
 				break
 			}
-			if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
+
+			// Check if healthcheck is currently unhealthy, but only fail if it changed to unhealthy after deployment
+			// If it was already unhealthy before deployment (LastChangeTime before deployment), don't fail
+			if hc.Status.Status == rolloutv1alpha1.HealthStatusUnhealthy {
+				// Only consider it an error if the status changed to unhealthy after deployment
+				if hc.Status.LastChangeTime != nil && !hc.Status.LastChangeTime.Time.Before(deploymentTime) {
+					healthCheckError = true
+					log.Info("HealthCheck became unhealthy after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime)
+					break
+				} else {
+					// Healthcheck was already unhealthy before deployment, don't fail but mark as not healthy
+					healthChecksHealthy = false
+					log.Info("HealthCheck was already unhealthy before deployment, not failing bake", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime)
+				}
+			} else if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
+				// For Pending or Unknown status, just mark as not healthy but don't fail
 				healthChecksHealthy = false
 				log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
-				break
 			}
 		}
 	}

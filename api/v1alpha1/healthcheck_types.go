@@ -33,11 +33,12 @@ const (
 	HealthStatusHealthy   HealthStatus = "Healthy"
 	HealthStatusUnhealthy HealthStatus = "Unhealthy"
 	HealthStatusPending   HealthStatus = "Pending"
+	HealthStatusUnknown   HealthStatus = "Unknown"
 )
 
 // HealthCheckStatus defines the observed state of HealthCheck.
 type HealthCheckStatus struct {
-	// Status indicates the health state of the check (e.g., 'Healthy', 'Unhealthy', 'Pending')
+	// Status indicates the health state of the check (e.g., 'Healthy', 'Unhealthy', 'Pending', 'Unknown')
 	// +optional
 	Status HealthStatus `json:"status,omitempty"`
 
