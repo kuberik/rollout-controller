@@ -420,6 +420,11 @@ spec:
                         This is when the rollout controller initiated the deployment.
                       format: date-time
                       type: string
+                    id:
+                      description: ID is a unique auto-incrementing identifier for
+                        this history entry.
+                      format: int64
+                      type: integer
                     message:
                       description: |-
                         Message provides a descriptive message about this deployment entry

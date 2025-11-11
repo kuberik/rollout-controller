@@ -1116,7 +1116,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		}
 	}
 
+	nextID := r.getNextHistoryID(rollout)
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
+		ID:                k8sptr.To(nextID),
 		Version:           versionInfo,
 		Timestamp:         metav1.Now(),
 		Message:           &deploymentMessage,
@@ -1675,6 +1677,20 @@ func (r *RolloutReconciler) hasBakeTimeConfiguration(rollout *rolloutv1alpha1.Ro
 	return rollout.Spec.BakeTime != nil ||
 		rollout.Spec.DeployTimeout != nil ||
 		rollout.Spec.HealthCheckSelector != nil
+}
+
+// getNextHistoryID calculates the next auto-incrementing ID for a new history entry
+// It checks the most recent entry (index 0) and increments its ID, or returns 1 if there's no history or no ID
+func (r *RolloutReconciler) getNextHistoryID(rollout *rolloutv1alpha1.Rollout) int64 {
+	if len(rollout.Status.History) == 0 {
+		return 1
+	}
+	// History is ordered with newest first, so check the first entry
+	lastEntry := rollout.Status.History[0]
+	if lastEntry.ID != nil {
+		return *lastEntry.ID + 1
+	}
+	return 1
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
