@@ -1024,19 +1024,22 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		}
 	}
 
-	// Cancel any existing in-progress bake before starting new deployment
-	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
-		log.Info("Cancelling existing in-progress bake due to new deployment", "previousVersion", rollout.Status.History[0].Version)
-		rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)
-		rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake cancelled due to new deployment.")
-		rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: r.now()}
-		// Update the message to reflect the cancellation
-		cancelledMessage := fmt.Sprintf("Deployment cancelled due to new deployment of version %s", wantedRelease)
-		rollout.Status.History[0].Message = &cancelledMessage
+	// Cancel any existing pending or in-progress bake before starting new deployment
+	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil {
+		currentBakeStatus := *rollout.Status.History[0].BakeStatus
+		if currentBakeStatus == rolloutv1alpha1.BakeStatusPending || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+			log.Info("Cancelling existing bake due to new deployment", "previousVersion", rollout.Status.History[0].Version, "previousStatus", currentBakeStatus)
+			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)
+			rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake cancelled due to new deployment.")
+			rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: r.now()}
+			// Update the message to reflect the cancellation
+			cancelledMessage := fmt.Sprintf("Deployment cancelled due to new deployment of version %s", wantedRelease)
+			rollout.Status.History[0].Message = &cancelledMessage
 
-		// Emit event for bake time cancellation
-		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeCancelled", fmt.Sprintf("Bake time cancelled due to new deployment of version %s", wantedRelease))
+			// Emit event for bake time cancellation
+			if r.Recorder != nil {
+				r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeCancelled", fmt.Sprintf("Bake time cancelled due to new deployment of version %s", wantedRelease))
+			}
 		}
 	}
 

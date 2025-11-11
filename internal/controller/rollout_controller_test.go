@@ -1887,6 +1887,52 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(result.RequeueAfter).To(BeNumerically("<=", 5*time.Minute))
 			})
 
+			It("should cancel existing pending bake when deploying new version", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
+
+				By("Setting wanted version to a different version")
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with the wanted version")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_2_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Deploying wanted version which should cancel the pending bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the previous deployment's bake was cancelled")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(2))
+
+				// Previous deployment (now second in history) should have cancelled bake status
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
+				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusCancelled))
+				Expect(*rollout.Status.History[1].BakeStatusMessage).To(Equal("Bake cancelled due to new deployment."))
+				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
+
+				// New deployment should be pending (waiting for healthchecks)
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+			})
+
 			It("should cancel existing in-progress bake when deploying wanted version", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
