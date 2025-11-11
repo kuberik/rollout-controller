@@ -58,7 +58,7 @@ var _ = Describe("Rollout Controller", func() {
 		var typeNamespacedName types.NamespacedName
 		var rollout *rolloutv1alpha1.Rollout
 		var imagePolicy *imagev1beta2.ImagePolicy
-		var minBakeTime *metav1.Duration
+		var bakeTime *metav1.Duration
 		var healthCheckSelector *rolloutv1alpha1.HealthCheckSelectorConfig
 
 		JustBeforeEach(func() {
@@ -118,7 +118,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime:         minBakeTime,
+					BakeTime:            bakeTime,
 					HealthCheckSelector: healthCheckSelector,
 				},
 			}
@@ -1072,7 +1072,7 @@ var _ = Describe("Rollout Controller", func() {
 			var fakeClock *FakeClock
 
 			BeforeEach(func() {
-				minBakeTime = &metav1.Duration{Duration: 5 * time.Minute}
+				bakeTime = &metav1.Duration{Duration: 5 * time.Minute}
 				fakeClock = NewFakeClock()
 				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{
@@ -1097,6 +1097,42 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
 			})
 
+			It("should block new deployment when status is Pending (minimal case)", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+				Expect(rollout.Status.History[0].DeployTime).NotTo(BeNil())
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
+
+				By("Pushing a new deployment image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_2_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Attempting to deploy new version while status is Pending")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that new deployment was blocked while status is Pending")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))                                              // Should still only have one deployment
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))                      // Should still be the original version
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending)) // Status should still be Pending
+			})
+
 			It("should block new deployment if bake is in progress", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
@@ -1107,9 +1143,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil()) // BakeEndTime only set when bake completes
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1145,9 +1195,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil()) // BakeEndTime only set when bake completes
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1186,9 +1250,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil()) // BakeEndTime only set when bake completes
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1211,7 +1289,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying bake status is Succeeded and new release was deployed")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(2))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
@@ -1228,9 +1306,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil()) // BakeEndTime only set when bake completes
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1269,9 +1361,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1308,19 +1414,28 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
 
 				By("Pushing a new deployment image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				By("Setting healthcheck to healthy and starting bake for first deployment")
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
 
-				By("Advancing clock past bake window and ensuring health checks pass")
-				fakeClock.Add(10 * time.Minute) // Past bake window
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
 				healthCheck.Status.LastErrorTime = nil
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Advancing clock past bake window")
+				fakeClock.Add(10 * time.Minute) // Past bake window
 
 				By("Reconciling after bake time completion")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1335,9 +1450,22 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
 
-				// New deployment should be in progress
+				// New deployment should be pending (waiting for healthchecks)
 				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+
+				// Set healthcheck healthy for new deployment so bake can start
+				deployTime2 := rollout.Status.History[0].DeployTime
+				Expect(deployTime2).NotTo(BeNil())
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than new deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to start bake for new deployment")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying new deployment bake started")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
 			})
@@ -1352,9 +1480,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil()) // BakeEndTime only set when bake completes
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1377,9 +1519,9 @@ var _ = Describe("Rollout Controller", func() {
 				By("Verifying bake status is Succeeded and new release was deployed")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(2))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress)) // New deployment
-				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))  // Previous deployment
-				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())                                  // Previous deployment
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))   // New deployment (waiting for healthchecks)
+				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded)) // Previous deployment
+				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())                                 // Previous deployment
 			})
 
 			It("should handle health check errors that occur exactly at deployment time", func() {
@@ -1392,27 +1534,41 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial deployment")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
-				By("Setting health check error exactly at deployment time")
-				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				By("Setting health check error exactly at bake start time")
+				bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
-				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime}
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling to check bake status")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying that health check error at deployment time is considered a failure")
+				By("Verifying that health check error at bake start time is considered a failure")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
-				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("A HealthCheck reported an error after deployment"))
+				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("A HealthCheck reported an error after bake started"))
 			})
 
 			It("should handle multiple health checks with mixed error states", func() {
@@ -1437,16 +1593,35 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial deployment")
+				By("Setting both healthchecks to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				healthCheck2.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck2.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				healthCheck2.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck2)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
-				By("Setting one health check to error after deployment time")
-				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				By("Setting one health check to error after bake start time")
+				bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
-				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(1 * time.Minute)}
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime.Add(1 * time.Minute)}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				// Keep second health check healthy
@@ -1478,13 +1653,24 @@ var _ = Describe("Rollout Controller", func() {
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
 
-				By("Setting health check error before deployment time but keeping status healthy")
-				deploymentTime := rollout.Status.History[0].BakeStartTime.Time
+				By("Setting healthcheck to healthy so bake can start")
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
-				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deploymentTime.Add(-1 * time.Minute)}
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: deployTime.Time.Add(-1 * time.Minute)} // Error before deploy time
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying bake started")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
 				By("Advancing clock past bake window")
 				fakeClock.Add(10 * time.Minute)
@@ -1499,9 +1685,47 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
 			})
 
-			It("should handle max bake time timeout correctly", func() {
-				By("Setting max bake time to be greater than min bake time")
-				rollout.Spec.MaxBakeTime = &metav1.Duration{Duration: 7 * time.Minute} // Greater than min (5 min)
+			It("should fail bake when health check errors occur during pending phase (before bake starts)", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
+
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				By("Simulating health check error after deployment (during pending phase)")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)} // Error after deploy time
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to detect health check error")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that bake was marked as failed due to health check error during pending phase")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("A HealthCheck reported an error after deployment"))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake never started
+			})
+
+			It("should handle deploy timeout correctly", func() {
+				By("Setting deploy timeout")
+				rollout.Spec.DeployTimeout = &metav1.Duration{Duration: 7 * time.Minute}
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
@@ -1513,24 +1737,25 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial deployment")
+				By("Verifying initial deployment - bake hasn't started yet (healthcheck not healthy)")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
 
-				By("Advancing clock past max bake time")
-				fakeClock.Add(8 * time.Minute) // Past max (7 min) - should trigger timeout
+				By("Advancing clock past deploy timeout")
+				fakeClock.Add(8 * time.Minute) // Past deploy timeout (7 min) - should trigger timeout
 
 				By("Reconciling to check bake status")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying that max bake time timeout causes failure")
+				By("Verifying that deploy timeout causes failure")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
-				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("Bake timeout reached"))
+				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("Deploy timeout reached before bake could start"))
 			})
 
 			It("should handle requeue timing correctly during bake process", func() {
@@ -1543,11 +1768,25 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial deployment")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History).To(HaveLen(1))
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
 				By("Reconciling during bake process to check requeue timing")
 				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1555,7 +1794,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Verifying that requeue timing is calculated correctly")
 				Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-				// Should requeue based on remaining min bake time
+				// Should requeue based on remaining bake time
 				remainingTime := rollout.Status.History[0].BakeStartTime.Time.Add(5 * time.Minute).Sub(fakeClock.Now())
 				Expect(result.RequeueAfter).To(BeNumerically("~", remainingTime, 1*time.Second))
 			})
@@ -1570,17 +1809,29 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake status is InProgress")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				healthCheck.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake status is InProgress")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 
-				By("Advancing clock past bake window with healthy health checks")
+				By("Advancing clock past bake window")
 				fakeClock.Add(10 * time.Minute)
-				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
-				healthCheck.Status.LastErrorTime = nil
-				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling to complete bake process")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1593,59 +1844,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("Bake time completed successfully"))
 			})
 
-			It("should reject invalid bake time configuration", func() {
-				By("Creating a rollout with invalid bake time configuration")
-				invalidRollout := &rolloutv1alpha1.Rollout{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "invalid-rollout",
-						Namespace: namespace,
-					},
-					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						MinBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
-						MaxBakeTime: &metav1.Duration{Duration: 5 * time.Minute}, // Invalid: max < min
-					},
-				}
-				Expect(k8sClient.Create(ctx, invalidRollout)).To(Succeed())
-
-				By("Reconciling the invalid rollout")
-				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
-				}
-				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      "invalid-rollout",
-						Namespace: namespace,
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-
-				By("Verifying that the rollout status reflects the validation error")
-				updatedRollout := &rolloutv1alpha1.Rollout{}
-				err = k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "invalid-rollout",
-					Namespace: namespace,
-				}, updatedRollout)
-				Expect(err).NotTo(HaveOccurred())
-
-				// Check that the Ready condition is False with the correct reason
-				readyCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
-				Expect(readyCondition).NotTo(BeNil())
-				Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-				Expect(readyCondition.Reason).To(Equal("InvalidBakeTimeConfiguration"))
-				Expect(readyCondition.Message).To(ContainSubstring("MaxBakeTime (5m0s) must be greater than MinBakeTime (10m0s)"))
-
-				By("Cleaning up the invalid rollout")
-				Expect(k8sClient.Delete(ctx, invalidRollout)).To(Succeed())
-			})
-
 			It("should requeue wanted version deployments to monitor bake time", func() {
 				By("Setting up a rollout with wanted version and bake time configuration")
 				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
-				rollout.Spec.MinBakeTime = &metav1.Duration{Duration: 5 * time.Minute}
+				rollout.Spec.BakeTime = &metav1.Duration{Duration: 5 * time.Minute}
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
@@ -1656,6 +1858,20 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Reconciling the wanted version deployment")
 				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Setting healthcheck to healthy so bake can start")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
 				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1671,6 +1887,52 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(result.RequeueAfter).To(BeNumerically("<=", 5*time.Minute))
 			})
 
+			It("should cancel existing pending bake when deploying new version", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
+
+				By("Setting wanted version to a different version")
+				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with the wanted version")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_2_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Deploying wanted version which should cancel the pending bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the previous deployment's bake was cancelled")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(2))
+
+				// Previous deployment (now second in history) should have cancelled bake status
+				Expect(rollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
+				Expect(*rollout.Status.History[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusCancelled))
+				Expect(*rollout.Status.History[1].BakeStatusMessage).To(Equal("Bake cancelled due to new deployment."))
+				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
+
+				// New deployment should be pending (waiting for healthchecks)
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+			})
+
 			It("should cancel existing in-progress bake when deploying wanted version", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
@@ -1681,9 +1943,23 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying initial bake times were set")
+				By("Setting healthcheck to healthy so bake can start")
 				rollout := &rolloutv1alpha1.Rollout{}
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].DeployTime
+				Expect(deployTime).NotTo(BeNil())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial bake times were set")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeStartTime.Time).To(Equal(fakeClock.Now()))
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
@@ -1712,9 +1988,22 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[1].BakeStatusMessage).To(Equal("Bake cancelled due to new deployment."))
 				Expect(rollout.Status.History[1].BakeEndTime).NotTo(BeNil())
 
-				// New deployment should be in progress
+				// New deployment should be pending (waiting for healthchecks)
 				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
-				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+
+				// Set healthcheck healthy for new deployment so bake can start
+				deployTime2 := rollout.Status.History[0].DeployTime
+				Expect(deployTime2).NotTo(BeNil())
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than new deploy time
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to start bake for new deployment")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying new deployment bake started")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
 				Expect(rollout.Status.History[0].BakeStartTime).NotTo(BeNil())
 				Expect(rollout.Status.History[0].BakeEndTime).To(BeNil())
 			})
@@ -1726,7 +2015,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			BeforeEach(func() {
 				fakeClock = NewFakeClock()
-				minBakeTime = nil // No bake time for these tests
+				bakeTime = nil // No bake time for these tests
 				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
@@ -2044,7 +2333,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
@@ -2112,7 +2401,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -2161,7 +2450,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Should have new deployment history (the old failed one should be replaced)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.1.0"))
-			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusPending)))
 
 			// The unblock-failed annotation should be cleared after deployment
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/unblock-failed"))
@@ -2182,7 +2471,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -2231,7 +2520,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Should have new deployment history (the old failed one should be replaced)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.1.0"))
-			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusPending)))
 
 			// Both annotations should be cleared after deployment
 			Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
@@ -2250,7 +2539,7 @@ var _ = Describe("Rollout Controller", func() {
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
@@ -2355,7 +2644,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(initialRollout.Status.History).To(HaveLen(1))
 				Expect(initialRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
-				Expect(initialRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)))
+				Expect(initialRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusPending)))
 
 				By("Reconciling with force-deploy annotation")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -2404,7 +2693,7 @@ var _ = Describe("Rollout Controller", func() {
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
@@ -2726,7 +3015,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
@@ -2907,19 +3196,19 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(controllerReconciler.hasBakeTimeConfiguration(rollout)).To(BeFalse())
 			})
 
-			It("should return true when MinBakeTime is configured", func() {
+			It("should return true when BakeTime is configured", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 				}
 				Expect(controllerReconciler.hasBakeTimeConfiguration(rollout)).To(BeTrue())
 			})
 
-			It("should return true when MaxBakeTime is configured", func() {
+			It("should return true when DeployTimeout is configured", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MaxBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
+						DeployTimeout: &metav1.Duration{Duration: 10 * time.Minute},
 					},
 				}
 				Expect(controllerReconciler.hasBakeTimeConfiguration(rollout)).To(BeTrue())
@@ -2936,67 +3225,6 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 				Expect(controllerReconciler.hasBakeTimeConfiguration(rollout)).To(BeTrue())
-			})
-		})
-
-		Describe("validateBakeTimeConfiguration", func() {
-			It("should return nil when no bake time configuration is present", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{},
-				}
-				Expect(controllerReconciler.validateBakeTimeConfiguration(rollout)).To(Succeed())
-			})
-
-			It("should return nil when only MinBakeTime is configured", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-					},
-				}
-				Expect(controllerReconciler.validateBakeTimeConfiguration(rollout)).To(Succeed())
-			})
-
-			It("should return nil when only MaxBakeTime is configured", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{
-						MaxBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
-					},
-				}
-				Expect(controllerReconciler.validateBakeTimeConfiguration(rollout)).To(Succeed())
-			})
-
-			It("should return nil when MaxBakeTime > MinBakeTime", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-						MaxBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
-					},
-				}
-				Expect(controllerReconciler.validateBakeTimeConfiguration(rollout)).To(Succeed())
-			})
-
-			It("should return error when MaxBakeTime <= MinBakeTime", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
-						MaxBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-					},
-				}
-				err := controllerReconciler.validateBakeTimeConfiguration(rollout)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("MaxBakeTime (5m0s) must be greater than MinBakeTime (10m0s)"))
-			})
-
-			It("should return error when MaxBakeTime equals MinBakeTime", func() {
-				rollout := &rolloutv1alpha1.Rollout{
-					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-						MaxBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-					},
-				}
-				err := controllerReconciler.validateBakeTimeConfiguration(rollout)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("MaxBakeTime (5m0s) must be greater than MinBakeTime (5m0s)"))
 			})
 		})
 
@@ -3026,7 +3254,7 @@ var _ = Describe("Rollout Controller", func() {
 			It("should return correct summary for InProgress status", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -3218,15 +3446,16 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		Describe("calculateRequeueTime", func() {
-			It("should calculate requeue time based on MinBakeTime", func() {
+			It("should calculate requeue time based on BakeTime", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{
 							{
 								BakeStartTime: &metav1.Time{Time: fakeClock.Now()},
+								DeployTime:    &metav1.Time{Time: fakeClock.Now()},
 							},
 						},
 					},
@@ -3239,15 +3468,16 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(requeueAfter).To(BeNumerically("<=", 5*time.Minute))
 			})
 
-			It("should calculate requeue time based on MaxBakeTime", func() {
+			It("should calculate requeue time based on DeployTimeout when bake hasn't started", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MaxBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
+						DeployTimeout: &metav1.Duration{Duration: 10 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{
 							{
-								BakeStartTime: &metav1.Time{Time: fakeClock.Now()},
+								BakeStartTime: nil,
+								DeployTime:    &metav1.Time{Time: fakeClock.Now()},
 							},
 						},
 					},
@@ -3257,7 +3487,7 @@ var _ = Describe("Rollout Controller", func() {
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(BeNumerically(">", 0))
-				Expect(requeueAfter).To(BeNumerically("<=", 10*time.Minute))
+				Expect(requeueAfter).To(BeNumerically("<=", 1*time.Minute))
 			})
 
 			It("should return default requeue time when no bake time configuration", func() {
@@ -3280,7 +3510,7 @@ var _ = Describe("Rollout Controller", func() {
 			It("should return default requeue time when no history", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{},
@@ -3296,12 +3526,13 @@ var _ = Describe("Rollout Controller", func() {
 			It("should return default requeue time when no BakeStartTime", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{
 							{
 								BakeStartTime: nil,
+								DeployTime:    &metav1.Time{Time: fakeClock.Now()},
 							},
 						},
 					},
@@ -3340,7 +3571,7 @@ var _ = Describe("Rollout Controller", func() {
 			It("should return correct summary for InProgress status", func() {
 				rollout := &rolloutv1alpha1.Rollout{
 					Spec: rolloutv1alpha1.RolloutSpec{
-						MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -3478,8 +3709,8 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
-					MaxBakeTime: &metav1.Duration{Duration: 10 * time.Minute},
+					BakeTime:      &metav1.Duration{Duration: 5 * time.Minute},
+					DeployTimeout: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 		})
@@ -3494,12 +3725,13 @@ var _ = Describe("Rollout Controller", func() {
 					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
-					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
+					BakeStartTime: &metav1.Time{Time: fakeClock.Now()},                       // Start now
+					DeployTime:    &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)}, // Deploy time before bake start
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
-			// Advance time past min bake time (5 minutes)
+			// Advance time past bake time (5 minutes)
 			fakeClock.Add(6 * time.Minute)
 
 			// Call handleBakeTime - should succeed and set BakeEndTime
@@ -3513,22 +3745,23 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 		})
 
-		It("should set BakeEndTime when bake times out", func() {
+		It("should set BakeEndTime when deploy times out", func() {
 			// Create rollout with initial deployment
 			Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 
-			// Simulate deployment by setting history
+			// Simulate deployment by setting history - bake hasn't started yet
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
 					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
-					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
+					BakeStartTime: nil,                                 // Bake hasn't started
+					DeployTime:    &metav1.Time{Time: fakeClock.Now()}, // Deploy time
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
-			// Advance time past max bake time (10 minutes)
+			// Advance time past deploy timeout (10 minutes)
 			fakeClock.Add(11 * time.Minute)
 
 			// Call handleBakeTime - should timeout and set BakeEndTime
@@ -3588,17 +3821,19 @@ var _ = Describe("Rollout Controller", func() {
 					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
-					BakeStartTime: &metav1.Time{Time: fakeClock.Now()}, // Start now
+					BakeStartTime: &metav1.Time{Time: fakeClock.Now()},                       // Start now
+					DeployTime:    &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)}, // Deploy time before bake start
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
-			// Advance time by 2 minutes to simulate time passing after deployment
+			// Advance time by 2 minutes to simulate time passing after bake start
 			fakeClock.Add(2 * time.Minute)
 
-			// Update the health check's LastErrorTime to be after the deployment time
+			// Update the health check's LastErrorTime to be after the bake start time
+			bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
 			healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
-			healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(-1 * time.Minute)} // Error 1 minute after deployment
+			healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime.Add(1 * time.Minute)} // Error 1 minute after bake start
 			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 			// Verify the health check status was updated
@@ -3704,7 +3939,7 @@ var _ = Describe("Rollout Controller", func() {
 					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
-					MinBakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 		})
@@ -3766,23 +4001,30 @@ var _ = Describe("Rollout Controller", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Simulate deployment by setting history
+			// Simulate deployment by setting history - bake hasn't started yet
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
 					Version:       rolloutv1alpha1.VersionInfo{Tag: "test-version"},
 					Timestamp:     metav1.Now(),
 					BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusInProgress),
-					BakeStartTime: &metav1.Time{Time: time.Now()},
+					BakeStartTime: nil, // Bake hasn't started yet
+					DeployTime:    &metav1.Time{Time: time.Now()},
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
-			// Call handleBakeTime to trigger health check evaluation
+			// Set healthcheck1 to healthy so bake can start
+			healthCheck1.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+			healthCheck1.Status.LastChangeTime = &metav1.Time{Time: time.Now().Add(1 * time.Second)}
+			Expect(k8sClient.Status().Update(ctx, healthCheck1)).To(Succeed())
+
+			// Call handleBakeTime to trigger health check evaluation and start bake
 			result, err := controllerReconciler.handleBakeTime(ctx, namespace1, rollout)
 			Expect(err).To(Succeed())
 
 			// Should find healthCheck1 but not healthCheck2
 			// The actual health check evaluation logic is in the controller
+			// If bake started, it should requeue based on bakeTime
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 		})
 
@@ -4053,7 +4295,7 @@ var _ = Describe("Rollout Controller", func() {
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
 					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
-					MinBakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "my-app"},
@@ -4073,7 +4315,7 @@ var _ = Describe("Rollout Controller", func() {
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
 					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
-					MinBakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
+					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "other-app"},

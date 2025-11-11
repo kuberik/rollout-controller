@@ -103,25 +103,38 @@ type RolloutSpec struct {
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 
-	// MinBakeTime specifies how long to wait after deployment before marking as successful
-	// This is the minimum time that must pass before the rollout can be considered successful,
-	// even if all health checks are passing. If not specified, no minimum wait time is enforced.
+	// BakeTime specifies how long to wait after bake starts before marking as successful
+	// If no errors happen within the bake time, the rollout is baked successfully.
+	// If not specified, no bake time is enforced.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +optional
+	BakeTime *metav1.Duration `json:"bakeTime,omitempty"`
+
+	// DeployTimeout specifies the maximum time to wait for bake to start before marking as failed
+	// If bake doesn't start within deployTimeout (i.e., health checks don't become healthy),
+	// the rollout should be marked as failed.
+	// If not specified, the rollout will wait indefinitely for bake to start.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+	// +optional
+	DeployTimeout *metav1.Duration `json:"deployTimeout,omitempty"`
+
+	// HealthCheckSelector specifies how to select HealthChecks for this rollout
+	// +optional
+	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
+
+	// DEPRECATED: Use BakeTime instead.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
 	// +optional
 	MinBakeTime *metav1.Duration `json:"minBakeTime,omitempty"`
 
-	// MaxBakeTime specifies the maximum time to wait for health checks before marking as failed
-	// This is the maximum time the rollout will wait for health checks to pass before failing.
-	// If not specified, the rollout will wait indefinitely. Must be greater than MinBakeTime if both are specified.
+	// DEPRECATED: Use BakeTime instead.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
 	// +optional
 	MaxBakeTime *metav1.Duration `json:"maxBakeTime,omitempty"`
-
-	// HealthCheckSelector specifies how to select HealthChecks for this rollout
-	// +optional
-	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
 }
 
 // ValidateHealthCheckSelector validates the health check selector configuration.
@@ -254,6 +267,11 @@ type DeploymentHistoryEntry struct {
 	// This is when the bake process completed (either successfully or with failure).
 	// +optional
 	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
+
+	// DeployTime is the time when the deployment occurred
+	// This is when the rollout controller initiated the deployment.
+	// +optional
+	DeployTime *metav1.Time `json:"deployTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -300,6 +318,7 @@ const (
 )
 
 const (
+	BakeStatusPending    = "Pending"
 	BakeStatusInProgress = "InProgress"
 	BakeStatusSucceeded  = "Succeeded"
 	BakeStatusFailed     = "Failed"
