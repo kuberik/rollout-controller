@@ -113,12 +113,6 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Validate bake time configuration
-	if err := r.validateBakeTimeConfiguration(&rollout); err != nil {
-		log.Error(err, "Invalid bake time configuration")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "InvalidBakeTimeConfiguration", err.Error())
-	}
-
 	err := r.updateAvailableReleases(ctx, &rollout, log)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -136,7 +130,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		bakeStatus := rollout.Status.History[0].BakeStatus
 		if bakeStatus != nil {
 			switch *bakeStatus {
-			case rolloutv1alpha1.BakeStatusInProgress:
+			case rolloutv1alpha1.BakeStatusPending, rolloutv1alpha1.BakeStatusInProgress:
 				result, err := r.handleBakeTime(ctx, req.Namespace, &rollout)
 				if err != nil {
 					return result, err
@@ -157,9 +151,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 
 				// For manual deployments, we want to continue monitoring bake time but not block deployment
-				// For automatic deployments, block if bake is still in progress
-				if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil && *rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
-					return result, nil
+				// For automatic deployments, block if bake is still pending or in progress
+				if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil {
+					currentBakeStatus := *rollout.Status.History[0].BakeStatus
+					if currentBakeStatus == rolloutv1alpha1.BakeStatusPending || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+						return result, nil
+					}
 				}
 
 				// If this is a manual deployment and bake is in progress, we should requeue to continue monitoring
@@ -1068,7 +1065,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	var bakeStatus, bakeStatusMsg *string
 
 	now := r.now()
-	bakeStartTime := &metav1.Time{Time: now}
+	deployTime := &metav1.Time{Time: now}
 
 	// Determine initial bake status based on configuration
 	if !r.hasBakeTimeConfiguration(rollout) {
@@ -1076,13 +1073,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
 		bakeStatusMsg = k8sptr.To("No bake time configured, deployment completed immediately.")
 	} else {
-		// Bake time configured - start the process
-		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
-		bakeStatusMsg = k8sptr.To("Bake time started, waiting for minimum time and health checks.")
+		// Bake time configured - initially set to Pending until healthchecks are healthy
+		// BakeStartTime will be set later when healthchecks become healthy and bake actually starts
+		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusPending)
+		bakeStatusMsg = k8sptr.To("Waiting for health checks to become healthy before starting bake.")
 
 		// Emit event for bake time start
 		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeStarted", "Bake time started, waiting for minimum time and health checks.")
+			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePending", "Bake time pending, waiting for health checks to become healthy before starting bake.")
 		}
 	}
 
@@ -1121,8 +1119,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Message:           &deploymentMessage,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
-		BakeStartTime:     bakeStartTime,
+		BakeStartTime:     nil, // Will be set when healthchecks become healthy
 		BakeEndTime:       nil, // Will be set when bake completes (succeeds, fails, or times out)
+		DeployTime:        deployTime,
 	}}, rollout.Status.History...)
 	// Limit history size if specified
 	versionHistoryLimit := int32(5) // default value
@@ -1387,140 +1386,238 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	}
 
 	currentEntry := &rollout.Status.History[0]
-	if currentEntry.BakeStatus == nil || *currentEntry.BakeStatus != rolloutv1alpha1.BakeStatusInProgress {
+	// Handle both Pending and InProgress statuses
+	if currentEntry.BakeStatus == nil {
+		return ctrl.Result{}, nil
+	}
+	bakeStatus := *currentEntry.BakeStatus
+	if bakeStatus != rolloutv1alpha1.BakeStatusPending && bakeStatus != rolloutv1alpha1.BakeStatusInProgress {
 		return ctrl.Result{}, nil
 	}
 
-	// Validate that we have a bake start time
-	if currentEntry.BakeStartTime == nil {
-		log.Error(fmt.Errorf("bake start time is nil"), "Invalid bake state")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "InvalidBakeState", "Bake start time is missing")
+	deployTime := currentEntry.DeployTime.Time
+
+	// Check deployTimeout - if bake hasn't started within deployTimeout, mark as failed
+	// But only if the previous entry was successful (or doesn't exist)
+	if rollout.Spec.DeployTimeout != nil && currentEntry.BakeStartTime == nil {
+		// Bake hasn't started yet - check if deployTimeout has been exceeded
+		if now.After(deployTime.Add(rollout.Spec.DeployTimeout.Duration)) {
+			// Only fail if previous entry was successful (or doesn't exist)
+			shouldFail := true
+			if len(rollout.Status.History) > 1 {
+				previousEntry := rollout.Status.History[1]
+				if previousEntry.BakeStatus != nil && *previousEntry.BakeStatus != rolloutv1alpha1.BakeStatusSucceeded {
+					shouldFail = false
+					log.Info("Previous rollout entry was not successful, not failing current rollout despite deploy timeout")
+				}
+			}
+
+			if shouldFail {
+				log.Info("Deploy timeout reached before bake could start, marking rollout as failed")
+				currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
+				currentEntry.BakeStatusMessage = k8sptr.To("Deploy timeout reached before bake could start (health checks did not become healthy in time).")
+				currentEntry.BakeEndTime = &metav1.Time{Time: now}
+
+				meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+					Type:               rolloutv1alpha1.RolloutReady,
+					Status:             metav1.ConditionFalse,
+					LastTransitionTime: metav1.Now(),
+					Reason:             "BakeTimeFailed",
+					Message:            "Deploy timeout reached before bake could start (health checks did not become healthy in time).",
+				})
+
+				// Emit event for deploy timeout
+				if r.Recorder != nil {
+					r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "Deploy timeout reached before bake could start (health checks did not become healthy in time).")
+				}
+
+				return ctrl.Result{}, r.Status().Update(ctx, rollout)
+			}
+		}
 	}
 
-	// Check if minimum bake time has elapsed
-	minBakeTimeElapsed := true
-	if rollout.Spec.MinBakeTime != nil {
-		minBakeTimeElapsed = now.After(rollout.Status.History[0].BakeStartTime.Time.Add(rollout.Spec.MinBakeTime.Duration))
-	}
-
-	// Check health checks (if none specified, consider them all healthy)
-	healthChecksHealthy := true
-	healthCheckError := false
-
+	// Check health checks to determine if bake can start
 	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
 	if err != nil {
 		log.Error(err, "Failed to list health checks")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
 	}
 
+	// Check if any health check has reported an error after deployment time
+	// This check happens even during pending phase (before bake starts)
+	healthCheckError := false
 	if len(allHealthChecks) > 0 {
-		// Check if any health check has reported an error after deployment
-		deploymentTime := rollout.Status.History[0].BakeStartTime.Time
-		log.Info("Checking health checks", "deploymentTime", deploymentTime, "healthCheckCount", len(allHealthChecks))
 		for _, hc := range allHealthChecks {
-			log.Info("Checking health check", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deploymentTime", deploymentTime)
-			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deploymentTime) {
+			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
 				healthCheckError = true
-				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime)
+				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deployTime", deployTime)
 				break
 			}
+		}
+	}
+
+	// If health check error detected, mark as failed (unless previous entry was not successful)
+	if healthCheckError {
+		// Only fail if previous entry was successful (or doesn't exist)
+		shouldFail := true
+		if len(rollout.Status.History) > 1 {
+			previousEntry := rollout.Status.History[1]
+			if previousEntry.BakeStatus != nil && *previousEntry.BakeStatus != rolloutv1alpha1.BakeStatusSucceeded {
+				shouldFail = false
+				log.Info("Previous rollout entry was not successful, not failing current rollout despite health check error")
+			}
+		}
+
+		if shouldFail {
+			log.Info("Health check error detected, marking rollout as failed")
+			currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
+			errorMsg := "A HealthCheck reported an error after deployment."
+			if currentEntry.BakeStartTime != nil {
+				errorMsg = "A HealthCheck reported an error after bake started."
+			}
+			currentEntry.BakeStatusMessage = &errorMsg
+			currentEntry.BakeEndTime = &metav1.Time{Time: now}
+
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
+				Status:             metav1.ConditionFalse,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "BakeTimeFailed",
+				Message:            errorMsg,
+			})
+
+			// Emit event for bake time failure
+			if r.Recorder != nil {
+				r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", errorMsg)
+			}
+
+			err := r.Status().Update(ctx, rollout)
+			if err != nil {
+				log.Error(err, "Failed to update rollout status")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+
+	// Check if all healthchecks are healthy and LastChangeTime is newer than deployment time
+	canStartBake := true
+
+	if len(allHealthChecks) > 0 {
+		for _, hc := range allHealthChecks {
+			// Check if health check is healthy
 			if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
-				healthChecksHealthy = false
+				canStartBake = false
 				log.Info("HealthCheck not healthy", "name", hc.Name, "namespace", hc.Namespace, "status", hc.Status.Status)
 				break
 			}
+
+			// Check if LastChangeTime is newer than deployment time
+			if hc.Status.LastChangeTime == nil {
+				canStartBake = false
+				log.Info("HealthCheck has no LastChangeTime", "name", hc.Name, "namespace", hc.Namespace)
+				break
+			}
+
+			if !hc.Status.LastChangeTime.Time.After(deployTime) {
+				canStartBake = false
+				log.Info("HealthCheck LastChangeTime is not newer than deployment time", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "deployTime", deployTime)
+				break
+			}
 		}
-	}
-	// If no health checks found, consider them healthy (empty set is always healthy)
-
-	// Check for timeout (if specified)
-	timeoutReached := false
-	if rollout.Spec.MaxBakeTime != nil {
-		timeoutReached = now.After(rollout.Status.History[0].BakeStartTime.Time.Add(rollout.Spec.MaxBakeTime.Duration))
-	}
-
-	// Determine final status
-	if healthCheckError {
-		// Health check failed - mark as failed
-		log.Info("Health check error detected, marking rollout as failed")
-		if len(rollout.Status.History) > 0 {
-			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
-			rollout.Status.History[0].BakeStatusMessage = k8sptr.To("A HealthCheck reported an error after deployment.")
-			rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: now}
-		}
-
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "BakeTimeFailed",
-			Message:            "A HealthCheck reported an error after deployment.",
-		})
-
-		// Emit event for bake time failure
-		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "A HealthCheck reported an error after deployment.")
-		}
-
-		err := r.Status().Update(ctx, rollout)
-		if err != nil {
-			log.Error(err, "Failed to update rollout status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+	} else {
+		// If no health checks found, consider them healthy (empty set is always healthy)
+		canStartBake = true
 	}
 
-	if timeoutReached {
-		// Timeout reached - mark as failed
-		log.Info("Bake timeout reached, marking rollout as failed")
-		if len(rollout.Status.History) > 0 {
-			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
-			rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake timeout reached while waiting for health checks.")
-			rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: now}
+	// If bake hasn't started yet, try to start it if conditions are met
+	if currentEntry.BakeStartTime == nil {
+		if canStartBake {
+			// All healthchecks are healthy and LastChangeTime is newer than deployment time - start bake
+			log.Info("All health checks are healthy, starting bake")
+			currentEntry.BakeStartTime = &metav1.Time{Time: now}
+			// Transition from Pending to InProgress when bake actually starts
+			currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
+			bakeStartMsg := "Bake started, monitoring for errors."
+			currentEntry.BakeStatusMessage = &bakeStartMsg
+
+			// Emit event for bake time start
+			if r.Recorder != nil {
+				r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeStarted", "Bake time started, monitoring for errors.")
+			}
+
+			// Update status and continue to check bake completion
+			if err := r.Status().Update(ctx, rollout); err != nil {
+				log.Error(err, "Failed to update rollout status")
+				return ctrl.Result{}, err
+			}
+		} else {
+			log.Info("Waiting for health checks to become healthy before starting bake")
+			// Calculate requeue time based on deployTimeout if set
+			var requeueAfter time.Duration
+			if rollout.Spec.DeployTimeout != nil {
+				requeueAfter = deployTime.Add(rollout.Spec.DeployTimeout.Duration).Sub(now)
+				if requeueAfter <= 0 {
+					requeueAfter = 1 * time.Second
+				}
+			} else {
+				requeueAfter = 10 * time.Second
+			}
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
-
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type:               rolloutv1alpha1.RolloutReady,
-			Status:             metav1.ConditionFalse,
-			LastTransitionTime: metav1.Now(),
-			Reason:             "BakeTimeFailed",
-			Message:            "Bake timeout reached while waiting for health checks.",
-		})
-
-		// Emit event for bake time timeout
-		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "Bake timeout reached while waiting for health checks.")
-		}
-
-		return ctrl.Result{}, r.Status().Update(ctx, rollout)
 	}
 
-	if minBakeTimeElapsed && healthChecksHealthy {
-		// All conditions met - mark as succeeded
-		log.Info("Bake time completed successfully")
-		if len(rollout.Status.History) > 0 {
-			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
-			rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake time completed successfully.")
-			rollout.Status.History[0].BakeEndTime = &metav1.Time{Time: now}
+	// Bake has started - check if it should complete
+	bakeStartTime := currentEntry.BakeStartTime.Time
+
+	// Note: Health check errors are already checked earlier (after deployment time),
+	// so we don't need to check again here. The earlier check will catch errors
+	// both during pending phase and after bake starts.
+
+	// Check if bake time has elapsed without errors
+	if rollout.Spec.BakeTime != nil {
+		bakeEndTime := bakeStartTime.Add(rollout.Spec.BakeTime.Duration)
+		if now.After(bakeEndTime) || now.Equal(bakeEndTime) {
+			// Bake time completed without errors - mark as succeeded
+			log.Info("Bake time completed successfully")
+			currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
+			currentEntry.BakeStatusMessage = k8sptr.To("Bake time completed successfully (no errors within bake time).")
+			currentEntry.BakeEndTime = &metav1.Time{Time: now}
+
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type:               rolloutv1alpha1.RolloutReady,
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "BakeTimePassed",
+				Message:            "Bake time completed successfully (no errors within bake time).",
+			})
+
+			// Emit event for successful bake time
+			if r.Recorder != nil {
+				r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePassed", "Bake time completed successfully (no errors within bake time).")
+			}
+
+			return ctrl.Result{}, r.Status().Update(ctx, rollout)
 		}
+	} else {
+		// No bake time configured - if we're here, bake has started, so mark as succeeded
+		log.Info("No bake time configured, marking as succeeded")
+		currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
+		currentEntry.BakeStatusMessage = k8sptr.To("Bake completed (no bake time configured).")
+		currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
 		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "BakeTimePassed",
-			Message:            "Bake time completed successfully.",
+			Message:            "Bake completed (no bake time configured).",
 		})
-
-		// Emit event for successful bake time
-		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePassed", "Bake time completed successfully.")
-		}
 
 		return ctrl.Result{}, r.Status().Update(ctx, rollout)
 	}
 
-	// Still waiting - calculate requeue time
+	// Still waiting for bake time to complete - calculate requeue time
 	requeueAfter := r.calculateRequeueTime(rollout)
 
 	log.Info("Bake time in progress, waiting", "requeueAfter", requeueAfter)
@@ -1529,33 +1626,38 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 // calculateRequeueTime calculates the appropriate requeue time based on bake time configuration
 func (r *RolloutReconciler) calculateRequeueTime(rollout *rolloutv1alpha1.Rollout) time.Duration {
-	if len(rollout.Status.History) == 0 || rollout.Status.History[0].BakeStartTime == nil {
+	if len(rollout.Status.History) == 0 {
 		// Fallback to default requeue interval
 		return 10 * time.Second
 	}
 
+	currentEntry := &rollout.Status.History[0]
 	now := r.now()
-	bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
 
-	var requeueAfter time.Duration
-	if rollout.Spec.MinBakeTime != nil {
-		// Wait for minimum bake time
-		requeueAfter = bakeStartTime.Add(rollout.Spec.MinBakeTime.Duration).Sub(now)
-	} else if rollout.Spec.MaxBakeTime != nil {
-		// Wait for timeout
-		requeueAfter = bakeStartTime.Add(rollout.Spec.MaxBakeTime.Duration).Sub(now)
-	} else {
-		// Default requeue interval
+	// If bake hasn't started yet, calculate based on deployTimeout
+	if currentEntry.BakeStartTime == nil {
+		if currentEntry.DeployTime != nil && rollout.Spec.DeployTimeout != nil {
+			requeueAfter := currentEntry.DeployTime.Time.Add(rollout.Spec.DeployTimeout.Duration).Sub(now) / 10
+			if requeueAfter <= 0 {
+				return 1 * time.Second
+			}
+			return requeueAfter
+		}
 		return 10 * time.Second
 	}
 
-	// Ensure we don't return negative durations (which would cause immediate requeue)
-	// Use a minimum interval of 1 second to avoid tight loops
-	if requeueAfter <= 0 {
-		return 1 * time.Second
+	// Bake has started - calculate based on bakeTime
+	bakeStartTime := currentEntry.BakeStartTime.Time
+	if rollout.Spec.BakeTime != nil {
+		requeueAfter := bakeStartTime.Add(rollout.Spec.BakeTime.Duration).Sub(now)
+		if requeueAfter <= 0 {
+			return 1 * time.Second
+		}
+		return requeueAfter
 	}
 
-	return requeueAfter
+	// Default requeue interval
+	return 10 * time.Second
 }
 
 func (r *RolloutReconciler) now() time.Time {
@@ -1567,20 +1669,9 @@ func (r *RolloutReconciler) now() time.Time {
 
 // hasBakeTimeConfiguration checks if the rollout has any bake time related configuration
 func (r *RolloutReconciler) hasBakeTimeConfiguration(rollout *rolloutv1alpha1.Rollout) bool {
-	return rollout.Spec.MinBakeTime != nil ||
-		rollout.Spec.MaxBakeTime != nil ||
+	return rollout.Spec.BakeTime != nil ||
+		rollout.Spec.DeployTimeout != nil ||
 		rollout.Spec.HealthCheckSelector != nil
-}
-
-// validateBakeTimeConfiguration validates that bake time configuration is valid
-func (r *RolloutReconciler) validateBakeTimeConfiguration(rollout *rolloutv1alpha1.Rollout) error {
-	if rollout.Spec.MinBakeTime != nil && rollout.Spec.MaxBakeTime != nil {
-		if rollout.Spec.MaxBakeTime.Duration <= rollout.Spec.MinBakeTime.Duration {
-			return fmt.Errorf("MaxBakeTime (%v) must be greater than MinBakeTime (%v)",
-				rollout.Spec.MaxBakeTime.Duration, rollout.Spec.MinBakeTime.Duration)
-		}
-	}
-	return nil
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
@@ -1630,18 +1721,20 @@ func (r *RolloutReconciler) getBakeStatusSummary(rollout *rolloutv1alpha1.Rollou
 	}
 
 	switch *entry.BakeStatus {
+	case rolloutv1alpha1.BakeStatusPending:
+		return "Waiting for health checks to become healthy before starting bake"
 	case rolloutv1alpha1.BakeStatusInProgress:
 		if entry.BakeStartTime != nil {
 			elapsed := time.Since(entry.BakeStartTime.Time)
-			if rollout.Spec.MinBakeTime != nil {
-				remaining := rollout.Spec.MinBakeTime.Duration - elapsed
+			if rollout.Spec.BakeTime != nil {
+				remaining := rollout.Spec.BakeTime.Duration - elapsed
 				if remaining > 0 {
 					return fmt.Sprintf("Baking in progress, %v remaining", remaining.Round(time.Second))
 				}
 			}
-			return "Baking in progress, waiting for health checks"
+			return "Baking in progress, monitoring for errors"
 		}
-		return "Baking in progress"
+		panic("BakeStartTime should be set for InProgress status")
 	case rolloutv1alpha1.BakeStatusSucceeded:
 		return "Bake completed successfully"
 	case rolloutv1alpha1.BakeStatusFailed:
@@ -1755,7 +1848,7 @@ func (r *RolloutReconciler) findRolloutsForHealthCheck(ctx context.Context, obj 
 	var requests []reconcile.Request
 	for _, rollout := range rolloutList.Items {
 		// Check if this rollout references the HealthCheck via label selector
-		if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.HealthCheckSelector.GetSelector() != nil && rollout.Spec.MinBakeTime != nil {
+		if rollout.Spec.HealthCheckSelector != nil && rollout.Spec.HealthCheckSelector.GetSelector() != nil && (rollout.Spec.BakeTime != nil || rollout.Spec.DeployTimeout != nil) {
 			selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetSelector())
 			if err != nil {
 				continue // Skip invalid selectors
