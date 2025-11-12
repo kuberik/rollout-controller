@@ -1067,9 +1067,6 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Always set bake status and start time
 	var bakeStatus, bakeStatusMsg *string
 
-	now := r.now()
-	deployTime := &metav1.Time{Time: now}
-
 	// Determine initial bake status based on configuration
 	if !r.hasBakeTimeConfiguration(rollout) {
 		// No bake time configuration - mark as succeeded immediately
@@ -1117,16 +1114,16 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	nextID := r.getNextHistoryID(rollout)
+	now := metav1.Time{Time: r.now()}
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
 		ID:                k8sptr.To(nextID),
 		Version:           versionInfo,
-		Timestamp:         metav1.Now(),
+		Timestamp:         now,
 		Message:           &deploymentMessage,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     nil, // Will be set when healthchecks become healthy
 		BakeEndTime:       nil, // Will be set when bake completes (succeeds, fails, or times out)
-		DeployTime:        deployTime,
 	}}, rollout.Status.History...)
 	// Limit history size if specified
 	versionHistoryLimit := int32(5) // default value
@@ -1400,7 +1397,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		return ctrl.Result{}, nil
 	}
 
-	deployTime := currentEntry.DeployTime.Time
+	deployTime := currentEntry.Timestamp.Time
 
 	// Check deployTimeout - if bake hasn't started within deployTimeout, mark as failed
 	// But only if the previous entry was successful (or doesn't exist)
@@ -1561,6 +1558,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			// Calculate requeue time based on deployTimeout if set
 			var requeueAfter time.Duration
 			if rollout.Spec.DeployTimeout != nil {
+				deployTime := currentEntry.Timestamp.Time
 				requeueAfter = deployTime.Add(rollout.Spec.DeployTimeout.Duration).Sub(now)
 				if requeueAfter <= 0 {
 					requeueAfter = 1 * time.Second
@@ -1641,8 +1639,8 @@ func (r *RolloutReconciler) calculateRequeueTime(rollout *rolloutv1alpha1.Rollou
 
 	// If bake hasn't started yet, calculate based on deployTimeout
 	if currentEntry.BakeStartTime == nil {
-		if currentEntry.DeployTime != nil && rollout.Spec.DeployTimeout != nil {
-			requeueAfter := currentEntry.DeployTime.Time.Add(rollout.Spec.DeployTimeout.Duration).Sub(now) / 10
+		if rollout.Spec.DeployTimeout != nil {
+			requeueAfter := currentEntry.Timestamp.Time.Add(rollout.Spec.DeployTimeout.Duration).Sub(now) / 10
 			if requeueAfter <= 0 {
 				return 1 * time.Second
 			}

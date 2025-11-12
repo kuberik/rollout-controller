@@ -271,11 +271,6 @@ type DeploymentHistoryEntry struct {
 	// This is when the bake process completed (either successfully or with failure).
 	// +optional
 	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
-
-	// DeployTime is the time when the deployment occurred
-	// This is when the rollout controller initiated the deployment.
-	// +optional
-	DeployTime *metav1.Time `json:"deployTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
