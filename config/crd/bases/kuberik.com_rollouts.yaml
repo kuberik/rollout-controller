@@ -414,12 +414,6 @@ spec:
                         BakeStatusMessage provides details about the bake state for this deployment
                         This field contains human-readable information about why the bake status is what it is.
                       type: string
-                    deployTime:
-                      description: |-
-                        DeployTime is the time when the deployment occurred
-                        This is when the rollout controller initiated the deployment.
-                      format: date-time
-                      type: string
                     id:
                       description: ID is a unique auto-incrementing identifier for
                         this history entry.
