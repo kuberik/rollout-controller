@@ -208,6 +208,188 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version0_1_0))
 		})
 
+		It("should assign auto-incrementing IDs to history entries", func() {
+			By("Setting up ImagePolicy with initial release")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "1.0.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("Reconciling the resources to create first deployment")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying first history entry has ID 1")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(1)))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+
+			By("Deploying second version")
+			imagePolicy.Status.LatestRef.Tag = "2.0.0"
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying second history entry has ID 2")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
+			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(2)))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(1)))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("1.0.0"))
+
+			By("Deploying third version")
+			imagePolicy.Status.LatestRef.Tag = "3.0.0"
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying third history entry has ID 3")
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(3))
+			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(3)))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(2)))
+			Expect(updatedRollout.Status.History[2].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[2].ID).To(Equal(int64(1)))
+		})
+
+		It("should continue incrementing IDs when history limit is reached", func() {
+			By("Setting up ImagePolicy with initial release")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "1.0.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("Setting a custom history limit of 2")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			historyLimit := int32(2)
+			rollout.Spec.VersionHistoryLimit = &historyLimit
+			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Deploy version 1.0.0
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deploy version 2.0.0
+			imagePolicy.Status.LatestRef.Tag = "2.0.0"
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deploy version 3.0.0 (should cause 1.0.0 to be removed due to limit)
+			imagePolicy.Status.LatestRef.Tag = "3.0.0"
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying IDs continue incrementing even after history limit")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(2))
+			// Newest entry should have ID 3 (continuing from previous max)
+			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(3)))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			// Second entry should have ID 2
+			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(2)))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("2.0.0"))
+		})
+
+		It("should handle backward compatibility with entries without IDs", func() {
+			By("Creating a rollout with existing history entries without IDs")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Manually set history with entries that don't have IDs (simulating old data)
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "2.0.0"},
+					Timestamp: metav1.Now(),
+				},
+				{
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+					Timestamp: metav1.Now(),
+				},
+			}
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: "2.0.0"},
+				{Tag: "1.0.0"},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("Setting up ImagePolicy with new release")
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "3.0.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+			By("Reconciling to create new deployment")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying new entry gets ID 1 (since old entries have no IDs)")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(3))
+			// New entry should get ID 1 (max of nil IDs is 0, so next is 1)
+			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
+			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(1)))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			// Old entries should still not have IDs
+			Expect(updatedRollout.Status.History[1].ID).To(BeNil())
+			Expect(updatedRollout.Status.History[2].ID).To(BeNil())
+		})
+
 		It("should respect the history limit", func() {
 			By("Setting up ImagePolicy with initial release")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{

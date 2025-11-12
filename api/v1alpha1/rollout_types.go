@@ -230,6 +230,10 @@ type RolloutStatus struct {
 
 // DeploymentHistoryEntry represents a single entry in the deployment history.
 type DeploymentHistoryEntry struct {
+	// ID is a unique auto-incrementing identifier for this history entry.
+	// +optional
+	ID *int64 `json:"id,omitempty"`
+
 	// Version is the version information that was deployed.
 	// +kubebuilder:validation:Required
 	// +required
