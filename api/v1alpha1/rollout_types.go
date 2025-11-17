@@ -123,18 +123,6 @@ type RolloutSpec struct {
 	// HealthCheckSelector specifies how to select HealthChecks for this rollout
 	// +optional
 	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
-
-	// DEPRECATED: Use BakeTime instead.
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
-	// +optional
-	MinBakeTime *metav1.Duration `json:"minBakeTime,omitempty"`
-
-	// DEPRECATED: Use BakeTime instead.
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
-	// +optional
-	MaxBakeTime *metav1.Duration `json:"maxBakeTime,omitempty"`
 }
 
 // ValidateHealthCheckSelector validates the health check selector configuration.

@@ -182,14 +182,6 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
-              maxBakeTime:
-                description: 'DEPRECATED: Use BakeTime instead.'
-                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
-                type: string
-              minBakeTime:
-                description: 'DEPRECATED: Use BakeTime instead.'
-                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
-                type: string
               releasesImagePolicy:
                 description: ReleasesImagePolicy specifies the ImagePolicy that provides
                   available releases
