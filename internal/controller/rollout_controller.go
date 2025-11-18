@@ -905,6 +905,75 @@ func (r *RolloutReconciler) listHealthChecks(ctx context.Context, namespace stri
 	return allHealthChecks, nil
 }
 
+// collectFailedHealthChecks collects all health checks that have failed after the deployment time.
+// It returns health checks that have LastErrorTime after deployTime.
+func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
+	var failedHealthChecks []rolloutv1alpha1.FailedHealthCheck
+
+	for _, hc := range allHealthChecks {
+		if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
+			failedHC := rolloutv1alpha1.FailedHealthCheck{
+				Name:      hc.Name,
+				Namespace: hc.Namespace,
+			}
+			if hc.Status.Message != nil {
+				failedHC.Message = hc.Status.Message
+			}
+			failedHealthChecks = append(failedHealthChecks, failedHC)
+		}
+	}
+
+	return failedHealthChecks
+}
+
+// collectUnhealthyHealthChecks collects all health checks that are not healthy or don't meet bake start requirements.
+// This is used when deploy timeout occurs before bake can start.
+func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
+	var failedHealthChecks []rolloutv1alpha1.FailedHealthCheck
+
+	for _, hc := range allHealthChecks {
+		// Check if health check is not healthy
+		if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
+			failedHC := rolloutv1alpha1.FailedHealthCheck{
+				Name:      hc.Name,
+				Namespace: hc.Namespace,
+			}
+			if hc.Status.Message != nil {
+				failedHC.Message = hc.Status.Message
+			} else {
+				msg := fmt.Sprintf("Status: %s", hc.Status.Status)
+				failedHC.Message = &msg
+			}
+			failedHealthChecks = append(failedHealthChecks, failedHC)
+			continue
+		}
+
+		// Check if LastChangeTime is missing or not newer than deployment time
+		if hc.Status.LastChangeTime == nil {
+			msg := "LastChangeTime is not set"
+			failedHC := rolloutv1alpha1.FailedHealthCheck{
+				Name:      hc.Name,
+				Namespace: hc.Namespace,
+				Message:   &msg,
+			}
+			failedHealthChecks = append(failedHealthChecks, failedHC)
+			continue
+		}
+
+		if !hc.Status.LastChangeTime.Time.After(deployTime) {
+			msg := fmt.Sprintf("LastChangeTime (%s) is not newer than deployment time", hc.Status.LastChangeTime.Time.Format(time.RFC3339))
+			failedHC := rolloutv1alpha1.FailedHealthCheck{
+				Name:      hc.Name,
+				Namespace: hc.Namespace,
+				Message:   &msg,
+			}
+			failedHealthChecks = append(failedHealthChecks, failedHC)
+		}
+	}
+
+	return failedHealthChecks
+}
+
 // evaluateHealthChecks checks if health checks are healthy and returns whether deployment should proceed.
 func (r *RolloutReconciler) evaluateHealthChecks(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (bool, string, error) {
 	log := logf.FromContext(ctx)
@@ -1399,6 +1468,13 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	deployTime := currentEntry.Timestamp.Time
 
+	// Check health checks to determine if bake can start
+	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
+	if err != nil {
+		log.Error(err, "Failed to list health checks")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
+	}
+
 	// Check deployTimeout - if bake hasn't started within deployTimeout, mark as failed
 	// But only if the previous entry was successful (or doesn't exist)
 	if rollout.Spec.DeployTimeout != nil && currentEntry.BakeStartTime == nil {
@@ -1420,6 +1496,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				currentEntry.BakeStatusMessage = k8sptr.To("Deploy timeout reached before bake could start (health checks did not become healthy in time).")
 				currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
+				// Collect unhealthy health checks that prevented bake from starting
+				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, deployTime)
+
 				meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 					Type:               rolloutv1alpha1.RolloutReady,
 					Status:             metav1.ConditionFalse,
@@ -1436,13 +1515,6 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				return ctrl.Result{}, r.Status().Update(ctx, rollout)
 			}
 		}
-	}
-
-	// Check health checks to determine if bake can start
-	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
-	if err != nil {
-		log.Error(err, "Failed to list health checks")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, rollout, "HealthCheckListFailed", err.Error())
 	}
 
 	// Check if any health check has reported an error after deployment time
@@ -1479,6 +1551,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			}
 			currentEntry.BakeStatusMessage = &errorMsg
 			currentEntry.BakeEndTime = &metav1.Time{Time: now}
+
+			// Collect all failed health checks with their messages
+			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, deployTime)
 
 			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 				Type:               rolloutv1alpha1.RolloutReady,
