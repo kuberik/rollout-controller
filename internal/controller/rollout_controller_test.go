@@ -1940,6 +1940,236 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatusMessage).To(ContainSubstring("Deploy timeout reached before bake could start"))
 			})
 
+			It("should record failed health checks when health check errors occur during pending phase", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusPending))
+
+				By("Simulating health check error after deployment with error message")
+				errorMessage := "Health check failed: connection timeout"
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)} // Error after deploy time
+				healthCheck.Status.Message = &errorMessage
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to detect health check error")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that failed health checks are recorded in history entry")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Name).To(Equal(healthCheck.Name))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Namespace).To(Equal(healthCheck.Namespace))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Message).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].FailedHealthChecks[0].Message).To(Equal(errorMessage))
+			})
+
+			It("should record failed health checks when health check errors occur after bake starts", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Setting healthcheck to healthy so bake can start")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(1 * time.Second)} // Newer than deploy time
+				healthCheck.Status.LastErrorTime = nil
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling again to start bake")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying bake has started")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
+				bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
+
+				By("Setting health check to error after bake start time with error message")
+				errorMessage := "Health check failed: service unavailable"
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime.Add(1 * time.Minute)}
+				healthCheck.Status.Message = &errorMessage
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to check bake status")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that failed health checks are recorded in history entry")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Name).To(Equal(healthCheck.Name))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Namespace).To(Equal(healthCheck.Namespace))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Message).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].FailedHealthChecks[0].Message).To(Equal(errorMessage))
+			})
+
+			It("should record multiple failed health checks with their messages", func() {
+				By("Creating additional health checks")
+				healthCheck2 := &rolloutv1alpha1.HealthCheck{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-health-check-2",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test-app",
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
+
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+
+				By("Simulating multiple health check errors after deployment")
+				errorMessage1 := "Health check 1 failed: timeout"
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				healthCheck.Status.Message = &errorMessage1
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				errorMessage2 := "Health check 2 failed: connection refused"
+				healthCheck2.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck2.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(45 * time.Second)}
+				healthCheck2.Status.Message = &errorMessage2
+				healthCheck2.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(45 * time.Second)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck2)).To(Succeed())
+
+				By("Reconciling to detect health check errors")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that all failed health checks are recorded in history entry")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(2))
+
+				// Verify both health checks are recorded
+				failedHCs := rollout.Status.History[0].FailedHealthChecks
+				hcNames := []string{failedHCs[0].Name, failedHCs[1].Name}
+				Expect(hcNames).To(ContainElements(healthCheck.Name, healthCheck2.Name))
+
+				// Verify messages are recorded
+				for _, failedHC := range failedHCs {
+					Expect(failedHC.Message).NotTo(BeNil())
+					if failedHC.Name == healthCheck.Name {
+						Expect(*failedHC.Message).To(Equal(errorMessage1))
+					} else if failedHC.Name == healthCheck2.Name {
+						Expect(*failedHC.Message).To(Equal(errorMessage2))
+					}
+				}
+			})
+
+			It("should record unhealthy health checks when deploy timeout occurs", func() {
+				By("Setting deploy timeout")
+				rollout.Spec.DeployTimeout = &metav1.Duration{Duration: 7 * time.Minute}
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Setting health check to unhealthy with error message")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				deployTime := rollout.Status.History[0].Timestamp.Time
+
+				errorMessage := "Health check is unhealthy: service not ready"
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.Message = &errorMessage
+				// Don't set LastChangeTime to newer than deployTime, so bake can't start
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: deployTime.Add(-1 * time.Minute)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Advancing clock past deploy timeout")
+				fakeClock.Add(8 * time.Minute) // Past deploy timeout (7 min) - should trigger timeout
+
+				By("Reconciling to check bake status")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that unhealthy health checks are recorded in history entry")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Name).To(Equal(healthCheck.Name))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Namespace).To(Equal(healthCheck.Namespace))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Message).NotTo(BeNil())
+				Expect(*rollout.Status.History[0].FailedHealthChecks[0].Message).To(Equal(errorMessage))
+			})
+
+			It("should record health checks without messages when message is nil", func() {
+				By("Pushing and deploying an initial image")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial deployment is in Pending status")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+
+				By("Simulating health check error without message")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				healthCheck.Status.Message = nil // No message
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Reconciling to detect health check error")
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that failed health check is recorded even without message")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Name).To(Equal(healthCheck.Name))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Namespace).To(Equal(healthCheck.Namespace))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Message).To(BeNil())
+			})
+
 			It("should handle requeue timing correctly during bake process", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{

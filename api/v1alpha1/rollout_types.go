@@ -216,6 +216,23 @@ type RolloutStatus struct {
 	Source *string `json:"source,omitempty"`
 }
 
+// FailedHealthCheck represents a health check that failed during bake.
+type FailedHealthCheck struct {
+	// Name is the name of the health check.
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the health check.
+	// +kubebuilder:validation:Required
+	// +required
+	Namespace string `json:"namespace"`
+
+	// Message is the error message from the health check.
+	// +optional
+	Message *string `json:"message,omitempty"`
+}
+
 // DeploymentHistoryEntry represents a single entry in the deployment history.
 type DeploymentHistoryEntry struct {
 	// ID is a unique auto-incrementing identifier for this history entry.
@@ -259,6 +276,11 @@ type DeploymentHistoryEntry struct {
 	// This is when the bake process completed (either successfully or with failure).
 	// +optional
 	BakeEndTime *metav1.Time `json:"bakeEndTime,omitempty"`
+
+	// FailedHealthChecks contains all health checks that failed during bake.
+	// This field is populated when bake fails due to health check errors.
+	// +optional
+	FailedHealthChecks []FailedHealthCheck `json:"failedHealthChecks,omitempty"`
 }
 
 // +kubebuilder:object:root=true
