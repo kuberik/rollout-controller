@@ -214,6 +214,16 @@ type RolloutStatus struct {
 	// This field is set once for the entire rollout based on the latest available release.
 	// +optional
 	Source *string `json:"source,omitempty"`
+
+	// Title is the title of the image extracted from OCI annotations.
+	// This field is set once for the entire rollout based on the latest available release.
+	// +optional
+	Title *string `json:"title,omitempty"`
+
+	// Description is the description of the image extracted from OCI annotations.
+	// This field is set once for the entire rollout based on the latest available release.
+	// +optional
+	Description *string `json:"description,omitempty"`
 }
 
 // FailedHealthCheck represents a health check that failed during bake.
