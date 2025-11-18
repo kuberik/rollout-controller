@@ -312,6 +312,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              description:
+                description: |-
+                  Description is the description of the image extracted from OCI annotations.
+                  This field is set once for the entire rollout based on the latest available release.
+                type: string
               gatedReleaseCandidates:
                 description: |-
                   GatedReleaseCandidates is a list of release candidates that have passed through all gates.
@@ -514,6 +519,11 @@ spec:
                 description: |-
                   Source is the source information extracted from OCI annotations.
                   This typically contains the repository URL or source code location.
+                  This field is set once for the entire rollout based on the latest available release.
+                type: string
+              title:
+                description: |-
+                  Title is the title of the image extracted from OCI annotations.
                   This field is set once for the entire rollout based on the latest available release.
                 type: string
             type: object

@@ -4938,12 +4938,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
 
 				// Test with invalid image reference to trigger error path
-				version, revision, artifactType, source, created, err := reconciler.parseOCIManifest(ctx, "invalid-image-ref", imagePolicy)
+				version, revision, artifactType, source, title, description, created, err := reconciler.parseOCIManifest(ctx, "invalid-image-ref", imagePolicy)
 				Expect(err).To(HaveOccurred())
 				Expect(version).To(BeNil())
 				Expect(revision).To(BeNil())
 				Expect(artifactType).To(BeNil())
 				Expect(source).To(BeNil())
+				Expect(title).To(BeNil())
+				Expect(description).To(BeNil())
 				Expect(created).To(BeNil())
 			})
 		})

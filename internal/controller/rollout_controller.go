@@ -481,7 +481,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	imageRef := imageRepo.Spec.Image + ":" + tag
 
 	// Parse OCI manifest to extract version information
-	if version, revision, _, _, created, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+	if version, revision, _, _, _, _, created, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 		versionInfo.Version = version
 		versionInfo.Revision = revision
 		versionInfo.Created = created
@@ -494,26 +494,26 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	return versionInfo, nil
 }
 
-// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, and source.
-func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision, artifactType, source *string, created *metav1.Time, err error) {
+// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, source, title, and description.
+func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision, artifactType, source, title, description *string, created *metav1.Time, err error) {
 	log := logf.FromContext(ctx)
 
 	// Get authentication keychain from ImageRepository
 	keychain, err := r.getImageRepositoryAuthentication(ctx, imagePolicy)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
 	}
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
 	}
 
 	// Fetch the manifest with authentication using keychain
 	manifest, err := crane.Manifest(ref.String(), crane.WithAuthFromKeychain(keychain))
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
 	}
 
 	// Parse the manifest JSON
@@ -527,11 +527,11 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(manifest, &manifestData); err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
 	}
 
 	// Extract all metadata
-	var versionStr, revisionStr, artifactTypeStr, sourceStr *string
+	var versionStr, revisionStr, artifactTypeStr, sourceStr, titleStr, descriptionStr *string
 	var createdTime *metav1.Time
 
 	// Determine artifact type (preference order: artifactType, config.mediaType, manifest.mediaType)
@@ -560,6 +560,16 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 			sourceStr = &s
 		}
 
+		// Look for title
+		if t, exists := annotations["org.opencontainers.image.title"]; exists && t != "" {
+			titleStr = &t
+		}
+
+		// Look for description
+		if d, exists := annotations["org.opencontainers.image.description"]; exists && d != "" {
+			descriptionStr = &d
+		}
+
 		// Look for created timestamp
 		if c, exists := annotations["org.opencontainers.image.created"]; exists && c != "" {
 			if parsedTime, err := time.Parse(time.RFC3339, c); err == nil {
@@ -569,7 +579,7 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 	}
 
 	// Check config annotations if not found in manifest
-	if versionStr == nil || revisionStr == nil || sourceStr == nil || createdTime == nil {
+	if versionStr == nil || revisionStr == nil || sourceStr == nil || titleStr == nil || descriptionStr == nil || createdTime == nil {
 		if annotations := manifestData.Config.Annotations; annotations != nil {
 			// Look for version
 			if versionStr == nil {
@@ -592,6 +602,20 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 				}
 			}
 
+			// Look for title
+			if titleStr == nil {
+				if t, exists := annotations["org.opencontainers.image.title"]; exists && t != "" {
+					titleStr = &t
+				}
+			}
+
+			// Look for description
+			if descriptionStr == nil {
+				if d, exists := annotations["org.opencontainers.image.description"]; exists && d != "" {
+					descriptionStr = &d
+				}
+			}
+
 			// Look for created timestamp
 			if createdTime == nil {
 				if c, exists := annotations["org.opencontainers.image.created"]; exists && c != "" {
@@ -603,8 +627,8 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 		}
 	}
 
-	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr, "created", createdTime)
-	return versionStr, revisionStr, artifactTypeStr, sourceStr, createdTime, nil
+	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr, "title", titleStr, "description", descriptionStr, "created", createdTime)
+	return versionStr, revisionStr, artifactTypeStr, sourceStr, titleStr, descriptionStr, createdTime, nil
 }
 
 // updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
@@ -638,15 +662,17 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 			versionInfo.Digest = &imagePolicy.Status.LatestRef.Digest
 		}
 
-		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type and source
+		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type, source, title, and description
 		// This is a limitation of the current design - we could optimize this further
 		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if _, _, artifactType, source, _, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		if _, _, artifactType, source, title, description, _, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 			// Set rollout-level metadata from the latest release
 			rollout.Status.ArtifactType = artifactType
 			rollout.Status.Source = source
-			if artifactType != nil || source != nil {
-				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", artifactType, "source", source)
+			rollout.Status.Title = title
+			rollout.Status.Description = description
+			if artifactType != nil || source != nil || title != nil || description != nil {
+				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", artifactType, "source", source, "title", title, "description", description)
 			}
 		} else {
 			log.V(5).Info("Could not parse OCI manifest for rollout metadata", "imageRef", imageRef, "error", err)
