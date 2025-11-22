@@ -158,7 +158,7 @@ type RolloutGateStatusSummary struct {
 
 	// AllowedVersions is a list of versions that are allowed by the gate.
 	// +optional
-	AllowedVersions []string `json:"allowedVersions,omitempty"`
+	AllowedVersions *[]string `json:"allowedVersions,omitempty"`
 
 	// Message is a message describing the status of the gate.
 	// +optional

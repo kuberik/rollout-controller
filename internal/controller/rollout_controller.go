@@ -774,7 +774,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 					gatesPassing = false
 				}
 			} else if gate.Spec.AllowedVersions != nil {
-				summary.AllowedVersions = *gate.Spec.AllowedVersions
+				summary.AllowedVersions = gate.Spec.AllowedVersions
 
 				if !bypassEnabled {
 					// Filter gatedReleaseCandidates to only those in allowedVersions
