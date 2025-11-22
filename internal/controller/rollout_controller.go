@@ -124,6 +124,30 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No releases available")
 	}
 
+	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
+	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
+	if err != nil {
+		log.Error(err, "Failed to get next release candidates")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
+	}
+	rollout.Status.ReleaseCandidates = releaseCandidates
+
+	// Evaluate gates early (without updating status yet)
+	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
+	var gatesPassing bool
+	gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
+	if err != nil {
+		log.Error(err, "Failed to evaluate gates")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
+	}
+	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
+
+	// Update status once with both release candidates and gated release candidates
+	if err := r.Client.Status().Update(ctx, &rollout); err != nil {
+		log.Error(err, "Failed to update rollout status with release candidates and gated release candidates")
+		return ctrl.Result{}, err
+	}
+
 	// --- Bake time and health check gating logic (before deployment) ---
 	// Always evaluate bake status if there's a deployment history, but don't block deployment if WantedVersion is specified
 	if len(rollout.Status.History) > 0 {
@@ -193,43 +217,15 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Gating logic: if wantedVersion is set in spec, ignore gates
-	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
-	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
-	var gatesPassing bool
-	if err != nil {
-		log.Error(err, "Failed to get next release candidates")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
-	}
-
-	// Update status with release candidates
-	rollout.Status.ReleaseCandidates = releaseCandidates
-
-	gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
+	// Gating logic: gates already evaluated at the beginning, check if deployment should be blocked
 	if !r.hasManualDeployment(&rollout) {
-		if err != nil {
-			return ctrl.Result{}, err
-		}
 		if !gatesPassing {
-			// Update status with gated release candidates before returning
-			rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
-			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
-				log.Error(err, "Failed to update rollout status with gated release candidates")
-			}
-			return ctrl.Result{}, nil // Status already updated in evaluateGates
+			return ctrl.Result{}, nil // Status already updated at the beginning
 		}
 		if len(gatedReleaseCandidates) == 0 {
-			// Update status with gated release candidates before returning
-			rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
-			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
-				log.Error(err, "Failed to update rollout status with gated release candidates")
-			}
-			return ctrl.Result{}, nil // Status already updated in evaluateGates
+			return ctrl.Result{}, nil // Status already updated at the beginning
 		}
 	}
-
-	// Update status with gated release candidates
-	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
 
 	// Evaluate health checks - block deployment if health checks are not healthy
 	// For manual deployments (WantedVersion or force-deploy), skip this check
@@ -284,11 +280,6 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// Block actual deployment if no manual deployment is specified and no unblock annotation
 			if !r.hasManualDeployment(&rollout) && !unblockRequested {
 				log.Info("Bake status is Failed, blocking deployment but status has been updated")
-				// Update status with release candidates information before returning
-				if err := r.Client.Status().Update(ctx, &rollout); err != nil {
-					log.Error(err, "Failed to update rollout status with release candidates")
-					return ctrl.Result{}, err
-				}
 				return ctrl.Result{}, nil
 			} else {
 				log.Info("Deployment allowed despite failed bake status",
@@ -345,12 +336,6 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Wanted version set but no bake time configuration, ensuring proper monitoring")
 		// Return a short requeue to ensure we continue monitoring
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-
-	// Ensure status is updated with release candidates information
-	if err := r.Client.Status().Update(ctx, &rollout); err != nil {
-		log.Error(err, "Failed to update rollout status with release candidates")
-		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -871,7 +856,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		r.Recorder.Event(rollout, eventType, condReason, condMsg)
 	}
 
-	return gatedReleaseCandidates, gatesPassing, r.Status().Update(ctx, rollout)
+	return gatedReleaseCandidates, gatesPassing, nil
 }
 
 // listHealthChecks lists all health checks matching the rollout's health check selector.
