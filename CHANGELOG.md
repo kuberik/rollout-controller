@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.5.0] - 2025-11-23
+
+### Added
+
+- Block deployments when health checks are unhealthy (#25)
+
+- Improve bake status handling and error detection (#28)
+
+
+### Chore
+
+- Add Apache License 2.0
+
+- Remove redundant DeployTime field from history entries (#30)
+
+- Remove deprecated MinBakeTime and MaxBakeTime fields
+
+
+### Fix
+
+- Populate release candidates when rollout is in progress (#33)
+
+
+### Fixed
+
+- Correct HealthCheck controller architecture (#23)
+
+- Remove controller coupling between KustomizationHealth and HealthCheck controllers (#24)
+
 ## [0.4.0] - 2025-09-17
 
 ### Added
@@ -17,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add ArtifactType and Source fields to RolloutStatus
 
 - Add org.opencontainers.image.created annotation support to VersionInfo
+
+
+### Chore
+
+- Release version v0.4.0
 
 
 ### Fixed
