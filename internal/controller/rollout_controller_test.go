@@ -814,7 +814,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
 			Expect(updatedRollout.Status.Gates[0].Name).To(Equal("test-gate"))
-			Expect(updatedRollout.Status.Gates[0].AllowedVersions).To(ContainElements(version0_1_0, version0_2_0))
+			Expect(*updatedRollout.Status.Gates[0].AllowedVersions).To(ContainElements(version0_1_0, version0_2_0))
 			Expect(updatedRollout.Status.Gates[0].Passing).ToNot(BeNil())
 			Expect(*updatedRollout.Status.Gates[0].Passing).To(BeTrue())
 		})
