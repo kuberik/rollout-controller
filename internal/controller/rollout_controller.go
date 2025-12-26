@@ -1325,21 +1325,27 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 // This is called when history is full to prevent AvailableReleases from growing unbounded.
 // It keeps the maximum number of releases that satisfy at least one of:
 // 1. Everything up to and including the history entry that's furthest down in AvailableReleases
-// 2. All releases created within the last week (default: 7 days)
-// 3. At least a minimum number of releases (default: 30)
+// 2. All releases created within the retention period (configurable via AvailableReleasesRetentionDays, default: 7 days)
+// 3. At least a minimum number of releases (configurable via AvailableReleasesMinCount, default: 30)
 // We keep the maximum number that satisfies any of these criteria.
 func (r *RolloutReconciler) cleanupOldAvailableReleases(rollout *rolloutv1alpha1.Rollout, log logr.Logger) {
 	if len(rollout.Status.History) == 0 || len(rollout.Status.AvailableReleases) == 0 {
 		return
 	}
 
-	const (
-		defaultRetentionDays = 7
-		defaultMinReleases   = 30
-	)
+	// Get configurable retention values with defaults
+	retentionDays := int32(7) // default value
+	if rollout.Spec.AvailableReleasesRetentionDays != nil {
+		retentionDays = *rollout.Spec.AvailableReleasesRetentionDays
+	}
+
+	minReleases := int32(30) // default value
+	if rollout.Spec.AvailableReleasesMinCount != nil {
+		minReleases = *rollout.Spec.AvailableReleasesMinCount
+	}
 
 	now := r.now()
-	cutoffTime := now.Add(-defaultRetentionDays * 24 * time.Hour)
+	cutoffTime := now.Add(time.Duration(retentionDays) * 24 * time.Hour)
 
 	releases := rollout.Status.AvailableReleases
 
@@ -1380,7 +1386,7 @@ func (r *RolloutReconciler) cleanupOldAvailableReleases(rollout *rolloutv1alpha1
 	criterion2KeepFromEnd := retentionTimeIndex
 
 	// Criterion 3: Minimum number of releases
-	criterion3KeepFromEnd := defaultMinReleases
+	criterion3KeepFromEnd := int(minReleases)
 	if criterion3KeepFromEnd > len(releases) {
 		criterion3KeepFromEnd = len(releases)
 	}
