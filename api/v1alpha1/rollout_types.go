@@ -337,7 +337,7 @@ const (
 )
 
 const (
-	BakeStatusPending    = "Pending"
+	BakeStatusDeploying  = "Deploying"
 	BakeStatusInProgress = "InProgress"
 	BakeStatusSucceeded  = "Succeeded"
 	BakeStatusFailed     = "Failed"

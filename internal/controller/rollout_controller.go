@@ -154,7 +154,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		bakeStatus := rollout.Status.History[0].BakeStatus
 		if bakeStatus != nil {
 			switch *bakeStatus {
-			case rolloutv1alpha1.BakeStatusPending, rolloutv1alpha1.BakeStatusInProgress:
+			case rolloutv1alpha1.BakeStatusDeploying, rolloutv1alpha1.BakeStatusInProgress:
 				result, err := r.handleBakeTime(ctx, req.Namespace, &rollout)
 				if err != nil {
 					return result, err
@@ -178,7 +178,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				// For automatic deployments, block if bake is still pending or in progress
 				if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil {
 					currentBakeStatus := *rollout.Status.History[0].BakeStatus
-					if currentBakeStatus == rolloutv1alpha1.BakeStatusPending || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+					if currentBakeStatus == rolloutv1alpha1.BakeStatusDeploying || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 						return result, nil
 					}
 				}
@@ -1107,7 +1107,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Cancel any existing pending or in-progress bake before starting new deployment
 	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil {
 		currentBakeStatus := *rollout.Status.History[0].BakeStatus
-		if currentBakeStatus == rolloutv1alpha1.BakeStatusPending || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+		if currentBakeStatus == rolloutv1alpha1.BakeStatusDeploying || currentBakeStatus == rolloutv1alpha1.BakeStatusInProgress {
 			log.Info("Cancelling existing bake due to new deployment", "previousVersion", rollout.Status.History[0].Version, "previousStatus", currentBakeStatus)
 			rollout.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)
 			rollout.Status.History[0].BakeStatusMessage = k8sptr.To("Bake cancelled due to new deployment.")
@@ -1153,14 +1153,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded)
 		bakeStatusMsg = k8sptr.To("No bake time configured, deployment completed immediately.")
 	} else {
-		// Bake time configured - initially set to Pending until healthchecks are healthy
+		// Bake time configured - initially set to Deploying until healthchecks are healthy
 		// BakeStartTime will be set later when healthchecks become healthy and bake actually starts
-		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusPending)
+		bakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusDeploying)
 		bakeStatusMsg = k8sptr.To("Waiting for health checks to become healthy before starting bake.")
 
 		// Emit event for bake time start
 		if r.Recorder != nil {
-			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePending", "Bake time pending, waiting for health checks to become healthy before starting bake.")
+			r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimeDeploying", "Bake time deploying, waiting for health checks to become healthy before starting bake.")
 		}
 	}
 
@@ -1468,12 +1468,12 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	}
 
 	currentEntry := &rollout.Status.History[0]
-	// Handle both Pending and InProgress statuses
+	// Handle both Deploying and InProgress statuses
 	if currentEntry.BakeStatus == nil {
 		return ctrl.Result{}, nil
 	}
 	bakeStatus := *currentEntry.BakeStatus
-	if bakeStatus != rolloutv1alpha1.BakeStatusPending && bakeStatus != rolloutv1alpha1.BakeStatusInProgress {
+	if bakeStatus != rolloutv1alpha1.BakeStatusDeploying && bakeStatus != rolloutv1alpha1.BakeStatusInProgress {
 		return ctrl.Result{}, nil
 	}
 
@@ -1624,7 +1624,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			// All healthchecks are healthy and LastChangeTime is newer than deployment time - start bake
 			log.Info("All health checks are healthy, starting bake")
 			currentEntry.BakeStartTime = &metav1.Time{Time: now}
-			// Transition from Pending to InProgress when bake actually starts
+			// Transition from Deploying to InProgress when bake actually starts
 			currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusInProgress)
 			bakeStartMsg := "Bake started, monitoring for errors."
 			currentEntry.BakeStatusMessage = &bakeStartMsg
@@ -1824,7 +1824,7 @@ func (r *RolloutReconciler) getBakeStatusSummary(rollout *rolloutv1alpha1.Rollou
 	}
 
 	switch *entry.BakeStatus {
-	case rolloutv1alpha1.BakeStatusPending:
+	case rolloutv1alpha1.BakeStatusDeploying:
 		return "Waiting for health checks to become healthy before starting bake"
 	case rolloutv1alpha1.BakeStatusInProgress:
 		if entry.BakeStartTime != nil {
