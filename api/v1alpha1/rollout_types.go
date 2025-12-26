@@ -243,6 +243,23 @@ type FailedHealthCheck struct {
 	Message *string `json:"message,omitempty"`
 }
 
+// TriggeredByInfo indicates what triggered a deployment.
+type TriggeredByInfo struct {
+	// Kind indicates the type of trigger: "User" for manual deployments triggered by a user,
+	// or "System" for automatic deployments triggered by the rollout controller.
+	// +kubebuilder:validation:Enum=User;System
+	// +kubebuilder:validation:Required
+	// +required
+	Kind string `json:"kind"`
+
+	// Name contains the name of the user or system that triggered the deployment.
+	// For user-triggered deployments, this is extracted from the "rollout.kuberik.com/deploy-user" annotation.
+	// For system-triggered deployments, this is typically "rollout-controller".
+	// +kubebuilder:validation:Required
+	// +required
+	Name string `json:"name"`
+}
+
 // DeploymentHistoryEntry represents a single entry in the deployment history.
 type DeploymentHistoryEntry struct {
 	// ID is a unique auto-incrementing identifier for this history entry.
@@ -266,6 +283,14 @@ type DeploymentHistoryEntry struct {
 	// provided via the "rollout.kuberik.com/deployment-message" annotation, or defaults to "Manual deployment".
 	// +optional
 	Message *string `json:"message,omitempty"`
+
+	// TriggeredBy indicates what triggered this deployment.
+	// Kind can be "User" for manual deployments triggered by a user, or "System" for automatic deployments.
+	// Name contains the name of the user or system that triggered the deployment.
+	// For user-triggered deployments, this is extracted from the "rollout.kuberik.com/deploy-user" annotation.
+	// For system-triggered deployments, this is typically "rollout-controller".
+	// +optional
+	TriggeredBy *TriggeredByInfo `json:"triggeredBy,omitempty"`
 
 	// BakeStatus tracks the bake state for this deployment (e.g., None, InProgress, Succeeded, Failed, Cancelled)
 	// The bake process ensures that the deployment is stable and healthy before marking as successful.

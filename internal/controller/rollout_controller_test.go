@@ -3570,6 +3570,342 @@ var _ = Describe("Rollout Controller", func() {
 				// Deploy-message annotation should be cleared
 				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
 			})
+
+			It("should record user-triggered deployment with deploy-user annotation (force deploy)", func() {
+				By("Setting up a rollout with force-deploy and deploy-user annotations")
+				userTriggeredRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "user-triggered-force-deploy-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/force-deploy": "2.0.0",
+							"rollout.kuberik.com/deploy-user":  "alice@example.com",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "3.0.0"},
+							{Tag: "2.0.0"},
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, userTriggeredRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "2.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with force-deploy and deploy-user annotations")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "user-triggered-force-deploy-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that TriggeredBy is set correctly in history")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "user-triggered-force-deploy-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("User"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("alice@example.com"))
+
+				// Deploy-user annotation should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+			})
+
+			It("should record user-triggered deployment with deploy-user annotation (wanted version)", func() {
+				By("Setting up a rollout with WantedVersion and deploy-user annotation")
+				userTriggeredRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "user-triggered-wanted-version-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/deploy-user": "bob@example.com",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						WantedVersion: stringPtr("1.0.0"),
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, userTriggeredRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "1.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with WantedVersion and deploy-user annotation")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "user-triggered-wanted-version-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that TriggeredBy is set correctly in history")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "user-triggered-wanted-version-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("User"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("bob@example.com"))
+
+				// Deploy-user annotation should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+			})
+
+			It("should record system-triggered deployment when no deploy-user annotation is present", func() {
+				By("Setting up a rollout without deploy-user annotation (automatic deployment)")
+				systemTriggeredRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "system-triggered-rollout",
+						Namespace: namespace,
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, systemTriggeredRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, systemTriggeredRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "1.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling without deploy-user annotation (automatic deployment)")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "system-triggered-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that TriggeredBy is set to System in history")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "system-triggered-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("System"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("rollout-controller"))
+			})
+
+			It("should clear deploy-user annotation when force deploy is used", func() {
+				By("Setting up a rollout with force-deploy and deploy-user annotations")
+				clearAnnotationRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "clear-deploy-user-force-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/force-deploy":   "2.0.0",
+							"rollout.kuberik.com/deploy-user":    "charlie@example.com",
+							"rollout.kuberik.com/deploy-message": "test message",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "2.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, clearAnnotationRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "2.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with force-deploy annotation")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "clear-deploy-user-force-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that deploy-user annotation is cleared")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "clear-deploy-user-force-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// All annotations should be cleared after force deploy
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/force-deploy"))
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+			})
+
+			It("should clear deploy-user annotation when WantedVersion is used", func() {
+				By("Setting up a rollout with WantedVersion and deploy-user annotation")
+				clearAnnotationRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "clear-deploy-user-wanted-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/deploy-user":    "dave@example.com",
+							"rollout.kuberik.com/deploy-message": "test message",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+						WantedVersion: stringPtr("1.0.0"),
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, clearAnnotationRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "1.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling with WantedVersion")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "clear-deploy-user-wanted-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying that deploy-user annotation is cleared")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "clear-deploy-user-wanted-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deploy-user and deploy-message annotations should be cleared
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+			})
 		})
 
 		It("should continue status updates even when deployment is blocked by failed bake status", func() {
@@ -5166,6 +5502,105 @@ func (f *FakeClock) Now() time.Time {
 func (f *FakeClock) Add(d time.Duration) {
 	f.now = metav1.NewTime(f.now.Add(d))
 }
+
+var _ = Describe("extractTriggeredByInfo", func() {
+	var reconciler *RolloutReconciler
+
+	BeforeEach(func() {
+		reconciler = &RolloutReconciler{}
+	})
+
+	It("should return User kind when deploy-user annotation is present", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"rollout.kuberik.com/deploy-user": "alice@example.com",
+				},
+			},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, true)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("User"))
+		Expect(result.Name).To(Equal("alice@example.com"))
+	})
+
+	It("should return User kind even when isManualDeployment is false but annotation exists", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"rollout.kuberik.com/deploy-user": "bob@example.com",
+				},
+			},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, false)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("User"))
+		Expect(result.Name).To(Equal("bob@example.com"))
+	})
+
+	It("should return System kind when deploy-user annotation is not present", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{},
+			},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, false)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("System"))
+		Expect(result.Name).To(Equal("rollout-controller"))
+	})
+
+	It("should return System kind when annotations are nil", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, false)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("System"))
+		Expect(result.Name).To(Equal("rollout-controller"))
+	})
+
+	It("should return System kind when deploy-user annotation is empty string", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"rollout.kuberik.com/deploy-user": "",
+				},
+			},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, false)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("System"))
+		Expect(result.Name).To(Equal("rollout-controller"))
+	})
+
+	It("should return User kind with correct username when annotation has different user", func() {
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"rollout.kuberik.com/deploy-user":    "charlie@example.com",
+					"rollout.kuberik.com/deploy-message": "test message",
+				},
+			},
+		}
+
+		result := reconciler.extractTriggeredByInfo(rollout, true)
+
+		Expect(result).NotTo(BeNil())
+		Expect(result.Kind).To(Equal("User"))
+		Expect(result.Name).To(Equal("charlie@example.com"))
+	})
+})
 
 // NewFakeClock creates a FakeClock with time truncated to second precision
 func NewFakeClock() *FakeClock {
