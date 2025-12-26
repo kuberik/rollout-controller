@@ -1210,12 +1210,16 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		BakeEndTime:       nil, // Will be set when bake completes (succeeds, fails, or times out)
 	}}, rollout.Status.History...)
 	// Limit history size if specified
-	versionHistoryLimit := int32(5) // default value
+	versionHistoryLimit := int32(10) // default value
 	if rollout.Spec.VersionHistoryLimit != nil {
 		versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
 	}
 	if int32(len(rollout.Status.History)) > versionHistoryLimit {
 		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
+		// If history is full, remove available versions based on retention criteria
+		if len(rollout.Status.History) > 0 {
+			r.cleanupOldAvailableReleases(rollout, log)
+		}
 	}
 
 	// Update the condition message to reflect if gates were bypassed
@@ -1315,6 +1319,100 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	return nil
+}
+
+// cleanupOldAvailableReleases removes available releases based on multiple retention criteria.
+// This is called when history is full to prevent AvailableReleases from growing unbounded.
+// It keeps the maximum number of releases that satisfy at least one of:
+// 1. Everything up to and including the history entry that's furthest down in AvailableReleases
+// 2. All releases created within the last week (default: 7 days)
+// 3. At least a minimum number of releases (default: 30)
+// We keep the maximum number that satisfies any of these criteria.
+func (r *RolloutReconciler) cleanupOldAvailableReleases(rollout *rolloutv1alpha1.Rollout, log logr.Logger) {
+	if len(rollout.Status.History) == 0 || len(rollout.Status.AvailableReleases) == 0 {
+		return
+	}
+
+	const (
+		defaultRetentionDays = 7
+		defaultMinReleases   = 30
+	)
+
+	now := r.now()
+	cutoffTime := now.Add(-defaultRetentionDays * 24 * time.Hour)
+
+	releases := rollout.Status.AvailableReleases
+
+	// Criterion 1: Check all history entries and find the one with the lowest index in AvailableReleases
+	// Keep everything from that index till the end (since AvailableReleases is sorted oldest to newest)
+	minHistoryIndex := len(releases) // Start with max value, will be reduced
+	for _, historyEntry := range rollout.Status.History {
+		targetTag := historyEntry.Version.Tag
+		// Find the first occurrence of this tag in AvailableReleases (lowest index)
+		for i := 0; i < len(releases); i++ {
+			if releases[i].Tag == targetTag {
+				if i < minHistoryIndex {
+					minHistoryIndex = i
+				}
+				break
+			}
+		}
+	}
+	// Criterion 1: Keep everything from minHistoryIndex to the end
+	// This means we keep the newest (len(releases) - minHistoryIndex) releases from the end
+	criterion1KeepFromEnd := len(releases) // Default: keep all if no history entry found
+	if minHistoryIndex < len(releases) {
+		// Keep from minHistoryIndex to end = keep (len(releases) - minHistoryIndex) releases from the end
+		criterion1KeepFromEnd = len(releases) - minHistoryIndex
+	}
+
+	// Criterion 2: Find how many releases are within the retention period
+	// Count from the end (newest) until we find one older than cutoffTime
+	retentionTimeIndex := len(releases)
+	for i := len(releases) - 1; i >= 0; i-- {
+		if releases[i].Created != nil && releases[i].Created.Time.Before(cutoffTime) {
+			// This release is too old, so we keep everything after it (i+1 onwards)
+			retentionTimeIndex = i + 1
+			break
+		}
+		// If no Created timestamp, we can't determine age, so keep it to be safe
+	}
+	criterion2KeepFromEnd := retentionTimeIndex
+
+	// Criterion 3: Minimum number of releases
+	criterion3KeepFromEnd := defaultMinReleases
+	if criterion3KeepFromEnd > len(releases) {
+		criterion3KeepFromEnd = len(releases)
+	}
+
+	// Keep the maximum number from the end that satisfies any criterion
+	keepFromEnd := criterion1KeepFromEnd
+	if criterion2KeepFromEnd > keepFromEnd {
+		keepFromEnd = criterion2KeepFromEnd
+	}
+	if criterion3KeepFromEnd > keepFromEnd {
+		keepFromEnd = criterion3KeepFromEnd
+	}
+
+	// Ensure we don't exceed the actual list length
+	if keepFromEnd > len(releases) {
+		keepFromEnd = len(releases)
+	}
+
+	// Only trim if we're actually removing releases
+	if keepFromEnd < len(releases) {
+		removedCount := len(releases) - keepFromEnd
+		// Keep the last keepFromEnd releases (from the end, which are the newest)
+		rollout.Status.AvailableReleases = releases[len(releases)-keepFromEnd:]
+		log.Info("Cleaned up old available releases",
+			"removed", removedCount,
+			"remaining", keepFromEnd,
+			"minHistoryIndex", minHistoryIndex,
+			"criterion1KeepFromEnd", criterion1KeepFromEnd,
+			"criterion2KeepFromEnd", criterion2KeepFromEnd,
+			"criterion3KeepFromEnd", criterion3KeepFromEnd,
+			"finalKeepFromEnd", keepFromEnd)
+	}
 }
 
 // patchOCIRepositories finds OCIRepositories with rollout annotation and patches their tag.

@@ -198,7 +198,7 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               versionHistoryLimit:
-                default: 5
+                default: 10
                 description: VersionHistoryLimit defines the maximum number of entries
                   to keep in the deployment history
                 format: int32

@@ -99,7 +99,7 @@ type RolloutSpec struct {
 
 	// VersionHistoryLimit defines the maximum number of entries to keep in the deployment history
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=5
+	// +kubebuilder:default=10
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 
