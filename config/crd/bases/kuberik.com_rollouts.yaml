@@ -452,6 +452,32 @@ spec:
                       description: Timestamp is the time when the deployment occurred.
                       format: date-time
                       type: string
+                    triggeredBy:
+                      description: |-
+                        TriggeredBy indicates what triggered this deployment.
+                        Kind can be "User" for manual deployments triggered by a user, or "System" for automatic deployments.
+                        Name contains the name of the user or system that triggered the deployment.
+                        For user-triggered deployments, this is extracted from the "rollout.kuberik.com/deploy-user" annotation.
+                        For system-triggered deployments, this is typically "rollout-controller".
+                      properties:
+                        kind:
+                          description: |-
+                            Kind indicates the type of trigger: "User" for manual deployments triggered by a user,
+                            or "System" for automatic deployments triggered by the rollout controller.
+                          enum:
+                          - User
+                          - System
+                          type: string
+                        name:
+                          description: |-
+                            Name contains the name of the user or system that triggered the deployment.
+                            For user-triggered deployments, this is extracted from the "rollout.kuberik.com/deploy-user" annotation.
+                            For system-triggered deployments, this is typically "rollout-controller".
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      type: object
                     version:
                       description: Version is the version information that was deployed.
                       properties:

@@ -1167,6 +1167,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Generate deployment message
 	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, forceDeployUsed, unblockUsed)
 
+	// Extract triggered by information
+	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
+
 	// Find the version info for the wanted release
 	var versionInfo rolloutv1alpha1.VersionInfo
 	versionInfo.Tag = wantedRelease
@@ -1200,6 +1203,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Version:           versionInfo,
 		Timestamp:         now,
 		Message:           &deploymentMessage,
+		TriggeredBy:       triggeredBy,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     nil, // Will be set when healthchecks become healthy
@@ -1288,22 +1292,24 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// Clear annotations based on deployment type
 	if forceDeployUsed {
-		// Clear both force-deploy and deploy-message annotations when force deploy was used
+		// Clear both force-deploy, deploy-message, and deploy-user annotations when force deploy was used
 		patch := client.MergeFrom(rollout.DeepCopy())
 		delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+		delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
 
 		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
 			log.Error(err, "Failed to patch rollout to clear force deploy annotations")
 			return err
 		}
 	} else if r.hasManualDeployment(rollout) {
-		// Clear only deploy-message annotation when WantedVersion was used
+		// Clear deploy-message and deploy-user annotations when WantedVersion was used
 		patch := client.MergeFrom(rollout.DeepCopy())
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+		delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
 
 		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
-			log.Error(err, "Failed to patch rollout to clear deploy-message annotation")
+			log.Error(err, "Failed to patch rollout to clear deploy-message and deploy-user annotations")
 			return err
 		}
 	}
@@ -1775,6 +1781,26 @@ func (r *RolloutReconciler) getNextHistoryID(rollout *rolloutv1alpha1.Rollout) i
 		return *lastEntry.ID + 1
 	}
 	return 1
+}
+
+// extractTriggeredByInfo extracts triggered by information from annotations.
+// Returns nil if no user annotation is found (indicating a system-triggered deployment).
+func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Rollout, isManualDeployment bool) *rolloutv1alpha1.TriggeredByInfo {
+	// Check for user annotation (similar to how we check deploy-message annotation)
+	if rollout.Annotations != nil {
+		if userName, exists := rollout.Annotations["rollout.kuberik.com/deploy-user"]; exists && userName != "" {
+			return &rolloutv1alpha1.TriggeredByInfo{
+				Kind: "User",
+				Name: userName,
+			}
+		}
+	}
+
+	// If no user annotation found, it's a system-triggered deployment
+	return &rolloutv1alpha1.TriggeredByInfo{
+		Kind: "System",
+		Name: "rollout-controller",
+	}
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
