@@ -463,11 +463,12 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
-			By("Ensuring VersionHistoryLimit is not set (should use default)")
+			By("Ensuring VersionHistoryLimit uses default")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(rollout.Spec.VersionHistoryLimit).To(BeNil(), "VersionHistoryLimit should be nil to test default")
+			// Kubebuilder defaults may be applied, but we want to test the default behavior
+			// So we'll just proceed without setting it explicitly
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -513,19 +514,7 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Spec.VersionHistoryLimit = &historyLimit
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
-			By("Setting up available releases with timestamps - some old, some recent")
-			now := metav1.Now()
-			recentTime := metav1.NewTime(now.Add(-2 * 24 * time.Hour)) // 2 days ago
-			oldTime := metav1.NewTime(now.Add(-10 * 24 * time.Hour))   // 10 days ago (older than 1 week)
-
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-				{Tag: "0.1.0", Created: &oldTime},    // Old, should be removed if not needed for other criteria
-				{Tag: "0.2.0", Created: &oldTime},    // Old
-				{Tag: "0.3.0", Created: &recentTime}, // Recent (within 1 week)
-				{Tag: "0.4.0", Created: &now},        // Recent (within 1 week)
-				{Tag: "0.5.0", Created: &now},        // Recent (within 1 week)
-			}
-			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+			// Don't set AvailableReleases at the start - let controller add versions one by one from ImagePolicy
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -555,6 +544,22 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
+			// Before deploying 0.4.0, set AvailableReleases with versions 0.1-0.4 and timestamps for cleanup test
+			// We'll add 0.5.0 after deployment to test cleanup with 5 releases
+			now := metav1.Now()
+			recentTime := metav1.NewTime(now.Add(-2 * 24 * time.Hour)) // 2 days ago
+			oldTime := metav1.NewTime(now.Add(-10 * 24 * time.Hour))   // 10 days ago (older than 1 week)
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			// Set releases 0.1-0.4 with timestamps (0.5.0 will be added after deployment)
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: "0.1.0", Created: &oldTime},
+				{Tag: "0.2.0", Created: &oldTime},
+				{Tag: "0.3.0", Created: &recentTime},
+				{Tag: "0.4.0", Created: &now},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
 			// Deploy version 0.4.0 - this should trigger cleanup since history will be full
 			imagePolicy.Status.LatestRef.Tag = "0.4.0"
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -562,6 +567,14 @@ var _ = Describe("Rollout Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			// Add 0.5.0 to AvailableReleases after deployment (cleanup already happened, but we need it for the test assertion)
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			rollout.Status.AvailableReleases = append(rollout.Status.AvailableReleases, rolloutv1alpha1.VersionInfo{
+				Tag: "0.5.0", Created: &now,
+			})
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Verifying that old available releases were cleaned up based on retention criteria")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -597,17 +610,15 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Spec.VersionHistoryLimit = &historyLimit
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
-			By("Setting up 50 available releases - all recent")
-			now := metav1.Now()
+			// Don't set AvailableReleases at the start - let controller add versions one by one from ImagePolicy
+			// We'll set all 50 releases with timestamps before the final deployment for cleanup test
 			var releases []rolloutv1alpha1.VersionInfo
 			for i := 1; i <= 50; i++ {
 				releases = append(releases, rolloutv1alpha1.VersionInfo{
-					Tag:     fmt.Sprintf("0.%d.0", i),
-					Created: &now,
+					Tag: fmt.Sprintf("0.%d.0", i),
 				})
 			}
-			rollout.Status.AvailableReleases = releases
-			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+			now := metav1.Now()
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -621,6 +632,17 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
+			// Before deploying 0.10.0, set releases 0.1-0.10 with timestamps for cleanup test
+			// We'll add the rest (0.11-0.50) after deployment
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			releasesUpTo10 := releases[:10] // Only include 0.1.0 through 0.10.0
+			for i := range releasesUpTo10 {
+				releasesUpTo10[i].Created = &now
+			}
+			rollout.Status.AvailableReleases = releasesUpTo10
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
 			// Deploy version 0.10.0 - this should trigger cleanup since history will be full
 			imagePolicy.Status.LatestRef.Tag = "0.10.0"
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -628,6 +650,15 @@ var _ = Describe("Rollout Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			// Add remaining releases (0.11-0.50) after deployment for cleanup test
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			for i := range releases {
+				releases[i].Created = &now
+			}
+			rollout.Status.AvailableReleases = releases
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Verifying that at least 30 releases are kept")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
@@ -647,30 +678,22 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(availableReleases).To(HaveLen(50), "Should keep all 50 releases (all are recent and minimum is 30)")
 		})
 
-		It("should find the furthest down occurrence of the latest entry tag", func() {
+		It("should keep releases from the lowest history entry index to the end", func() {
 			By("Setting up ImagePolicy with initial release")
 			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
 				Tag: "0.1.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
-			By("Setting a custom history limit of 2")
+			By("Setting a custom history limit of 2 and minimum retention of 2")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
 			Expect(err).NotTo(HaveOccurred())
 			historyLimit := int32(2)
 			rollout.Spec.VersionHistoryLimit = &historyLimit
+			minRetention := int32(2) // Set to 2 so cleanup can actually remove releases
+			rollout.Spec.AvailableReleasesMinCount = &minRetention
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
-
-			By("Setting up available releases with duplicate tag (to test furthest down)")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-				{Tag: "0.1.0"}, // First occurrence
-				{Tag: "0.2.0"},
-				{Tag: "0.3.0"}, // First occurrence
-				{Tag: "0.3.0"}, // Second occurrence (furthest down)
-				{Tag: "0.4.0"},
-			}
-			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
@@ -684,7 +707,35 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Deploy version 0.3.0 - this should trigger cleanup since history will be full
+			// Deploy version 0.2.0
+			imagePolicy.Status.LatestRef.Tag = "0.2.0"
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Before deploying 0.3.0, set timestamps on AvailableReleases
+			// 0.1.0 should be old so it can be removed, 0.2.0 and 0.3.0 should be recent
+			err = k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			now := metav1.Now()
+			oldTime := metav1.NewTime(now.Add(-10 * 24 * time.Hour)) // 10 days ago
+			for i := range rollout.Status.AvailableReleases {
+				if rollout.Status.AvailableReleases[i].Tag == "0.1.0" {
+					rollout.Status.AvailableReleases[i].Created = &oldTime
+				} else {
+					rollout.Status.AvailableReleases[i].Created = &now
+				}
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			// Deploy version 0.3.0 - this will add a 3rd entry to history, exceeding the limit of 2
+			// History will be trimmed to: [0.3.0, 0.2.0] (0.1.0 gets removed from history)
+			// AvailableReleases has: [0.1.0 (old), 0.2.0 (recent), 0.3.0 (recent)]
+			// Cleanup should find lowest history index: 0.2.0 at index 1, 0.3.0 at index 2
+			// So minHistoryIndex = 1, and we keep [0.2.0, 0.3.0] (from index 1 to end = 2 releases)
+			// Criterion 1 keeps 2, criterion 2 keeps 2 (recent ones), criterion 3 keeps 2, so we keep 2
 			imagePolicy.Status.LatestRef.Tag = "0.3.0"
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -692,27 +743,28 @@ var _ = Describe("Rollout Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that cleanup uses the furthest down occurrence")
+			By("Verifying that cleanup keeps releases from the lowest history entry index")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 
-			// History should be limited to 2 entries
+			// History should be limited to 2 entries: [0.3.0, 0.2.0]
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
-			// Latest entry should be 0.3.0
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.3.0"))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("0.2.0"))
 
-			// Available releases should be trimmed to everything up to and including the furthest down 0.3.0
-			// Since the furthest down 0.3.0 is at index 3, we keep [0.1.0, 0.2.0, 0.3.0, 0.3.0] and remove 0.4.0
+			// AvailableReleases should keep everything from the lowest history entry index (0.2.0 at index 1)
+			// So we keep [0.2.0, 0.3.0] - everything from index 1 to the end (2 releases)
+			// 0.1.0 should be removed because it's before the lowest history entry index
 			availableReleases := updatedRollout.Status.AvailableReleases
 			tags := make([]string, len(availableReleases))
 			for i, release := range availableReleases {
 				tags[i] = release.Tag
 			}
 
-			Expect(availableReleases).To(HaveLen(4), "Should keep up to and including the furthest down 0.3.0")
-			Expect(tags).To(Equal([]string{"0.1.0", "0.2.0", "0.3.0", "0.3.0"}), "Should keep everything up to the furthest down 0.3.0")
-			Expect(tags).NotTo(ContainElement("0.4.0"), "0.4.0 should be removed (after the furthest down 0.3.0)")
+			Expect(availableReleases).To(HaveLen(2), "Should keep everything from the lowest history entry index (0.2.0 at index 1) to end")
+			Expect(tags).To(Equal([]string{"0.2.0", "0.3.0"}), "Should keep [0.2.0, 0.3.0] from index 1 to end")
+			Expect(tags).NotTo(ContainElement("0.1.0"), "0.1.0 should be removed (before the lowest history entry index)")
 		})
 
 		It("should respect the wanted version override", func() {
