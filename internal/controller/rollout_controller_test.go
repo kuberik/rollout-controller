@@ -457,12 +457,6 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should use default history limit of 10 when not specified", func() {
-			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
-				Tag: "0.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-
 			By("Ensuring VersionHistoryLimit uses default")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
@@ -479,7 +473,9 @@ var _ = Describe("Rollout Controller", func() {
 			// Deploy 11 versions to exceed the default limit of 10
 			for i := 1; i <= 11; i++ {
 				version := fmt.Sprintf("0.%d.0", i)
-				imagePolicy.Status.LatestRef.Tag = version
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version,
+				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: typeNamespacedName,
@@ -500,12 +496,6 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should cleanup old available releases when history is full using multiple retention criteria", func() {
-			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
-				Tag: "0.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-
 			By("Setting a custom history limit of 3")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
@@ -514,35 +504,24 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Spec.VersionHistoryLimit = &historyLimit
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
-			// Don't set AvailableReleases at the start - let controller add versions one by one from ImagePolicy
-
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Deploy version 0.1.0
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Deploy version 0.2.0
-			imagePolicy.Status.LatestRef.Tag = "0.2.0"
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Deploy version 0.3.0
-			imagePolicy.Status.LatestRef.Tag = "0.3.0"
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
+			// Deploy versions in a loop to build up history
+			for i := 1; i <= 3; i++ {
+				version := fmt.Sprintf("0.%d.0", i)
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: typeNamespacedName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
 
 			// Before deploying 0.4.0, set AvailableReleases with versions 0.1-0.4 and timestamps for cleanup test
 			// We'll add 0.5.0 after deployment to test cleanup with 5 releases
@@ -596,12 +575,6 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should respect minimum retention of 30 releases", func() {
-			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
-				Tag: "0.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-
 			By("Setting a custom history limit of 2")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
@@ -610,8 +583,7 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Spec.VersionHistoryLimit = &historyLimit
 			Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
-			// Don't set AvailableReleases at the start - let controller add versions one by one from ImagePolicy
-			// We'll set all 50 releases with timestamps before the final deployment for cleanup test
+			// Initialize all 50 releases for the test
 			var releases []rolloutv1alpha1.VersionInfo
 			for i := 1; i <= 50; i++ {
 				releases = append(releases, rolloutv1alpha1.VersionInfo{
@@ -627,6 +599,10 @@ var _ = Describe("Rollout Controller", func() {
 			}
 
 			// Deploy version 0.1.0
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "0.1.0",
+			}
+			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -644,7 +620,9 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			// Deploy version 0.10.0 - this should trigger cleanup since history will be full
-			imagePolicy.Status.LatestRef.Tag = "0.10.0"
+			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				Tag: "0.10.0",
+			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -679,12 +657,6 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should keep releases from the lowest history entry index to the end", func() {
-			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
-				Tag: "0.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-
 			By("Setting a custom history limit of 2 and minimum retention of 2")
 			rollout := &rolloutv1alpha1.Rollout{}
 			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
