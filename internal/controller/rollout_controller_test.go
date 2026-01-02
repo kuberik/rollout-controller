@@ -493,6 +493,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.11.0"))
 			Expect(updatedRollout.Status.History[9].Version.Tag).To(Equal("0.2.0"))
 			// Verify 0.1.0 was removed (it's the oldest)
+			Expect(updatedRollout.Status.History).To(Not(ContainElement(HaveField("Version.Tag", "0.1.0"))))
 		})
 
 		It("should cleanup old available releases when history is full using multiple retention criteria", func() {
