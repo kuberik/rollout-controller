@@ -99,9 +99,25 @@ type RolloutSpec struct {
 
 	// VersionHistoryLimit defines the maximum number of entries to keep in the deployment history
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=5
+	// +kubebuilder:default=10
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
+
+	// AvailableReleasesRetentionDays defines how many days of available releases to keep based on creation timestamp
+	// When history is full, releases older than this retention period may be removed.
+	// Defaults to 7 days if not specified.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=7
+	// +optional
+	AvailableReleasesRetentionDays *int32 `json:"availableReleasesRetentionDays,omitempty"`
+
+	// AvailableReleasesMinCount defines the minimum number of available releases to always keep
+	// When history is full, at least this many releases will be retained regardless of other criteria.
+	// Defaults to 30 if not specified.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=30
+	// +optional
+	AvailableReleasesMinCount *int32 `json:"availableReleasesMinCount,omitempty"`
 
 	// BakeTime specifies how long to wait after bake starts before marking as successful
 	// If no errors happen within the bake time, the rollout is baked successfully.

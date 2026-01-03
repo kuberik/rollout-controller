@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/docker/cli/cli/config/configfile"
@@ -453,6 +454,46 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.4.0"))
 			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("0.3.0"))
 			Expect(updatedRollout.Status.History[2].Version.Tag).To(Equal("0.2.0"))
+		})
+
+		It("should use default history limit of 10 when not specified", func() {
+			By("Ensuring VersionHistoryLimit uses default")
+			rollout := &rolloutv1alpha1.Rollout{}
+			err := k8sClient.Get(ctx, typeNamespacedName, rollout)
+			Expect(err).NotTo(HaveOccurred())
+			// Kubebuilder defaults may be applied, but we want to test the default behavior
+			// So we'll just proceed without setting it explicitly
+
+			By("Reconciling the resources")
+			controllerReconciler := &RolloutReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Deploy 11 versions to exceed the default limit of 10
+			for i := 1; i <= 11; i++ {
+				version := fmt.Sprintf("0.%d.0", i)
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: typeNamespacedName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("Verifying that history is limited to default of 10")
+			updatedRollout := &rolloutv1alpha1.Rollout{}
+			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRollout.Status.History).To(HaveLen(10), "History should be limited to default of 10 entries")
+			// Verify the most recent versions are present (0.11.0 through 0.2.0)
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("0.11.0"))
+			Expect(updatedRollout.Status.History[9].Version.Tag).To(Equal("0.2.0"))
+			// Verify 0.1.0 was removed (it's the oldest)
+			Expect(updatedRollout.Status.History).To(Not(ContainElement(HaveField("Version.Tag", "0.1.0"))))
 		})
 
 		It("should respect the wanted version override", func() {

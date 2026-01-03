@@ -461,6 +461,16 @@ func (in *RolloutSpec) DeepCopyInto(out *RolloutSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.AvailableReleasesRetentionDays != nil {
+		in, out := &in.AvailableReleasesRetentionDays, &out.AvailableReleasesRetentionDays
+		*out = new(int32)
+		**out = **in
+	}
+	if in.AvailableReleasesMinCount != nil {
+		in, out := &in.AvailableReleasesMinCount, &out.AvailableReleasesMinCount
+		*out = new(int32)
+		**out = **in
+	}
 	if in.BakeTime != nil {
 		in, out := &in.BakeTime, &out.BakeTime
 		*out = new(v1.Duration)
