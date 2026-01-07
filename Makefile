@@ -276,4 +276,4 @@ changelog: git-cliff ## Generate changelog
 
 .PHONY: changelog-current
 changelog-current: git-cliff ## Generate changelog for the current release
-	$(GIT_CLIFF) --current --output CHANGELOG-current.md
+	$(GIT_CLIFF) --latest --strip all --output CHANGELOG-current.md
