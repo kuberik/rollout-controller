@@ -1,0 +1,46 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ClusterRolloutSchedule
+metadata:
+  name: production-peak-hours-deny
+  labels:
+    app.kubernetes.io/name: rollout-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # Match rollouts with tier=frontend across all namespaces
+  rolloutSelector:
+    matchLabels:
+      tier: frontend
+
+  # Only apply to production namespaces
+  namespaceSelector:
+    matchLabels:
+      environment: production
+
+  # Multiple rules - schedule is active if ANY rule matches
+  rules:
+    # Block during weekday business hours
+    - name: "weekday-peak-hours"
+      timeRange:
+        start: "09:00"
+        end: "17:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+
+    # Also block Saturday mornings
+    - name: "saturday-morning"
+      timeRange:
+        start: "09:00"
+        end: "12:00"
+      daysOfWeek:
+        - Saturday
+
+  # Use Eastern Time
+  timezone: "America/New_York"
+
+  # Action: Deny - block rollouts during peak hours
+  # (allows rollouts outside these times)
+  action: Deny
