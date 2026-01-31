@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -306,24 +305,68 @@ func calculateGateStatus(active bool, action rolloutv1alpha1.RolloutScheduleActi
 	}
 }
 
+// Label keys for schedule-managed gates
+const (
+	LabelScheduleName      = "gate.kuberik.com/schedule-name"
+	LabelScheduleNamespace = "gate.kuberik.com/schedule-namespace"
+	LabelScheduleKind      = "gate.kuberik.com/schedule-kind"
+	LabelRolloutName       = "gate.kuberik.com/rollout-name"
+)
+
+// findExistingGate finds an existing gate managed by a schedule for a specific rollout.
+func findExistingGate(
+	ctx context.Context,
+	c client.Client,
+	rollout *rolloutv1alpha1.Rollout,
+	scheduleName string,
+	scheduleNamespace string,
+	scheduleKind string,
+) (*rolloutv1alpha1.RolloutGate, error) {
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	labels := map[string]string{
+		LabelScheduleName: scheduleName,
+		LabelScheduleKind: scheduleKind,
+		LabelRolloutName:  rollout.Name,
+	}
+	if scheduleNamespace != "" {
+		labels[LabelScheduleNamespace] = scheduleNamespace
+	}
+
+	if err := c.List(ctx, gateList,
+		client.InNamespace(rollout.Namespace),
+		client.MatchingLabels(labels),
+	); err != nil {
+		return nil, err
+	}
+
+	if len(gateList.Items) == 0 {
+		return nil, nil
+	}
+
+	return &gateList.Items[0], nil
+}
+
 // syncRolloutGate creates or updates a RolloutGate for a rollout.
+// Returns the gate name for tracking purposes.
 func syncRolloutGate(
 	ctx context.Context,
 	c client.Client,
 	rollout *rolloutv1alpha1.Rollout,
-	gateName string,
+	scheduleName string,
+	scheduleNamespace string,
+	scheduleKind string,
 	passing bool,
 	ownerRef metav1.OwnerReference,
 	scheduleAnnotations map[string]string,
-) error {
-	gate := &rolloutv1alpha1.RolloutGate{}
-	err := c.Get(ctx, types.NamespacedName{
-		Namespace: rollout.Namespace,
-		Name:      gateName,
-	}, gate)
+) (string, error) {
+	// Find existing gate by labels
+	gate, err := findExistingGate(ctx, c, rollout, scheduleName, scheduleNamespace, scheduleKind)
+	if err != nil {
+		return "", fmt.Errorf("failed to find existing gate: %w", err)
+	}
 
-	if errors.IsNotFound(err) {
-		// Create new gate
+	if gate == nil {
+		// Create new gate using GenerateName
 		// Copy gate-related annotations from schedule to gate
 		annotations := make(map[string]string)
 		if prettyName, ok := scheduleAnnotations["gate.kuberik.com/pretty-name"]; ok {
@@ -333,10 +376,21 @@ func syncRolloutGate(
 			annotations["gate.kuberik.com/description"] = description
 		}
 
+		// Build labels to identify the gate
+		gateLabels := map[string]string{
+			LabelScheduleName: scheduleName,
+			LabelScheduleKind: scheduleKind,
+			LabelRolloutName:  rollout.Name,
+		}
+		if scheduleNamespace != "" {
+			gateLabels[LabelScheduleNamespace] = scheduleNamespace
+		}
+
 		gate = &rolloutv1alpha1.RolloutGate{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            gateName,
+				GenerateName:    "schedule-gate-",
 				Namespace:       rollout.Namespace,
+				Labels:          gateLabels,
 				Annotations:     annotations,
 				OwnerReferences: []metav1.OwnerReference{ownerRef},
 			},
@@ -347,11 +401,10 @@ func syncRolloutGate(
 				Passing: &passing,
 			},
 		}
-		return c.Create(ctx, gate)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to get gate %s: %w", gateName, err)
+		if err := c.Create(ctx, gate); err != nil {
+			return "", err
+		}
+		return gate.Name, nil
 	}
 
 	// Update existing gate if needed
@@ -394,44 +447,49 @@ func syncRolloutGate(
 	}
 
 	if needsUpdate {
-		return c.Update(ctx, gate)
+		if err := c.Update(ctx, gate); err != nil {
+			return "", err
+		}
 	}
 
-	return nil
+	return gate.Name, nil
 }
 
 // cleanupOrphanedGates removes gates that are no longer needed.
+// currentRollouts contains the names of rollouts that should have gates.
 func cleanupOrphanedGates(
 	ctx context.Context,
 	c client.Client,
-	managedGates []string,
-	currentGates []string,
+	scheduleName string,
+	scheduleNamespace string,
+	scheduleKind string,
+	currentRollouts map[string]bool,
 	namespace string,
 ) error {
-	// Convert currentGates to a map for quick lookup
-	current := make(map[string]bool)
-	for _, name := range currentGates {
-		current[name] = true
+	// List all gates managed by this schedule in this namespace
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	labels := map[string]string{
+		LabelScheduleName: scheduleName,
+		LabelScheduleKind: scheduleKind,
+	}
+	if scheduleNamespace != "" {
+		labels[LabelScheduleNamespace] = scheduleNamespace
 	}
 
-	// Delete gates that are in managedGates but not in currentGates
-	for _, gateName := range managedGates {
-		if !current[gateName] {
-			gate := &rolloutv1alpha1.RolloutGate{}
-			err := c.Get(ctx, types.NamespacedName{
-				Namespace: namespace,
-				Name:      gateName,
-			}, gate)
+	if err := c.List(ctx, gateList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels),
+	); err != nil {
+		return fmt.Errorf("failed to list gates for cleanup: %w", err)
+	}
 
-			if err == nil {
-				// Gate exists, delete it
-				if err := c.Delete(ctx, gate); err != nil && !errors.IsNotFound(err) {
-					return fmt.Errorf("failed to delete orphaned gate %s: %w", gateName, err)
-				}
-			} else if !errors.IsNotFound(err) {
-				return fmt.Errorf("failed to get gate %s for cleanup: %w", gateName, err)
+	// Delete gates for rollouts that are no longer matched
+	for _, gate := range gateList.Items {
+		rolloutName := gate.Labels[LabelRolloutName]
+		if !currentRollouts[rolloutName] {
+			if err := c.Delete(ctx, &gate); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete orphaned gate %s: %w", gate.Name, err)
 			}
-			// If already not found, that's fine
 		}
 	}
 

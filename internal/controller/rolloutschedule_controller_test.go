@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	clientpkg "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -265,7 +266,7 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 		CurrentTime: time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
 	}
 
-	client := fake.NewClientBuilder().
+	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(rollout, schedule).
 		WithStatusSubresource(schedule). // Add status subresource support
@@ -273,11 +274,11 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 
 	// Verify object exists
 	checkSchedule := &rolloutv1alpha1.RolloutSchedule{}
-	err := client.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, checkSchedule)
+	err := fakeClient.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, checkSchedule)
 	require.NoError(t, err, "Failed to find schedule in fake client during setup")
 
 	r := &RolloutScheduleReconciler{
-		Client:   client,
+		Client:   fakeClient,
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(10),
 		Clock:    mockClock,
@@ -294,20 +295,30 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 	_, err = r.Reconcile(context.Background(), req)
 	require.NoError(t, err)
 
-	// Verify gate created
-	gate := &rolloutv1alpha1.RolloutGate{}
-	gateName := "business-hours-my-rollout" // schedule-rollout
-	err = client.Get(context.Background(), types.NamespacedName{Name: gateName, Namespace: "default"}, gate)
+	// Verify gate created by finding it via labels
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	err = fakeClient.List(context.Background(), gateList,
+		clientpkg.InNamespace("default"),
+		clientpkg.MatchingLabels{
+			LabelScheduleName: schedule.Name,
+			LabelScheduleKind: "RolloutSchedule",
+			LabelRolloutName:  rollout.Name,
+		},
+	)
 	require.NoError(t, err)
+	require.Len(t, gateList.Items, 1, "Should have one gate created")
+
+	gate := &gateList.Items[0]
 	require.NotNil(t, gate.Spec.Passing)
 	assert.True(t, *gate.Spec.Passing, "Gate should be passing (Allow + Inside window)")
 	assert.Equal(t, rollout.Name, gate.Spec.RolloutRef.Name)
+	assert.True(t, strings.HasPrefix(gate.Name, "schedule-gate-"), "Gate name should have generated prefix")
 
 	// Verify status updated
-	err = client.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, schedule)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, schedule)
 	require.NoError(t, err)
 	assert.True(t, schedule.Status.Active)
-	assert.Contains(t, schedule.Status.ManagedGates, gateName)
+	assert.Len(t, schedule.Status.ManagedGates, 1)
 
 	// 2. Advance time to 20:00 (outside window)
 	mockClock.CurrentTime = time.Date(2025, 1, 1, 20, 0, 0, 0, time.UTC)
@@ -315,17 +326,17 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 	_, err = r.Reconcile(context.Background(), req)
 	require.NoError(t, err)
 
-	// Verify gate updated to passing=false
-	err = client.Get(context.Background(), types.NamespacedName{Name: gateName, Namespace: "default"}, gate)
+	// Verify gate updated to passing=false (fetch by name from previous gate)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: gate.Name, Namespace: "default"}, gate)
 	require.NoError(t, err)
 	require.NotNil(t, gate.Spec.Passing)
 	assert.False(t, *gate.Spec.Passing, "Gate should NOT be passing (Allow + Outside window)")
 
 	// 3. Change Action to Deny
-	err = client.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, schedule)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: schedule.Name, Namespace: schedule.Namespace}, schedule)
 	require.NoError(t, err)
 	schedule.Spec.Action = rolloutv1alpha1.RolloutScheduleActionDeny
-	err = client.Update(context.Background(), schedule)
+	err = fakeClient.Update(context.Background(), schedule)
 	require.NoError(t, err)
 
 	// Reconcile (still outside window at 20:00)
@@ -333,7 +344,7 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 	require.NoError(t, err)
 
 	// Outside window + Deny action = Passing (Deny only blocks active periods)
-	err = client.Get(context.Background(), types.NamespacedName{Name: gateName, Namespace: "default"}, gate)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: gate.Name, Namespace: "default"}, gate)
 	require.NoError(t, err)
 	assert.True(t, *gate.Spec.Passing, "Gate should be passing (Deny + Outside window)")
 
@@ -344,7 +355,7 @@ func TestRolloutScheduleReconciler(t *testing.T) {
 	require.NoError(t, err)
 
 	// Inside window + Deny action = Not Passing
-	err = client.Get(context.Background(), types.NamespacedName{Name: gateName, Namespace: "default"}, gate)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: gate.Name, Namespace: "default"}, gate)
 	require.NoError(t, err)
 	assert.False(t, *gate.Spec.Passing, "Gate should NOT be passing (Deny + Inside window)")
 }
@@ -435,19 +446,33 @@ func TestClusterRolloutScheduleReconciler(t *testing.T) {
 	_, err = r.Reconcile(context.Background(), req)
 	require.NoError(t, err)
 
-	// Check prod gate
-	prodGate := &rolloutv1alpha1.RolloutGate{}
-	prodGateName := "prod-freeze-app-prod"
-	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: prodGateName, Namespace: "prod"}, prodGate)
+	// Check prod gate by labels
+	prodGateList := &rolloutv1alpha1.RolloutGateList{}
+	err = fakeClient.List(context.Background(), prodGateList,
+		clientpkg.InNamespace("prod"),
+		clientpkg.MatchingLabels{
+			LabelScheduleName: schedule.Name,
+			LabelScheduleKind: "ClusterRolloutSchedule",
+			LabelRolloutName:  prodRollout.Name,
+		},
+	)
 	require.NoError(t, err)
+	require.Len(t, prodGateList.Items, 1, "Should have one prod gate")
+	prodGate := &prodGateList.Items[0]
 	assert.False(t, *prodGate.Spec.Passing, "Prod gate should block")
 
 	// Check dev gate (should not exist)
-	devGate := &rolloutv1alpha1.RolloutGate{}
-	devGateName := "prod-freeze-app-dev"
-	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: devGateName, Namespace: "dev"}, devGate)
-	assert.Error(t, err)
-	assert.True(t, client.IgnoreNotFound(err) == nil)
+	devGateList := &rolloutv1alpha1.RolloutGateList{}
+	err = fakeClient.List(context.Background(), devGateList,
+		clientpkg.InNamespace("dev"),
+		clientpkg.MatchingLabels{
+			LabelScheduleName: schedule.Name,
+			LabelScheduleKind: "ClusterRolloutSchedule",
+			LabelRolloutName:  devRollout.Name,
+		},
+	)
+	require.NoError(t, err)
+	assert.Len(t, devGateList.Items, 0, "Dev gate should not exist yet")
 
 	// 2. Remove Namespace Selector (matches all)
 	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: schedule.Name}, schedule)
@@ -464,7 +489,16 @@ func TestClusterRolloutScheduleReconciler(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now dev gate should exist and block
-	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: devGateName, Namespace: "dev"}, devGate)
+	err = fakeClient.List(context.Background(), devGateList,
+		clientpkg.InNamespace("dev"),
+		clientpkg.MatchingLabels{
+			LabelScheduleName: schedule.Name,
+			LabelScheduleKind: "ClusterRolloutSchedule",
+			LabelRolloutName:  devRollout.Name,
+		},
+	)
 	require.NoError(t, err)
+	require.Len(t, devGateList.Items, 1, "Dev gate should now exist")
+	devGate := &devGateList.Items[0]
 	assert.False(t, *devGate.Spec.Passing, "Dev gate should block now")
 }

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -88,10 +87,12 @@ func (r *RolloutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	currentRollouts := make(map[string]bool)
 	for _, rollout := range rolloutList.Items {
-		gateName := fmt.Sprintf("%s-%s", schedule.Name, rollout.Name)
-		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef, schedule.Annotations); err != nil {
-			logger.Error(err, "Failed to sync gate", "rollout", rollout.Name, "gate", gateName)
+		currentRollouts[rollout.Name] = true
+		gateName, err := syncRolloutGate(ctx, r.Client, &rollout, schedule.Name, schedule.Namespace, "RolloutSchedule", passing, ownerRef, schedule.Annotations)
+		if err != nil {
+			logger.Error(err, "Failed to sync gate", "rollout", rollout.Name)
 			// Continue with other rollouts, but we'll return the error at end if needed?
 			// Best effort to sync others.
 		} else {
@@ -101,8 +102,7 @@ func (r *RolloutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// 4. Cleanup Orphans
 	// Remove gates that are no longer needed (rollout no longer matches)
-	// We use the previous status.ManagedGates to know what we should check
-	if err := cleanupOrphanedGates(ctx, r.Client, schedule.Status.ManagedGates, managedGates, schedule.Namespace); err != nil {
+	if err := cleanupOrphanedGates(ctx, r.Client, schedule.Name, schedule.Namespace, "RolloutSchedule", currentRollouts, schedule.Namespace); err != nil {
 		logger.Error(err, "Failed to cleanup orphaned gates")
 		// Don't block status update
 	}
@@ -161,6 +161,22 @@ func (r *RolloutScheduleReconciler) findSchedulesForRollout(ctx context.Context,
 		return nil
 	}
 
+	// Also check for gates that reference this rollout (to handle cleanup if no longer matches)
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	_ = r.List(ctx, gateList,
+		client.InNamespace(rollout.Namespace),
+		client.MatchingLabels{
+			LabelScheduleKind: "RolloutSchedule",
+			LabelRolloutName:  rollout.Name,
+		},
+	)
+	gateScheduleNames := make(map[string]bool)
+	for _, gate := range gateList.Items {
+		if scheduleName := gate.Labels[LabelScheduleName]; scheduleName != "" {
+			gateScheduleNames[scheduleName] = true
+		}
+	}
+
 	var requests []reconcile.Request
 	for _, schedule := range scheduleList.Items {
 		match := false
@@ -171,15 +187,9 @@ func (r *RolloutScheduleReconciler) findSchedulesForRollout(ctx context.Context,
 			match = true
 		}
 
-		// Also check if previously managed (to handle cleanup if no longer matches)
-		if !match {
-			expectedGateName := fmt.Sprintf("%s-%s", schedule.Name, rollout.Name)
-			for _, managedGate := range schedule.Status.ManagedGates {
-				if managedGate == expectedGateName {
-					match = true
-					break
-				}
-			}
+		// Also check if there's an existing gate for this rollout (to handle cleanup if no longer matches)
+		if !match && gateScheduleNames[schedule.Name] {
+			match = true
 		}
 
 		if match {

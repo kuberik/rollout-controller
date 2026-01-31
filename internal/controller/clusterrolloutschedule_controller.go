@@ -19,11 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,7 +34,6 @@ import (
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // ClusterRolloutScheduleReconciler reconciles a ClusterRolloutSchedule object
@@ -108,37 +107,33 @@ func (r *ClusterRolloutScheduleReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, err
 	}
 
-	// Set of current gates to check against previous for cleanup
-	currentGatesSet := make(map[string]bool)
+	// Track rollouts per namespace for cleanup
+	rolloutsByNamespace := make(map[string]map[string]bool)
 
 	for _, rollout := range allMatchingRollouts {
-		gateName := fmt.Sprintf("%s-%s", schedule.Name, rollout.Name)
-		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef, schedule.Annotations); err != nil {
+		if rolloutsByNamespace[rollout.Namespace] == nil {
+			rolloutsByNamespace[rollout.Namespace] = make(map[string]bool)
+		}
+		rolloutsByNamespace[rollout.Namespace][rollout.Name] = true
+
+		gateName, err := syncRolloutGate(ctx, r.Client, &rollout, schedule.Name, "", "ClusterRolloutSchedule", passing, ownerRef, schedule.Annotations)
+		if err != nil {
 			logger.Error(err, "Failed to sync gate", "rollout", rollout.Name, "namespace", rollout.Namespace)
 		} else {
 			key := fmt.Sprintf("%s/%s", rollout.Namespace, gateName)
 			managedGates = append(managedGates, key)
-			currentGatesSet[key] = true
 		}
 	}
 
 	// 4. Cleanup Orphans
-	// Check previously managed gates that are no longer in current set
-	for _, oldKey := range schedule.Status.ManagedGates {
-		if !currentGatesSet[oldKey] {
-			// Orphaned - parse and delete
-			parts := strings.Split(oldKey, "/")
-			if len(parts) != 2 {
-				continue
-			}
-			ns, name := parts[0], parts[1]
-
-			gate := &rolloutv1alpha1.RolloutGate{}
-			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, gate); err == nil {
-				if err := r.Delete(ctx, gate); client.IgnoreNotFound(err) != nil {
-					logger.Error(err, "Failed to delete orphaned gate", "key", oldKey)
-				}
-			}
+	// For each namespace that had gates, check for orphans
+	for _, ns := range namespaceList.Items {
+		currentRollouts := rolloutsByNamespace[ns.Name]
+		if currentRollouts == nil {
+			currentRollouts = make(map[string]bool)
+		}
+		if err := cleanupOrphanedGates(ctx, r.Client, schedule.Name, "", "ClusterRolloutSchedule", currentRollouts, ns.Name); err != nil {
+			logger.Error(err, "Failed to cleanup orphaned gates", "namespace", ns.Name)
 		}
 	}
 
@@ -209,6 +204,22 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForRollout(ctx context.C
 		return nil
 	}
 
+	// Also check for gates that reference this rollout (to handle cleanup if no longer matches)
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	_ = r.List(ctx, gateList,
+		client.InNamespace(rollout.Namespace),
+		client.MatchingLabels{
+			LabelScheduleKind: "ClusterRolloutSchedule",
+			LabelRolloutName:  rollout.Name,
+		},
+	)
+	gateScheduleNames := make(map[string]bool)
+	for _, gate := range gateList.Items {
+		if scheduleName := gate.Labels[LabelScheduleName]; scheduleName != "" {
+			gateScheduleNames[scheduleName] = true
+		}
+	}
+
 	for _, schedule := range scheduleList.Items {
 		match := false
 
@@ -222,15 +233,9 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForRollout(ctx context.C
 			}
 		}
 
-		// Also check if previously managed
-		if !match {
-			expectedKey := fmt.Sprintf("%s/%s-%s", rollout.Namespace, schedule.Name, rollout.Name)
-			for _, managedKey := range schedule.Status.ManagedGates {
-				if managedKey == expectedKey {
-					match = true
-					break
-				}
-			}
+		// Also check if there's an existing gate for this rollout (to handle cleanup if no longer matches)
+		if !match && gateScheduleNames[schedule.Name] {
+			match = true
 		}
 
 		if match {
@@ -256,6 +261,21 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForNamespace(ctx context
 		return nil
 	}
 
+	// Check for gates in this namespace managed by ClusterRolloutSchedules
+	gateList := &rolloutv1alpha1.RolloutGateList{}
+	_ = r.List(ctx, gateList,
+		client.InNamespace(ns.Name),
+		client.MatchingLabels{
+			LabelScheduleKind: "ClusterRolloutSchedule",
+		},
+	)
+	gateScheduleNames := make(map[string]bool)
+	for _, gate := range gateList.Items {
+		if scheduleName := gate.Labels[LabelScheduleName]; scheduleName != "" {
+			gateScheduleNames[scheduleName] = true
+		}
+	}
+
 	var requests []reconcile.Request
 	for _, schedule := range scheduleList.Items {
 
@@ -268,16 +288,7 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForNamespace(ctx context
 
 		// If it DOESN'T match now, we should check if it manages any gates in this namespace.
 		// This handles the "cleanup" case.
-		hasGatesInNs := false
-		prefix := ns.Name + "/"
-		for _, managedKey := range schedule.Status.ManagedGates {
-			if strings.HasPrefix(managedKey, prefix) {
-				hasGatesInNs = true
-				break
-			}
-		}
-
-		if hasGatesInNs {
+		if gateScheduleNames[schedule.Name] {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: schedule.Name}})
 		}
 	}
