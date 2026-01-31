@@ -1,0 +1,42 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: night-deployment
+  namespace: default
+  annotations:
+    gate.kuberik.com/pretty-name: "Night Deployment Window"
+    gate.kuberik.com/description: "Deployments allowed overnight (10 PM - 6 AM UTC)"
+spec:
+  # Allow deployments overnight (cross-midnight window)
+  rolloutSelector:
+    matchLabels:
+      schedule: night
+  rules:
+    # Weeknight deployment window (10 PM to 6 AM)
+    - name: "overnight-window"
+      timeRange:
+        start: "22:00"  # 10 PM
+        end: "06:00"    # 6 AM (next day)
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+  timezone: "UTC"
+  action: Allow
+
+---
+# Example rollout that deploys at night
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: batch-processor-rollout
+  namespace: default
+  labels:
+    schedule: night  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: batch-processor-policy
+  versionHistoryLimit: 10
+  bakeTime: "30m"

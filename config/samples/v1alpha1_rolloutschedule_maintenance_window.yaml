@@ -1,0 +1,38 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: maintenance-window
+  namespace: default
+  annotations:
+    gate.kuberik.com/pretty-name: "Maintenance Window"
+    gate.kuberik.com/description: "Deployments allowed only during Sunday maintenance window (2-6 AM UTC)"
+spec:
+  # Allow deployments only during scheduled maintenance windows
+  rolloutSelector:
+    matchLabels:
+      maintenance: "true"
+  rules:
+    # Sunday early morning maintenance window
+    - name: "sunday-maintenance"
+      timeRange:
+        start: "02:00"
+        end: "06:00"
+      daysOfWeek:
+        - Sunday
+  timezone: "UTC"
+  action: Allow
+
+---
+# Example rollout that uses this schedule
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: database-rollout
+  namespace: default
+  labels:
+    maintenance: "true"  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: database-policy
+  versionHistoryLimit: 10
+  releaseUpdateInterval: "5m"

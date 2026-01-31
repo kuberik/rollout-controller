@@ -90,7 +90,7 @@ func (r *RolloutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	for _, rollout := range rolloutList.Items {
 		gateName := fmt.Sprintf("%s-%s", schedule.Name, rollout.Name)
-		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef); err != nil {
+		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef, schedule.Annotations); err != nil {
 			logger.Error(err, "Failed to sync gate", "rollout", rollout.Name, "gate", gateName)
 			// Continue with other rollouts, but we'll return the error at end if needed?
 			// Best effort to sync others.

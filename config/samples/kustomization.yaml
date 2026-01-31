@@ -1,7 +1,6 @@
 ## Append samples of your project ##
 resources:
   - v1alpha1_rollout.yaml
-  - v1alpha1_rollout_bypass.yaml
   - v1alpha1_rollout_advanced_selectors.yaml
   - v1alpha1_rolloutgate.yaml
   - v1alpha1_healthcheck.yaml
@@ -9,4 +8,13 @@ resources:
   - v1alpha1_imagerepository.yaml
   - v1alpha1_ocirepository.yaml
   - v1alpha1_kustomization.yaml
+  - v1alpha1_kustomization_healthcheck.yaml
+  - v1alpha1_rolloutschedule.yaml
+  - v1alpha1_rolloutschedule_maintenance_window.yaml
+  - v1alpha1_rolloutschedule_weekend_only.yaml
+  - v1alpha1_rolloutschedule_night_deployment.yaml
+  - v1alpha1_rolloutschedule_multiple_windows.yaml
+  - v1alpha1_rolloutschedule_combined_constraints.yaml
+  - v1alpha1_clusterrolloutschedule_holiday_freeze.yaml
+  - v1alpha1_clusterrolloutschedule_peak_hours_deny.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

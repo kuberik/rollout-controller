@@ -6,6 +6,9 @@ metadata:
   labels:
     app.kubernetes.io/name: rollout-controller
     app.kubernetes.io/managed-by: kustomize
+  annotations:
+    gate.kuberik.com/pretty-name: "Business Hours Only"
+    gate.kuberik.com/description: "Deployments allowed only during weekday business hours (9 AM - 5 PM EST)"
 spec:
   # Match rollouts with the label "schedule=business-hours"
   rolloutSelector:

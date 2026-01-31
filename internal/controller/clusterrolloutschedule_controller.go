@@ -113,7 +113,7 @@ func (r *ClusterRolloutScheduleReconciler) Reconcile(ctx context.Context, req ct
 
 	for _, rollout := range allMatchingRollouts {
 		gateName := fmt.Sprintf("%s-%s", schedule.Name, rollout.Name)
-		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef); err != nil {
+		if err := syncRolloutGate(ctx, r.Client, &rollout, gateName, passing, ownerRef, schedule.Annotations); err != nil {
 			logger.Error(err, "Failed to sync gate", "rollout", rollout.Name, "namespace", rollout.Namespace)
 		} else {
 			key := fmt.Sprintf("%s/%s", rollout.Namespace, gateName)

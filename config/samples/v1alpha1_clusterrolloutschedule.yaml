@@ -5,6 +5,9 @@ metadata:
   labels:
     app.kubernetes.io/name: rollout-controller
     app.kubernetes.io/managed-by: kustomize
+  annotations:
+    gate.kuberik.com/pretty-name: "Peak Hours Protection"
+    gate.kuberik.com/description: "Blocks deployments during peak traffic hours in production"
 spec:
   # Match rollouts with tier=frontend across all namespaces
   rolloutSelector:

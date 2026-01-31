@@ -314,6 +314,7 @@ func syncRolloutGate(
 	gateName string,
 	passing bool,
 	ownerRef metav1.OwnerReference,
+	scheduleAnnotations map[string]string,
 ) error {
 	gate := &rolloutv1alpha1.RolloutGate{}
 	err := c.Get(ctx, types.NamespacedName{
@@ -323,10 +324,20 @@ func syncRolloutGate(
 
 	if errors.IsNotFound(err) {
 		// Create new gate
+		// Copy gate-related annotations from schedule to gate
+		annotations := make(map[string]string)
+		if prettyName, ok := scheduleAnnotations["gate.kuberik.com/pretty-name"]; ok {
+			annotations["gate.kuberik.com/pretty-name"] = prettyName
+		}
+		if description, ok := scheduleAnnotations["gate.kuberik.com/description"]; ok {
+			annotations["gate.kuberik.com/description"] = description
+		}
+
 		gate = &rolloutv1alpha1.RolloutGate{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            gateName,
 				Namespace:       rollout.Namespace,
+				Annotations:     annotations,
 				OwnerReferences: []metav1.OwnerReference{ownerRef},
 			},
 			Spec: rolloutv1alpha1.RolloutGateSpec{
@@ -348,6 +359,25 @@ func syncRolloutGate(
 	if gate.Spec.Passing == nil || *gate.Spec.Passing != passing {
 		gate.Spec.Passing = &passing
 		needsUpdate = true
+	}
+
+	// Update annotations from schedule if needed
+	if gate.Annotations == nil {
+		gate.Annotations = make(map[string]string)
+	}
+
+	if prettyName, ok := scheduleAnnotations["gate.kuberik.com/pretty-name"]; ok {
+		if gate.Annotations["gate.kuberik.com/pretty-name"] != prettyName {
+			gate.Annotations["gate.kuberik.com/pretty-name"] = prettyName
+			needsUpdate = true
+		}
+	}
+
+	if description, ok := scheduleAnnotations["gate.kuberik.com/description"]; ok {
+		if gate.Annotations["gate.kuberik.com/description"] != description {
+			gate.Annotations["gate.kuberik.com/description"] = description
+			needsUpdate = true
+		}
 	}
 
 	// Ensure owner reference is set

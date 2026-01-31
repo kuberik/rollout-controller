@@ -1,0 +1,56 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ClusterRolloutSchedule
+metadata:
+  name: holiday-freeze
+  annotations:
+    gate.kuberik.com/pretty-name: "Holiday Deployment Freeze"
+    gate.kuberik.com/description: "Blocks all deployments during major holidays (Christmas, New Year, Thanksgiving)"
+spec:
+  # Block all deployments during major holidays
+  rolloutSelector:
+    matchLabels:
+      freeze: "holiday"
+  namespaceSelector:
+    matchLabels:
+      environment: production
+  rules:
+    # Christmas freeze
+    - name: "christmas-freeze"
+      dateRange:
+        start: "2026-12-23"
+        end: "2026-12-26"
+    # New Year freeze
+    - name: "new-year-freeze"
+      dateRange:
+        start: "2026-12-31"
+        end: "2027-01-02"
+    # Thanksgiving freeze
+    - name: "thanksgiving-freeze"
+      dateRange:
+        start: "2026-11-26"
+        end: "2026-11-27"
+  timezone: "America/New_York"
+  action: Deny
+
+---
+# Example namespace that matches the selector
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production-east
+  labels:
+    environment: production
+
+---
+# Example rollout in production namespace
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: frontend-rollout
+  namespace: production-east
+  labels:
+    freeze: "holiday"  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: frontend-policy
+  versionHistoryLimit: 10
