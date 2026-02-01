@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rules
+
+- **Always use kubebuilder CLI to scaffold controllers.** Never manually create controller files. Use:
+  ```bash
+  # For controllers with new CRDs:
+  kubebuilder create api --group <group> --version <version> --kind <Kind>
+
+  # For controllers watching external CRDs:
+  kubebuilder create api \
+    --group <group> \
+    --version <version> \
+    --kind <Kind> \
+    --controller=true \
+    --resource=false \
+    --external-api-domain <domain> \
+    --external-api-path <import-path>
+  ```
+  Then implement your logic in the scaffolded `*_controller.go` file.
+
 ## What is Rollout Controller?
 
 A Kubernetes controller for managing application rollouts with support for health checks, gates, and bake time. It integrates tightly with Flux CD for GitOps workflows, providing progressive delivery capabilities.
