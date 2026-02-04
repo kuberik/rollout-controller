@@ -1,0 +1,36 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: weekend-only
+  namespace: default
+  annotations:
+    gate.kuberik.com/pretty-name: "Weekend Deployments"
+    gate.kuberik.com/description: "Deployments allowed only on weekends"
+spec:
+  # Allow deployments only on weekends
+  rolloutSelector:
+    matchLabels:
+      schedule: weekend
+  rules:
+    # Saturday and Sunday all day
+    - name: "weekend-deployment"
+      daysOfWeek:
+        - Saturday
+        - Sunday
+  timezone: "America/Los_Angeles"
+  action: Allow
+
+---
+# Example rollout that deploys on weekends only
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: experimental-rollout
+  namespace: default
+  labels:
+    schedule: weekend  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: experimental-policy
+  versionHistoryLimit: 5
+  releaseUpdateInterval: "10m"

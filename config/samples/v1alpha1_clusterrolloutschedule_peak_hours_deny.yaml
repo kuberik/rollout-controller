@@ -1,0 +1,63 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ClusterRolloutSchedule
+metadata:
+  name: production-peak-hours-deny
+  annotations:
+    gate.kuberik.com/pretty-name: "Peak Hours Protection"
+    gate.kuberik.com/description: "Blocks deployments during weekday peak hours (9 AM - 5 PM) and Saturday morning (9 AM - 12 PM)"
+spec:
+  # Block deployments during peak traffic hours in production
+  rolloutSelector:
+    matchLabels:
+      tier: frontend
+  namespaceSelector:
+    matchLabels:
+      environment: production
+  rules:
+    # Weekday peak hours (9 AM - 5 PM)
+    - name: "weekday-peak-hours"
+      timeRange:
+        start: "09:00"
+        end: "17:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+    # Saturday morning peak (9 AM - 12 PM)
+    - name: "saturday-morning-peak"
+      timeRange:
+        start: "09:00"
+        end: "12:00"
+      daysOfWeek:
+        - Saturday
+  timezone: "America/New_York"
+  action: Deny
+
+---
+# Example namespace with production label
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production-web
+  labels:
+    environment: production
+
+---
+# Example frontend rollout in production
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: web-frontend-rollout
+  namespace: production-web
+  labels:
+    tier: frontend  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: web-frontend-policy
+  versionHistoryLimit: 15
+  bakeTime: "20m"
+  healthCheckSelector:
+    matchLabels:
+      app: web-frontend

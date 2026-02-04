@@ -1,0 +1,61 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: flexible-window
+  namespace: default
+  annotations:
+    gate.kuberik.com/pretty-name: "Flexible Deployment Windows"
+    gate.kuberik.com/description: "Deployments allowed during morning (9-11 AM), afternoon (2-4 PM), or anytime on weekends"
+spec:
+  # Multiple deployment windows throughout the day
+  rolloutSelector:
+    matchLabels:
+      schedule: flexible
+  rules:
+    # Morning window (9-11 AM)
+    - name: "morning-window"
+      timeRange:
+        start: "09:00"
+        end: "11:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+    # Afternoon window (2-4 PM)
+    - name: "afternoon-window"
+      timeRange:
+        start: "14:00"
+        end: "16:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+    # Weekend anytime
+    - name: "weekend-anytime"
+      daysOfWeek:
+        - Saturday
+        - Sunday
+  timezone: "America/New_York"
+  action: Allow
+
+---
+# Example rollout with flexible deployment windows
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: api-rollout
+  namespace: default
+  labels:
+    schedule: flexible  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: api-policy
+  versionHistoryLimit: 10
+  bakeTime: "15m"
+  healthCheckSelector:
+    matchLabels:
+      app: api

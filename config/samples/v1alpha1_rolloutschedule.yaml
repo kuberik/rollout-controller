@@ -1,0 +1,36 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: business-hours-allow
+  namespace: default
+  labels:
+    app.kubernetes.io/name: rollout-controller
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    gate.kuberik.com/pretty-name: "Business Hours Only"
+    gate.kuberik.com/description: "Deployments allowed only during weekday business hours (9 AM - 5 PM EST)"
+spec:
+  # Match rollouts with the label "schedule=business-hours"
+  rolloutSelector:
+    matchLabels:
+      schedule: business-hours
+
+  # List of schedule rules - schedule is active if ANY rule matches
+  rules:
+    - name: "weekday-business-hours"
+      timeRange:
+        start: "09:00"
+        end: "17:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+
+  # Use Eastern Time
+  timezone: "America/New_York"
+
+  # Action: Allow - only allow rollouts when schedule is active
+  # (blocks rollouts outside business hours)
+  action: Allow

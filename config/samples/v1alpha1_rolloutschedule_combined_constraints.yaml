@@ -1,0 +1,59 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutSchedule
+metadata:
+  name: restricted-deployment
+  namespace: default
+  annotations:
+    gate.kuberik.com/pretty-name: "Restricted Deployment Schedule"
+    gate.kuberik.com/description: "Q1: Weekdays 10 AM-4 PM only. Q2: Weekdays anytime"
+spec:
+  # Complex schedule with date range, time, and day constraints
+  rolloutSelector:
+    matchLabels:
+      schedule: restricted
+  rules:
+    # Q1 2026: Weekdays only, business hours only
+    - name: "q1-business-hours"
+      dateRange:
+        start: "2026-01-01"
+        end: "2026-03-31"
+      timeRange:
+        start: "10:00"
+        end: "16:00"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+    # Q2 2026: More flexible - weekdays anytime
+    - name: "q2-weekdays"
+      dateRange:
+        start: "2026-04-01"
+        end: "2026-06-30"
+      daysOfWeek:
+        - Monday
+        - Tuesday
+        - Wednesday
+        - Thursday
+        - Friday
+  timezone: "Europe/London"
+  action: Allow
+
+---
+# Example rollout with combined constraints
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: critical-service-rollout
+  namespace: default
+  labels:
+    schedule: restricted  # Matches the schedule selector
+spec:
+  releasesImagePolicy:
+    name: critical-service-policy
+  versionHistoryLimit: 20
+  bakeTime: "1h"
+  healthCheckSelector:
+    matchLabels:
+      app: critical-service

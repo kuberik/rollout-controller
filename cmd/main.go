@@ -240,6 +240,26 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "KustomizationHealth")
 		os.Exit(1)
 	}
+
+	if err = (&controller.RolloutScheduleReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("rolloutschedule-controller"),
+		Clock:    &controller.RealClock{},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RolloutSchedule")
+		os.Exit(1)
+	}
+	if err = (&controller.ClusterRolloutScheduleReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("clusterrolloutschedule-controller"),
+		Clock:    &controller.RealClock{},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterRolloutSchedule")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

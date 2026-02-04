@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - '*'
+  - namespaces
   - secrets
   verbs:
   - get
@@ -40,9 +41,12 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - clusterrolloutschedules
   - healthchecks
   - kustomizationhealths
+  - rolloutgates
   - rollouts
+  - rolloutschedules
   verbs:
   - create
   - delete
@@ -54,29 +58,25 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - clusterrolloutschedules/finalizers
   - healthchecks/finalizers
   - kustomizationhealths/finalizers
   - rollouts/finalizers
+  - rolloutschedules/finalizers
   verbs:
   - update
 - apiGroups:
   - kuberik.com
   resources:
+  - clusterrolloutschedules/status
   - healthchecks/status
   - kustomizationhealths/status
   - rollouts/status
+  - rolloutschedules/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - rolloutgates
-  verbs:
-  - get
-  - list
-  - watch
 - apiGroups:
   - kustomize.toolkit.fluxcd.io
   resources:
