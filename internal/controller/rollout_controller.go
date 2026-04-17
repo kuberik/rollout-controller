@@ -1727,7 +1727,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				break
 			}
 
-			if !hc.Status.LastChangeTime.Time.After(deployTime) {
+			if hc.Status.LastChangeTime.Time.Before(deployTime) {
 				canStartBake = false
 				log.Info("HealthCheck LastChangeTime is not newer than deployment time", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "deployTime", deployTime)
 				break

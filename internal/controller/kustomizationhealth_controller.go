@@ -24,6 +24,7 @@ import (
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -245,19 +246,27 @@ func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx con
 		return rolloutv1alpha1.HealthStatusUnhealthy, "", fmt.Errorf("failed to compute kustomization status: %v", err)
 	}
 
+	// Get the Ready condition message for additional context
+	buildMessage := func(kstatusMsg string) string {
+		if readyCondition := meta.FindStatusCondition(kustomization.GetConditions(), "Ready"); readyCondition != nil && readyCondition.Message != "" {
+			return fmt.Sprintf("%s: %s", kstatusMsg, readyCondition.Message)
+		}
+		return kstatusMsg
+	}
+
 	// Map kstatus result to our health status
 	switch result.Status {
 	case status.CurrentStatus:
-		return rolloutv1alpha1.HealthStatusHealthy, result.Message, nil
+		return rolloutv1alpha1.HealthStatusHealthy, buildMessage(result.Message), nil
 	case status.InProgressStatus:
-		return rolloutv1alpha1.HealthStatusPending, result.Message, nil
+		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil
 	case status.FailedStatus:
-		return rolloutv1alpha1.HealthStatusUnhealthy, result.Message, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, buildMessage(result.Message), nil
 	case status.TerminatingStatus:
-		return rolloutv1alpha1.HealthStatusPending, result.Message, nil
+		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil
 	default:
 		// Unknown status, treat as unhealthy
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unknown status: %s - %s", result.Status, result.Message), nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unknown status: %s - %s", result.Status, buildMessage(result.Message)), nil
 	}
 }
 
