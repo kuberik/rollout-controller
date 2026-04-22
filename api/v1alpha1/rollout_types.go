@@ -339,6 +339,13 @@ type DeploymentHistoryEntry struct {
 	// ignored as they reflect the pre-retry state.
 	// +optional
 	LastRetryTimestamp *metav1.Time `json:"lastRetryTimestamp,omitempty"`
+
+	// LastRetryMode records how the most recent retry should treat failed RolloutTests.
+	// "retry" (or empty): re-run failed tests; openkruise stepgate resets them to WaitingForStep.
+	// "skip":  mark failed tests as Skipped (treated as passing); skip the re-run.
+	// +kubebuilder:validation:Enum=retry;skip
+	// +optional
+	LastRetryMode string `json:"lastRetryMode,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -395,9 +402,19 @@ const (
 const (
 	// RetryAnnotation, when set on a Rollout whose latest history entry has BakeStatus=Failed,
 	// triggers a retry: the rollout controller resets BakeStatus to Deploying, records
-	// LastRetryTimestamp on the history entry, and removes the annotation. The value is
-	// not inspected, but a unique value (e.g. RFC3339 timestamp) helps correlate events.
+	// LastRetryTimestamp on the history entry, and removes the annotation. The annotation
+	// value selects how failed RolloutTests are handled:
+	//   "retry" (or empty/unknown): re-run failed tests.
+	//   "skip":  mark failed tests as Skipped (counted as passing) so the rollout can
+	//           advance without re-running them.
 	RetryAnnotation = "rollout.kuberik.com/retry"
+
+	// RetryModeRetry re-runs failed RolloutTests on retry (the default).
+	RetryModeRetry = "retry"
+
+	// RetryModeSkip marks failed RolloutTests as Skipped on retry — the rollout advances
+	// without re-running them.
+	RetryModeSkip = "skip"
 )
 
 func init() {

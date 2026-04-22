@@ -1913,9 +1913,16 @@ func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *
 		return clearAnnotation()
 	}
 
+	// Annotation value is the mode: "retry" (default) or "skip".
+	mode := rolloutv1alpha1.RetryModeRetry
+	if retryValue == rolloutv1alpha1.RetryModeSkip {
+		mode = rolloutv1alpha1.RetryModeSkip
+	}
+
 	now := metav1.Time{Time: r.now()}
 	deploying := rolloutv1alpha1.BakeStatusDeploying
 	current.LastRetryTimestamp = &now
+	current.LastRetryMode = mode
 	current.BakeStatus = &deploying
 	current.BakeStatusMessage = nil
 	current.BakeStartTime = nil
@@ -1932,10 +1939,11 @@ func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *
 
 	if r.Recorder != nil {
 		r.Recorder.Event(rollout, corev1.EventTypeNormal, "RetryRequested",
-			fmt.Sprintf("Retry requested; bake status reset at %s", now.Format(time.RFC3339)))
+			fmt.Sprintf("Retry requested (mode=%s); bake status reset at %s", mode, now.Format(time.RFC3339)))
 	}
 	log.Info("Processed retry annotation; bake status reset to Deploying",
-		"lastRetryTimestamp", now.Format(time.RFC3339))
+		"lastRetryTimestamp", now.Format(time.RFC3339),
+		"mode", mode)
 	return nil
 }
 

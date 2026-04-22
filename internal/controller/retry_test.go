@@ -126,6 +126,30 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(entry.FailedHealthChecks).To(BeEmpty())
 		Expect(entry.LastRetryTimestamp).NotTo(BeNil())
 		Expect(entry.LastRetryTimestamp.Time).To(Equal(fakeClock.Now()))
+		// Unknown annotation value (timestamp) → default mode "retry".
+		Expect(entry.LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
+	})
+
+	It("records LastRetryMode=skip when annotation value is \"skip\"", func() {
+		seedFailedHistory()
+		addRetryAnnotation("skip")
+
+		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeSkip))
+	})
+
+	It("records LastRetryMode=retry when annotation value is \"retry\"", func() {
+		seedFailedHistory()
+		addRetryAnnotation("retry")
+
+		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
 	})
 
 	It("removes annotation but does not reset when BakeStatus is InProgress (double-retry guard)", func() {
@@ -186,6 +210,79 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(fetched.Annotations).NotTo(HaveKey(rolloutv1alpha1.RetryAnnotation))
 		Expect(*fetched.Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
 		Expect(fetched.Status.History[0].LastRetryTimestamp).NotTo(BeNil())
+	})
+
+	It("end-to-end: failed rollout → retry → health check reset → bake resumes", func() {
+		seedFailedHistory()
+
+		hc := &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: namespace},
+			Spec:       rolloutv1alpha1.HealthCheckSpec{Class: k8sptr.To("kustomization")},
+		}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		errTime := metav1.NewTime(fakeClock.Now().Add(-5 * time.Minute))
+		hc.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusUnhealthy,
+			Message:        k8sptr.To("old failure"),
+			LastChangeTime: &errTime,
+			LastErrorTime:  &errTime,
+		}
+		Expect(k8sClient.Status().Update(ctx, hc)).To(Succeed())
+
+		addRetryAnnotation("e2e-1")
+		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
+
+		rolloutAfter := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, rolloutAfter)).To(Succeed())
+		Expect(*rolloutAfter.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
+		Expect(rolloutAfter.Status.History[0].LastRetryTimestamp).NotTo(BeNil())
+
+		hcReconciler := &HealthCheckReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+		_, err := hcReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: hc.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		hcAfter := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: hc.Name, Namespace: namespace}, hcAfter)).To(Succeed())
+		Expect(hcAfter.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(hcAfter.Status.LastErrorTime).To(BeNil())
+	})
+
+	It("supports multiple retry cycles — retry, fail again, retry, succeed", func() {
+		seedFailedHistory()
+
+		// First retry
+		addRetryAnnotation("cycle-1")
+		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
+
+		rolloutAfter := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, rolloutAfter)).To(Succeed())
+		firstRetry := rolloutAfter.Status.History[0].LastRetryTimestamp.Time
+
+		// Simulate another failure: bake goes back to Failed.
+		fakeClock.Add(10 * time.Minute)
+		failed := rolloutv1alpha1.BakeStatusFailed
+		rolloutAfter.Status.History[0].BakeStatus = &failed
+		rolloutAfter.Status.History[0].FailedHealthChecks = []rolloutv1alpha1.FailedHealthCheck{{
+			Name: "hc", Namespace: namespace, Message: k8sptr.To("still broken"),
+		}}
+		Expect(k8sClient.Status().Update(ctx, rolloutAfter)).To(Succeed())
+
+		// Second retry
+		Expect(k8sClient.Get(ctx, key, rolloutAfter)).To(Succeed())
+		if rolloutAfter.Annotations == nil {
+			rolloutAfter.Annotations = map[string]string{}
+		}
+		rolloutAfter.Annotations[rolloutv1alpha1.RetryAnnotation] = "cycle-2"
+		Expect(k8sClient.Update(ctx, rolloutAfter)).To(Succeed())
+		Expect(reconciler.handleRetryAnnotation(ctx, rolloutAfter, testLogger())).To(Succeed())
+
+		final := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, final)).To(Succeed())
+		Expect(*final.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
+		Expect(final.Status.History[0].FailedHealthChecks).To(BeEmpty())
+		secondRetry := final.Status.History[0].LastRetryTimestamp.Time
+		Expect(secondRetry.After(firstRetry)).To(BeTrue())
+		Expect(final.Annotations).NotTo(HaveKey(rolloutv1alpha1.RetryAnnotation))
 	})
 
 	It("stamps LastRetryTimestamp using controller clock on each retry", func() {
