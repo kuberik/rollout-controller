@@ -332,6 +332,13 @@ type DeploymentHistoryEntry struct {
 	// This field is populated when bake fails due to health check errors.
 	// +optional
 	FailedHealthChecks []FailedHealthCheck `json:"failedHealthChecks,omitempty"`
+
+	// LastRetryTimestamp is the time when a retry was most recently requested for this deployment.
+	// When set, downstream controllers (health checks, kruise rollout step gates) use this as a
+	// cutoff: stale failure conditions with LastTransitionTime older than LastRetryTimestamp are
+	// ignored as they reflect the pre-retry state.
+	// +optional
+	LastRetryTimestamp *metav1.Time `json:"lastRetryTimestamp,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -383,6 +390,14 @@ const (
 	BakeStatusSucceeded  = "Succeeded"
 	BakeStatusFailed     = "Failed"
 	BakeStatusCancelled  = "Cancelled"
+)
+
+const (
+	// RetryAnnotation, when set on a Rollout whose latest history entry has BakeStatus=Failed,
+	// triggers a retry: the rollout controller resets BakeStatus to Deploying, records
+	// LastRetryTimestamp on the history entry, and removes the annotation. The value is
+	// not inspected, but a unique value (e.g. RFC3339 timestamp) helps correlate events.
+	RetryAnnotation = "rollout.kuberik.com/retry"
 )
 
 func init() {

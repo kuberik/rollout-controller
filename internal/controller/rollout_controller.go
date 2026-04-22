@@ -113,6 +113,10 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	if err := r.handleRetryAnnotation(ctx, &rollout, log); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	err := r.updateAvailableReleases(ctx, &rollout, log)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -1874,6 +1878,65 @@ func (r *RolloutReconciler) now() time.Time {
 		return r.Clock.Now()
 	}
 	return time.Now()
+}
+
+// handleRetryAnnotation processes the rollout.kuberik.com/retry annotation.
+// It resets the most recent history entry from Failed back to Deploying, records
+// LastRetryTimestamp so downstream controllers (health checks, kruise step gates)
+// can distinguish stale from fresh failures, and clears the annotation.
+// No-op unless BakeStatus is Failed and the annotation is present — double-retry
+// attempts during an in-flight retry are therefore idempotent.
+func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
+	if rollout.Annotations == nil {
+		return nil
+	}
+	retryValue, hasAnnotation := rollout.Annotations[rolloutv1alpha1.RetryAnnotation]
+	if !hasAnnotation {
+		return nil
+	}
+
+	clearAnnotation := func() error {
+		patchBase := rollout.DeepCopy()
+		delete(rollout.Annotations, rolloutv1alpha1.RetryAnnotation)
+		return r.Client.Patch(ctx, rollout, client.MergeFrom(patchBase))
+	}
+
+	if len(rollout.Status.History) == 0 {
+		return clearAnnotation()
+	}
+
+	current := &rollout.Status.History[0]
+	if current.BakeStatus == nil || *current.BakeStatus != rolloutv1alpha1.BakeStatusFailed {
+		log.Info("Retry annotation ignored; BakeStatus not Failed",
+			"bakeStatus", k8sptr.Deref(current.BakeStatus, ""),
+			"retryValue", retryValue)
+		return clearAnnotation()
+	}
+
+	now := metav1.Time{Time: r.now()}
+	deploying := rolloutv1alpha1.BakeStatusDeploying
+	current.LastRetryTimestamp = &now
+	current.BakeStatus = &deploying
+	current.BakeStatusMessage = nil
+	current.BakeStartTime = nil
+	current.BakeEndTime = nil
+	current.FailedHealthChecks = nil
+
+	if err := r.Client.Status().Update(ctx, rollout); err != nil {
+		return fmt.Errorf("failed to reset bake status for retry: %w", err)
+	}
+
+	if err := clearAnnotation(); err != nil {
+		return fmt.Errorf("failed to clear retry annotation: %w", err)
+	}
+
+	if r.Recorder != nil {
+		r.Recorder.Event(rollout, corev1.EventTypeNormal, "RetryRequested",
+			fmt.Sprintf("Retry requested; bake status reset at %s", now.Format(time.RFC3339)))
+	}
+	log.Info("Processed retry annotation; bake status reset to Deploying",
+		"lastRetryTimestamp", now.Format(time.RFC3339))
+	return nil
 }
 
 // hasBakeTimeConfiguration checks if the rollout has any bake time related configuration

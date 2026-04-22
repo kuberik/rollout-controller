@@ -87,8 +87,16 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization not found: %v", err))
 	}
 
+	// Determine retry cutoff: failure conditions with LastTransitionTime older than
+	// this timestamp are stale (pre-retry) and treated as pending rather than unhealthy.
+	retryCutoff, err := findLastRetryTimestampForHealthCheck(ctx, r.Client, healthCheck)
+	if err != nil {
+		log.Error(err, "failed to lookup retry cutoff")
+		// Continue without cutoff rather than short-circuit — best-effort filtering.
+	}
+
 	// Check the health of all managed resources
-	healthStatus, message, err := r.checkKustomizationHealth(ctx, kustomization)
+	healthStatus, message, err := r.checkKustomizationHealth(ctx, kustomization, retryCutoff)
 	if err != nil {
 		log.Error(err, "failed to check kustomization health")
 		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Health check failed: %v", err))
@@ -138,10 +146,12 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 	}
 }
 
-// checkKustomizationHealth checks the health of the kustomization itself and all resources it manages
-func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, error) {
+// checkKustomizationHealth checks the health of the kustomization itself and all resources it manages.
+// If retryCutoff is non-nil, failure statuses whose underlying conditions all transitioned before the
+// cutoff are considered stale (pre-retry) and reclassified as pending.
+func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization, retryCutoff *metav1.Time) (rolloutv1alpha1.HealthStatus, string, error) {
 	// First, check the kustomization resource itself
-	kustomizationHealth, kustomizationMessage, err := r.checkKustomizationResourceHealth(ctx, kustomization)
+	kustomizationHealth, kustomizationMessage, err := r.checkKustomizationResourceHealth(ctx, kustomization, retryCutoff)
 	if err != nil {
 		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil
 	}
@@ -194,19 +204,28 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 			continue
 		}
 
-		// Categorize based on status
+		// Categorize based on status. A FailedStatus is reclassified to pending when
+		// all of the object's conditions transitioned before retryCutoff (stale failure).
 		switch result.Status {
 		case status.CurrentStatus:
 			// Resource is healthy
 		case status.InProgressStatus:
 			pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (%s)", objMetadata.Namespace, objMetadata.Name, result.Message))
 		case status.FailedStatus:
-			unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			if isStaleFailure(obj, retryCutoff) {
+				pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (stale pre-retry: %s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			} else {
+				unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			}
 		case status.TerminatingStatus:
 			pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (terminating)", objMetadata.Namespace, objMetadata.Name))
 		default:
-			// Unknown status, treat as unhealthy
-			unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s: %s)", objMetadata.Namespace, objMetadata.Name, result.Status, result.Message))
+			// Unknown status, treat as unhealthy (but still apply stale guard)
+			if isStaleFailure(obj, retryCutoff) {
+				pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (stale pre-retry: %s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			} else {
+				unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s: %s)", objMetadata.Namespace, objMetadata.Name, result.Status, result.Message))
+			}
 		}
 	}
 
@@ -232,7 +251,7 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 }
 
 // checkKustomizationResourceHealth checks the health of the kustomization resource itself using kstatus
-func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, error) {
+func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx context.Context, kustomization *kustomizev1.Kustomization, retryCutoff *metav1.Time) (rolloutv1alpha1.HealthStatus, string, error) {
 	// Convert the kustomization to unstructured for kstatus
 	obj := &unstructured.Unstructured{}
 	err := r.Scheme.Convert(kustomization, obj, nil)
@@ -254,20 +273,61 @@ func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx con
 		return kstatusMsg
 	}
 
-	// Map kstatus result to our health status
+	// Map kstatus result to our health status. Stale failures (all conditions older
+	// than retryCutoff) are reclassified to Pending since they reflect the pre-retry state.
 	switch result.Status {
 	case status.CurrentStatus:
 		return rolloutv1alpha1.HealthStatusHealthy, buildMessage(result.Message), nil
 	case status.InProgressStatus:
 		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil
 	case status.FailedStatus:
+		if isStaleFailure(obj, retryCutoff) {
+			return rolloutv1alpha1.HealthStatusPending, "stale pre-retry: " + buildMessage(result.Message), nil
+		}
 		return rolloutv1alpha1.HealthStatusUnhealthy, buildMessage(result.Message), nil
 	case status.TerminatingStatus:
 		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil
 	default:
-		// Unknown status, treat as unhealthy
+		if isStaleFailure(obj, retryCutoff) {
+			return rolloutv1alpha1.HealthStatusPending, "stale pre-retry: " + buildMessage(result.Message), nil
+		}
 		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unknown status: %s - %s", result.Status, buildMessage(result.Message)), nil
 	}
+}
+
+// isStaleFailure returns true when retryCutoff is non-nil and every condition on the
+// given object has a LastTransitionTime strictly older than retryCutoff. Intuition:
+// if nothing has transitioned since the retry was requested, any reported failure is
+// a leftover of the pre-retry state and downstream controllers haven't caught up yet.
+func isStaleFailure(obj *unstructured.Unstructured, retryCutoff *metav1.Time) bool {
+	if retryCutoff == nil {
+		return false
+	}
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found || len(conditions) == 0 {
+		// No conditions to evaluate — cannot prove stale, keep failure classification.
+		return false
+	}
+	for _, c := range conditions {
+		condMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tsStr, _, _ := unstructured.NestedString(condMap, "lastTransitionTime")
+		if tsStr == "" {
+			// Unknown transition time — be conservative and treat as fresh.
+			return false
+		}
+		ts, err := time.Parse(time.RFC3339, tsStr)
+		if err != nil {
+			return false
+		}
+		if !ts.Before(retryCutoff.Time) {
+			// At least one condition transitioned at or after the retry cutoff.
+			return false
+		}
+	}
+	return true
 }
 
 // updateHealthCheckStatus updates the HealthCheck status with proper timestamp handling

@@ -967,3 +967,160 @@ func stringPtr(s string) *string {
 func int32Ptr(i int32) *int32 {
 	return &i
 }
+
+var _ = Describe("KustomizationHealth stale-failure guard", func() {
+	ctx := context.Background()
+	var namespace string
+	var healthCheck *rolloutv1alpha1.HealthCheck
+	var kustomization *kustomizev1.Kustomization
+	var rollout *rolloutv1alpha1.Rollout
+	var reconciler *KustomizationHealthReconciler
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "stale-fail-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		kustomization = &kustomizev1.Kustomization{
+			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: namespace},
+			Spec: kustomizev1.KustomizationSpec{
+				Path:      "./",
+				SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "GitRepository", Name: "src"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "hc",
+				Namespace: namespace,
+				Annotations: map[string]string{
+					"healthcheck.kuberik.com/kustomization": "ks",
+				},
+			},
+			Spec: rolloutv1alpha1.HealthCheckSpec{Class: stringPtr("kustomization")},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+		rollout = &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
+			Spec:       rolloutv1alpha1.RolloutSpec{},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+		reconciler = &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  &RealClock{},
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	// seedUnhealthyDeployment creates a failing Deployment and registers it as the only
+	// entry in the Kustomization inventory. conditionTransitionAt controls the
+	// LastTransitionTime for its failure conditions — that's what the stale-failure
+	// guard checks against the retry cutoff.
+	seedUnhealthyDeployment := func(conditionTransitionAt time.Time) {
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: namespace},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(3),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "t"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "t"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		transition := metav1.NewTime(conditionTransitionAt)
+		deployment.Status = appsv1.DeploymentStatus{
+			Replicas:           3,
+			ReadyReplicas:      0,
+			ObservedGeneration: 1,
+			Conditions: []appsv1.DeploymentCondition{
+				{
+					Type:               appsv1.DeploymentProgressing,
+					Status:             corev1.ConditionFalse,
+					LastTransitionTime: transition,
+					LastUpdateTime:     transition,
+					Reason:             "ProgressDeadlineExceeded",
+					Message:            "stalled",
+				},
+				{
+					Type:               appsv1.DeploymentReplicaFailure,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: transition,
+					LastUpdateTime:     transition,
+					Reason:             "FailedCreate",
+					Message:            "cannot create pod",
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
+		objMeta := object.ObjMetadata{
+			Namespace: namespace,
+			Name:      "dep",
+			GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"},
+		}
+		kustomization.Status.Inventory = &kustomizev1.ResourceInventory{
+			Entries: []kustomizev1.ResourceRef{{ID: objMeta.String(), Version: "v1"}},
+		}
+		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
+	}
+
+	setRetryCutoff := func(retryAt time.Time) {
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rollout.Name, Namespace: namespace}, rollout)).To(Succeed())
+		ts := metav1.NewTime(retryAt)
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "v1"},
+			Timestamp:          metav1.NewTime(retryAt.Add(-10 * time.Minute)),
+			LastRetryTimestamp: &ts,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+	}
+
+	It("reclassifies a failed resource to pending when all conditions transitioned before retry", func() {
+		// Deployment conditions transitioned 20m ago, retry stamped 5m ago → stale.
+		seedUnhealthyDeployment(time.Now().Add(-20 * time.Minute))
+		setRetryCutoff(time.Now().Add(-5 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*updated.Status.Message).To(ContainSubstring("Pending resources"))
+	})
+
+	It("reports unhealthy when failure conditions are newer than retry cutoff", func() {
+		// Retry happened 20m ago, deployment just failed 1m ago → fresh failure.
+		seedUnhealthyDeployment(time.Now().Add(-1 * time.Minute))
+		setRetryCutoff(time.Now().Add(-20 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+	})
+
+	It("reports unhealthy when no retry has been recorded on matching rollout", func() {
+		// No history at all on rollout → no cutoff → any failure is fresh.
+		seedUnhealthyDeployment(time.Now().Add(-1 * time.Hour))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+	})
+})

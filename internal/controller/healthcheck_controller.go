@@ -110,23 +110,31 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 			continue
 		}
 
-		deploymentTime := latestDeployment.Timestamp.Time
+		// Reset cutoff is the later of the deployment time and the last retry
+		// timestamp. A retry should force a reset even though no new deployment
+		// occurred.
+		cutoff := latestDeployment.Timestamp.Time
+		cutoffReason := "deployment"
+		if latestDeployment.LastRetryTimestamp != nil && latestDeployment.LastRetryTimestamp.Time.After(cutoff) {
+			cutoff = latestDeployment.LastRetryTimestamp.Time
+			cutoffReason = "retry"
+		}
 
-		// Check if health check's last change or last error is older than deployment
+		// Check if health check's last change or last error is older than cutoff
 		shouldReset := false
 		var reason string
 
 		if healthCheck.Status.LastChangeTime != nil {
-			if healthCheck.Status.LastChangeTime.Time.Before(deploymentTime) {
+			if healthCheck.Status.LastChangeTime.Time.Before(cutoff) {
 				shouldReset = true
-				reason = "last change time is older than deployment"
+				reason = "last change time is older than " + cutoffReason
 			}
 		}
 
 		if healthCheck.Status.LastErrorTime != nil {
-			if healthCheck.Status.LastErrorTime.Time.Before(deploymentTime) {
+			if healthCheck.Status.LastErrorTime.Time.Before(cutoff) {
 				shouldReset = true
-				reason = "last error time is older than deployment"
+				reason = "last error time is older than " + cutoffReason
 			}
 		}
 
@@ -137,11 +145,12 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 		}
 
 		if shouldReset {
-			log.Info("Resetting health check due to deployment",
+			log.Info("Resetting health check",
 				"healthCheck", healthCheck.Name,
 				"rollout", rollout.Name,
 				"version", latestDeployment.Version.Tag,
-				"deploymentTime", deploymentTime,
+				"cutoff", cutoff,
+				"cutoffReason", cutoffReason,
 				"reason", reason,
 				"lastChangeTime", healthCheck.Status.LastChangeTime,
 				"lastErrorTime", healthCheck.Status.LastErrorTime)
@@ -217,51 +226,70 @@ func (r *HealthCheckReconciler) findHealthChecksForRollout(ctx context.Context, 
 
 // isHealthCheckForRollout determines if a health check is associated with a rollout
 func (r *HealthCheckReconciler) isHealthCheckForRollout(healthCheck *rolloutv1alpha1.HealthCheck, rollout *rolloutv1alpha1.Rollout) bool {
-	// If no health check selector is specified, use namespace-based matching (backward compatibility)
+	return healthCheckMatchesRollout(context.Background(), r.Client, healthCheck, rollout)
+}
+
+// healthCheckMatchesRollout determines if a health check is associated with a rollout.
+// It is shared across HealthCheckReconciler and KustomizationHealthReconciler so both
+// can find their matching Rollout (e.g. to read LastRetryTimestamp).
+func healthCheckMatchesRollout(ctx context.Context, c client.Reader, healthCheck *rolloutv1alpha1.HealthCheck, rollout *rolloutv1alpha1.Rollout) bool {
 	if rollout.Spec.HealthCheckSelector == nil {
 		return healthCheck.Namespace == rollout.Namespace
 	}
 
-	// Check namespace selector first
 	if rollout.Spec.HealthCheckSelector.NamespaceSelector != nil {
-		// Get the namespace of the health check
 		namespace := &corev1.Namespace{}
-		if err := r.Get(context.Background(), types.NamespacedName{Name: healthCheck.Namespace}, namespace); err != nil {
-			// If we can't get the namespace, fall back to same-namespace matching
+		if err := c.Get(ctx, types.NamespacedName{Name: healthCheck.Namespace}, namespace); err != nil {
 			return healthCheck.Namespace == rollout.Namespace
 		}
-
-		// Create selector from the namespace selector
 		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.NamespaceSelector)
 		if err != nil {
-			// If selector is invalid, fall back to same-namespace matching
 			return healthCheck.Namespace == rollout.Namespace
 		}
-
-		// Check if the namespace matches the selector
 		if !selector.Matches(labels.Set(namespace.Labels)) {
 			return false
 		}
-	} else {
-		// If no namespace selector is specified, only consider health checks in the same namespace
-		if healthCheck.Namespace != rollout.Namespace {
-			return false
-		}
+	} else if healthCheck.Namespace != rollout.Namespace {
+		return false
 	}
 
-	// Check health check selector
 	if rollout.Spec.HealthCheckSelector.Selector != nil {
-		// Create selector from the health check selector
 		selector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.Selector)
 		if err != nil {
-			// If selector is invalid, fall back to same-namespace matching
 			return healthCheck.Namespace == rollout.Namespace
 		}
-
-		// Check if the health check matches the selector
 		return selector.Matches(labels.Set(healthCheck.Labels))
 	}
 
-	// If no health check selector is specified, match all health checks in the selected namespace(s)
 	return true
+}
+
+// findLastRetryTimestampForHealthCheck returns the most recent LastRetryTimestamp
+// across all Rollouts whose HealthCheckSelector matches the given HealthCheck. It
+// returns nil if no matching rollout has a recorded retry. Callers use this as a
+// cutoff: failure conditions with LastTransitionTime older than the cutoff should
+// be treated as stale (pre-retry) and ignored.
+func findLastRetryTimestampForHealthCheck(ctx context.Context, c client.Reader, healthCheck *rolloutv1alpha1.HealthCheck) (*metav1.Time, error) {
+	rolloutList := &rolloutv1alpha1.RolloutList{}
+	if err := c.List(ctx, rolloutList); err != nil {
+		return nil, err
+	}
+	var latest *metav1.Time
+	for i := range rolloutList.Items {
+		rollout := &rolloutList.Items[i]
+		if !healthCheckMatchesRollout(ctx, c, healthCheck, rollout) {
+			continue
+		}
+		if len(rollout.Status.History) == 0 {
+			continue
+		}
+		ts := rollout.Status.History[0].LastRetryTimestamp
+		if ts == nil {
+			continue
+		}
+		if latest == nil || ts.Time.After(latest.Time) {
+			latest = ts
+		}
+	}
+	return latest, nil
 }
