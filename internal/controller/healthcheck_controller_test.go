@@ -251,13 +251,14 @@ var _ = Describe("HealthCheck Controller", func() {
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
 		})
 
-		It("should reset health checks when last error time is older than deployment", func() {
-			By("setting HealthCheck status with old error time")
+		It("should reset health checks when LastChangeTime is nil (no prior evaluation)", func() {
+			By("setting HealthCheck status with only LastErrorTime — no LastChangeTime")
 			oldErrorTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 			healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
 				Status:        rolloutv1alpha1.HealthStatusUnhealthy,
 				Message:       stringPtr("Something is wrong"),
 				LastErrorTime: &oldErrorTime,
+				// LastChangeTime intentionally nil
 			}
 			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -265,9 +266,7 @@ var _ = Describe("HealthCheck Controller", func() {
 			recentTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version: rolloutv1alpha1.VersionInfo{
-						Tag: "v1.0.0",
-					},
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "v1.0.0"},
 					Timestamp: recentTime,
 				},
 			}
@@ -293,9 +292,53 @@ var _ = Describe("HealthCheck Controller", func() {
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
+		})
+
+		It("should NOT reset when only LastErrorTime is old but LastChangeTime is recent", func() {
+			// LastErrorTime now carries actual condition timestamps — it can be old while the
+			// health check already reconciled successfully after the deployment. Only
+			// LastChangeTime drives the reset trigger.
+			By("setting HealthCheck with recent LastChangeTime and old LastErrorTime")
+			recentChangeTime := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+			oldErrorTime := metav1.NewTime(time.Now().Add(-3 * time.Hour))
+			healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+				Status:         rolloutv1alpha1.HealthStatusHealthy,
+				Message:        stringPtr("Recovered"),
+				LastChangeTime: &recentChangeTime,
+				LastErrorTime:  &oldErrorTime,
+			}
+			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+			By("adding deployment history older than LastChangeTime")
+			deployTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "v1.0.0"},
+					Timestamp: deployTime,
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("reconciling the health check")
+			controllerReconciler := &HealthCheckReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  &RealClock{},
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: healthCheckNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the health check was NOT reset")
+			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      healthCheck.Name,
+				Namespace: healthCheck.Namespace,
+			}, updatedHealthCheck)).To(Succeed())
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
 		})
 
 		It("should not reset health checks when timestamps are newer than deployment", func() {

@@ -120,7 +120,10 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 			cutoffReason = "retry"
 		}
 
-		// Check if health check's last change or last error is older than cutoff
+		// Reset if health check hasn't been re-evaluated since the cutoff.
+		// We only track LastChangeTime here — LastErrorTime now carries the actual
+		// failure condition timestamp (not "now"), so comparing it against the cutoff
+		// would loop: kustomizationhealth sets old timestamp → we reset → repeat.
 		shouldReset := false
 		var reason string
 
@@ -129,17 +132,7 @@ func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Co
 				shouldReset = true
 				reason = "last change time is older than " + cutoffReason
 			}
-		}
-
-		if healthCheck.Status.LastErrorTime != nil {
-			if healthCheck.Status.LastErrorTime.Time.Before(cutoff) {
-				shouldReset = true
-				reason = "last error time is older than " + cutoffReason
-			}
-		}
-
-		// If neither LastChangeTime nor LastErrorTime is set, also reset
-		if healthCheck.Status.LastChangeTime == nil && healthCheck.Status.LastErrorTime == nil {
+		} else {
 			shouldReset = true
 			reason = "no previous status timestamps"
 		}
@@ -264,32 +257,3 @@ func healthCheckMatchesRollout(ctx context.Context, c client.Reader, healthCheck
 	return true
 }
 
-// findLastRetryTimestampForHealthCheck returns the most recent LastRetryTimestamp
-// across all Rollouts whose HealthCheckSelector matches the given HealthCheck. It
-// returns nil if no matching rollout has a recorded retry. Callers use this as a
-// cutoff: failure conditions with LastTransitionTime older than the cutoff should
-// be treated as stale (pre-retry) and ignored.
-func findLastRetryTimestampForHealthCheck(ctx context.Context, c client.Reader, healthCheck *rolloutv1alpha1.HealthCheck) (*metav1.Time, error) {
-	rolloutList := &rolloutv1alpha1.RolloutList{}
-	if err := c.List(ctx, rolloutList); err != nil {
-		return nil, err
-	}
-	var latest *metav1.Time
-	for i := range rolloutList.Items {
-		rollout := &rolloutList.Items[i]
-		if !healthCheckMatchesRollout(ctx, c, healthCheck, rollout) {
-			continue
-		}
-		if len(rollout.Status.History) == 0 {
-			continue
-		}
-		ts := rollout.Status.History[0].LastRetryTimestamp
-		if ts == nil {
-			continue
-		}
-		if latest == nil || ts.Time.After(latest.Time) {
-			latest = ts
-		}
-	}
-	return latest, nil
-}

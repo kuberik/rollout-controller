@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1084,18 +1085,24 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 	}
 
-	It("reclassifies a failed resource to pending when all conditions transitioned before retry", func() {
-		// Deployment conditions transitioned 20m ago, retry stamped 5m ago → stale.
+	It("reports unhealthy with a pre-retry LastErrorTime when failure conditions predate the retry", func() {
+		// Deployment conditions transitioned 20m ago, retry stamped 5m ago.
+		// kustomizationhealth still reports Unhealthy — staleness is now handled by the
+		// rollout controller, which compares LastErrorTime against its retry cutoff.
+		retryAt := time.Now().Add(-5 * time.Minute)
 		seedUnhealthyDeployment(time.Now().Add(-20 * time.Minute))
-		setRetryCutoff(time.Now().Add(-5 * time.Minute))
+		setRetryCutoff(retryAt)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
 		Expect(err).NotTo(HaveOccurred())
 
 		updated := &rolloutv1alpha1.HealthCheck{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
-		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-		Expect(*updated.Status.Message).To(ContainSubstring("Pending resources"))
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+		// LastErrorTime must be older than the retry — the rollout controller uses this
+		// to determine the failure is pre-retry and should not fail the current attempt.
+		Expect(updated.Status.LastErrorTime.Time.Before(retryAt)).To(BeTrue())
 	})
 
 	It("reports unhealthy when failure conditions are newer than retry cutoff", func() {
@@ -1122,5 +1129,98 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 		updated := &rolloutv1alpha1.HealthCheck{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
 		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+	})
+})
+
+var _ = DescribeTable("isFailureCondition",
+	func(condType, condStatus string, expected bool) {
+		Expect(isFailureCondition(condType, condStatus)).To(Equal(expected))
+	},
+	// True = problem
+	Entry("Stalled=True", "Stalled", "True", true),
+	Entry("Stalled=False", "Stalled", "False", false),
+	Entry("ReplicaFailure=True", "ReplicaFailure", "True", true),
+	Entry("ReplicaFailure=False", "ReplicaFailure", "False", false),
+	Entry("Degraded=True", "Degraded", "True", true),
+	Entry("Degraded=False", "Degraded", "False", false),
+	Entry("Failed=True", "Failed", "True", true),
+	Entry("Failed=False", "Failed", "False", false),
+	// False = problem
+	Entry("Ready=False", "Ready", "False", true),
+	Entry("Ready=True", "Ready", "True", false),
+	Entry("Available=False", "Available", "False", true),
+	Entry("Available=True", "Available", "True", false),
+	Entry("Progressing=False", "Progressing", "False", true),
+	Entry("Progressing=True", "Progressing", "True", false),
+	Entry("Healthy=False", "Healthy", "False", true),
+	Entry("Healthy=True", "Healthy", "True", false),
+	Entry("Synced=False", "Synced", "False", true),
+	Entry("Synced=True", "Synced", "True", false),
+	// Unknown type
+	Entry("unknown type True", "SomeCondition", "True", false),
+	Entry("unknown type False", "SomeCondition", "False", false),
+)
+
+var _ = Describe("getFailureConditionTime", func() {
+	makeObj := func(conditions []map[string]interface{}) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
+		if conditions != nil {
+			raw := make([]interface{}, len(conditions))
+			for i, c := range conditions {
+				raw[i] = c
+			}
+			_ = unstructured.SetNestedSlice(obj.Object, raw, "status", "conditions")
+		}
+		return obj
+	}
+
+	It("returns nil when object has no conditions", func() {
+		Expect(getFailureConditionTime(makeObj(nil))).To(BeNil())
+	})
+
+	It("returns nil when all conditions are healthy", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Available", "status": "True", "lastTransitionTime": "2025-01-01T00:00:00Z"},
+			{"type": "Progressing", "status": "True", "lastTransitionTime": "2025-01-01T01:00:00Z"},
+		})
+		Expect(getFailureConditionTime(obj)).To(BeNil())
+	})
+
+	It("returns the timestamp of a single failure condition", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T12:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)))
+	})
+
+	It("returns the latest timestamp when multiple failure conditions exist", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+			{"type": "ReplicaFailure", "status": "True", "lastTransitionTime": "2025-06-01T11:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 11, 0, 0, 0, time.UTC)))
+	})
+
+	It("ignores healthy conditions when picking the latest", func() {
+		// Available=True transitions after the failure condition — must not override the result.
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Available", "status": "True", "lastTransitionTime": "2025-06-01T15:00:00Z"},
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)))
+	})
+
+	It("returns nil when failure condition has no lastTransitionTime", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False"},
+		})
+		Expect(getFailureConditionTime(obj)).To(BeNil())
 	})
 })

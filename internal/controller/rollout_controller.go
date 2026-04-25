@@ -1603,6 +1603,14 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	deployTime := currentEntry.Timestamp.Time
 
+	// errorCutoff is the later of the deployment time and any retry timestamp.
+	// Health check LastErrorTime values are now actual condition timestamps, so comparing
+	// against the retry time (not just deploy time) correctly ignores pre-retry failures.
+	errorCutoff := deployTime
+	if currentEntry.LastRetryTimestamp != nil && currentEntry.LastRetryTimestamp.Time.After(errorCutoff) {
+		errorCutoff = currentEntry.LastRetryTimestamp.Time
+	}
+
 	// Check health checks to determine if bake can start
 	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
 	if err != nil {
@@ -1652,14 +1660,15 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		}
 	}
 
-	// Check if any health check has reported an error after deployment time
-	// This check happens even during pending phase (before bake starts)
+	// Check if any health check has reported an error after the error cutoff.
+	// LastErrorTime carries the actual failure condition timestamp, so comparing against
+	// errorCutoff (max of deployTime and retryTime) naturally ignores pre-retry failures.
 	healthCheckError := false
 	if len(allHealthChecks) > 0 {
 		for _, hc := range allHealthChecks {
-			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
+			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(errorCutoff) {
 				healthCheckError = true
-				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deployTime", deployTime)
+				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "errorCutoff", errorCutoff)
 				break
 			}
 		}
@@ -1688,7 +1697,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
 			// Collect all failed health checks with their messages
-			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, deployTime)
+			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, errorCutoff)
 
 			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 				Type:               rolloutv1alpha1.RolloutReady,

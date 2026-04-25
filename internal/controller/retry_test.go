@@ -315,3 +315,142 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(second.After(first)).To(BeTrue())
 	})
 })
+
+var _ = Describe("Rollout errorCutoff with retry", func() {
+	// These tests verify that the rollout controller uses max(deployTime, retryTime) as
+	// the cutoff when checking health check LastErrorTime. Pre-retry failures must not
+	// cause the rollout to fail; post-retry failures must.
+	ctx := context.Background()
+	var namespace string
+	var rollout *rolloutv1alpha1.Rollout
+	var fakeClock *FakeClock
+	var reconciler *RolloutReconciler
+	var key types.NamespacedName
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "errcutoff-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		fakeClock = NewFakeClock()
+		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+
+		// Image policy required by the reconcile loop.
+		policy := &imagev1beta2.ImagePolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "ip", Namespace: namespace},
+			Spec: imagev1beta2.ImagePolicySpec{
+				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
+				Policy: imagev1beta2.ImagePolicyChoice{
+					SemVer: &imagev1beta2.SemVerPolicy{Range: ">=0.0.0"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+		policy.Status.LatestRef = &imagev1beta2.ImageRef{Tag: "1.0.0"}
+		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+
+		rollout = &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
+			Spec: rolloutv1alpha1.RolloutSpec{
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "ip"},
+				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"suite": "errcutoff"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+		key = types.NamespacedName{Name: rollout.Name, Namespace: namespace}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	seedDeployingWithRetry := func(retryAt time.Time) {
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		ts := metav1.NewTime(retryAt)
+		deploying := rolloutv1alpha1.BakeStatusDeploying
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			ID:                 k8sptr.To[int64](1),
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+			Timestamp:          metav1.NewTime(retryAt.Add(-10 * time.Minute)),
+			BakeStatus:         &deploying,
+			LastRetryTimestamp: &ts,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+	}
+
+	seedHealthCheck := func(errorAt time.Time) *rolloutv1alpha1.HealthCheck {
+		hc := &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "hc-",
+				Namespace:    namespace,
+				Labels:       map[string]string{"suite": "errcutoff"},
+			},
+			Spec: rolloutv1alpha1.HealthCheckSpec{},
+		}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		errTime := metav1.NewTime(errorAt)
+		hc.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:        rolloutv1alpha1.HealthStatusUnhealthy,
+			LastErrorTime: &errTime,
+		}
+		Expect(k8sClient.Status().Update(ctx, hc)).To(Succeed())
+		return hc
+	}
+
+	It("does not fail the rollout when LastErrorTime is older than the retry timestamp", func() {
+		retryAt := fakeClock.Now().Add(-5 * time.Minute)
+		seedDeployingWithRetry(retryAt)
+		// Error occurred BEFORE the retry — pre-retry failure, should be ignored.
+		seedHealthCheck(retryAt.Add(-3 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(*fetched.Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
+	})
+
+	It("fails the rollout when LastErrorTime is newer than the retry timestamp", func() {
+		retryAt := fakeClock.Now().Add(-5 * time.Minute)
+		seedDeployingWithRetry(retryAt)
+		// Error occurred AFTER the retry — fresh failure.
+		seedHealthCheck(retryAt.Add(2 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(*fetched.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+	})
+
+	It("uses deployTime when no retry timestamp is set", func() {
+		// No retry — errorCutoff should fall back to deployTime.
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		deployAt := fakeClock.Now().Add(-10 * time.Minute)
+		deploying := rolloutv1alpha1.BakeStatusDeploying
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			ID:         k8sptr.To[int64](1),
+			Version:    rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+			Timestamp:  metav1.NewTime(deployAt),
+			BakeStatus: &deploying,
+			// No LastRetryTimestamp
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+		// Error after deploy time → should fail.
+		seedHealthCheck(deployAt.Add(2 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(*fetched.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+	})
+})
