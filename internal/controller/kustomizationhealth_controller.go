@@ -142,7 +142,7 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 }
 
 // checkKustomizationHealth checks the health of the kustomization itself and all resources it manages.
-// Returns the health status, a human-readable message, the earliest failure condition timestamp
+// Returns the health status, a human-readable message, the latest failure condition timestamp
 // (used by the caller as LastErrorTime so the rollout controller can determine whether the failure
 // is pre- or post-retry), and any reconciliation error.
 func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
