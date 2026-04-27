@@ -1621,8 +1621,10 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	// Check deployTimeout - if bake hasn't started within deployTimeout, mark as failed
 	// But only if the previous entry was successful (or doesn't exist)
 	if rollout.Spec.DeployTimeout != nil && currentEntry.BakeStartTime == nil {
-		// Bake hasn't started yet - check if deployTimeout has been exceeded
-		if now.After(deployTime.Add(rollout.Spec.DeployTimeout.Duration)) {
+		// Bake hasn't started yet - check if deployTimeout has been exceeded.
+		// Use errorCutoff (max of deployTime and lastRetryTimestamp) so a retry
+		// gets a fresh timeout window instead of inheriting the original deadline.
+		if now.After(errorCutoff.Add(rollout.Spec.DeployTimeout.Duration)) {
 			// Only fail if previous entry was successful (or doesn't exist)
 			shouldFail := true
 			if len(rollout.Status.History) > 1 {
@@ -1639,8 +1641,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				currentEntry.BakeStatusMessage = k8sptr.To("Deploy timeout reached before bake could start (health checks did not become healthy in time).")
 				currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
-				// Collect unhealthy health checks that prevented bake from starting
-				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, deployTime)
+				// Collect unhealthy health checks that prevented bake from starting.
+				// errorCutoff excludes pre-retry stale failures from the record.
+				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff)
 
 				meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 					Type:               rolloutv1alpha1.RolloutReady,
@@ -1740,9 +1743,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				break
 			}
 
-			if hc.Status.LastChangeTime.Time.Before(deployTime) {
+			if hc.Status.LastChangeTime.Time.Before(errorCutoff) {
 				canStartBake = false
-				log.Info("HealthCheck LastChangeTime is not newer than deployment time", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "deployTime", deployTime)
+				log.Info("HealthCheck LastChangeTime is not newer than error cutoff", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "errorCutoff", errorCutoff)
 				break
 			}
 		}

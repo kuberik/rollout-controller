@@ -351,8 +351,14 @@ func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Cont
 
 	// Set LastErrorTime to the actual failure condition timestamp so the rollout controller
 	// can determine whether the failure is pre- or post-retry without involving this controller.
-	if newStatus == rolloutv1alpha1.HealthStatusUnhealthy && errorTime != nil {
-		healthCheck.Status.LastErrorTime = errorTime
+	// Fall back to now when the underlying object has no condition timestamp (e.g. no conditions
+	// set yet) so the rollout controller always has a valid timestamp to compare against.
+	if newStatus == rolloutv1alpha1.HealthStatusUnhealthy {
+		if errorTime != nil {
+			healthCheck.Status.LastErrorTime = errorTime
+		} else {
+			healthCheck.Status.LastErrorTime = &now
+		}
 	}
 
 	// Update the status
