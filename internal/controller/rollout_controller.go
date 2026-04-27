@@ -1893,14 +1893,16 @@ func (r *RolloutReconciler) now() time.Time {
 // It resets the most recent history entry from Failed back to Deploying, records
 // LastRetryTimestamp so downstream controllers (health checks, kruise step gates)
 // can distinguish stale from fresh failures, and clears the annotation.
+// The annotation value is opaque — domain-specific retry directives (e.g. skip
+// failed RolloutTests) live as separate annotations owned by their respective
+// controllers and keyed off LastRetryTimestamp.
 // No-op unless BakeStatus is Failed and the annotation is present — double-retry
 // attempts during an in-flight retry are therefore idempotent.
 func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
 	if rollout.Annotations == nil {
 		return nil
 	}
-	retryValue, hasAnnotation := rollout.Annotations[rolloutv1alpha1.RetryAnnotation]
-	if !hasAnnotation {
+	if _, hasAnnotation := rollout.Annotations[rolloutv1alpha1.RetryAnnotation]; !hasAnnotation {
 		return nil
 	}
 
@@ -1917,21 +1919,13 @@ func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *
 	current := &rollout.Status.History[0]
 	if current.BakeStatus == nil || *current.BakeStatus != rolloutv1alpha1.BakeStatusFailed {
 		log.Info("Retry annotation ignored; BakeStatus not Failed",
-			"bakeStatus", k8sptr.Deref(current.BakeStatus, ""),
-			"retryValue", retryValue)
+			"bakeStatus", k8sptr.Deref(current.BakeStatus, ""))
 		return clearAnnotation()
-	}
-
-	// Annotation value is the mode: "retry" (default) or "skip".
-	mode := rolloutv1alpha1.RetryModeRetry
-	if retryValue == rolloutv1alpha1.RetryModeSkip {
-		mode = rolloutv1alpha1.RetryModeSkip
 	}
 
 	now := metav1.Time{Time: r.now()}
 	deploying := rolloutv1alpha1.BakeStatusDeploying
 	current.LastRetryTimestamp = &now
-	current.LastRetryMode = mode
 	current.BakeStatus = &deploying
 	current.BakeStatusMessage = nil
 	current.BakeStartTime = nil
@@ -1948,11 +1942,10 @@ func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *
 
 	if r.Recorder != nil {
 		r.Recorder.Event(rollout, corev1.EventTypeNormal, "RetryRequested",
-			fmt.Sprintf("Retry requested (mode=%s); bake status reset at %s", mode, now.Format(time.RFC3339)))
+			fmt.Sprintf("Retry requested; bake status reset at %s", now.Format(time.RFC3339)))
 	}
 	log.Info("Processed retry annotation; bake status reset to Deploying",
-		"lastRetryTimestamp", now.Format(time.RFC3339),
-		"mode", mode)
+		"lastRetryTimestamp", now.Format(time.RFC3339))
 	return nil
 }
 

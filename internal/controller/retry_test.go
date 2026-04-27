@@ -106,9 +106,10 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 	}
 
-	It("resets failed bake status, records LastRetryTimestamp, removes annotation", func() {
+	It("resets failed bake status, records LastRetryTimestamp, removes annotation regardless of value", func() {
 		seedFailedHistory()
-		addRetryAnnotation("2026-04-22T10:00:00Z")
+		// Annotation value is opaque to this controller — any value triggers a retry.
+		addRetryAnnotation("anything-goes")
 
 		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
 
@@ -126,30 +127,6 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(entry.FailedHealthChecks).To(BeEmpty())
 		Expect(entry.LastRetryTimestamp).NotTo(BeNil())
 		Expect(entry.LastRetryTimestamp.Time).To(Equal(fakeClock.Now()))
-		// Unknown annotation value (timestamp) → default mode "retry".
-		Expect(entry.LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
-	})
-
-	It("records LastRetryMode=skip when annotation value is \"skip\"", func() {
-		seedFailedHistory()
-		addRetryAnnotation("skip")
-
-		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
-
-		fetched := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
-		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeSkip))
-	})
-
-	It("records LastRetryMode=retry when annotation value is \"retry\"", func() {
-		seedFailedHistory()
-		addRetryAnnotation("retry")
-
-		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
-
-		fetched := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
-		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
 	})
 
 	It("removes annotation but does not reset when BakeStatus is InProgress (double-retry guard)", func() {
