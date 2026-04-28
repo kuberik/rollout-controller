@@ -1224,3 +1224,73 @@ var _ = Describe("getFailureConditionTime", func() {
 		Expect(getFailureConditionTime(obj)).To(BeNil())
 	})
 })
+
+// These tests verify the nil-errorTime fallback in updateHealthCheckStatus.
+// When a managed resource is Unhealthy but has no condition timestamps
+// (getFailureConditionTime returns nil), LastErrorTime must be set to now
+// so the rollout controller's errorCutoff comparison sees a fresh failure.
+var _ = Describe("KustomizationHealth updateHealthCheckStatus nil errorTime", func() {
+	ctx := context.Background()
+	var namespace string
+	var healthCheck *rolloutv1alpha1.HealthCheck
+	var fakeClock *FakeClock
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "khnil-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: "nil-errtime-hc", Namespace: namespace},
+			Spec:       rolloutv1alpha1.HealthCheckSpec{},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+		fakeClock = NewFakeClock()
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	It("sets LastErrorTime to now when unhealthy but errorTime is nil", func() {
+		reconciler := &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  fakeClock,
+		}
+
+		By("calling updateHealthCheckStatus with nil errorTime")
+		msg := "no condition timestamps available"
+		_, err := reconciler.updateHealthCheckStatus(ctx, healthCheck,
+			rolloutv1alpha1.HealthStatusUnhealthy, msg, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying LastErrorTime is set to the clock's current time")
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil(),
+			"LastErrorTime must be set even when the underlying resource has no condition timestamps")
+		Expect(updated.Status.LastErrorTime.Time).To(Equal(fakeClock.Now()),
+			"LastErrorTime must be stamped with the controller clock's current time")
+	})
+
+	It("uses the provided errorTime when it is non-nil", func() {
+		reconciler := &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  fakeClock,
+		}
+
+		conditionTime := metav1.NewTime(fakeClock.Now().Add(-3 * time.Minute))
+		_, err := reconciler.updateHealthCheckStatus(ctx, healthCheck,
+			rolloutv1alpha1.HealthStatusUnhealthy, "deployment progressing deadline exceeded", &conditionTime)
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+		Expect(updated.Status.LastErrorTime.Time).To(Equal(conditionTime.Time),
+			"when errorTime is provided it must be used verbatim — not overridden by now")
+	})
+})
