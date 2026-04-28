@@ -113,6 +113,10 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	if err := r.handleRetryAnnotation(ctx, &rollout, log); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	err := r.updateAvailableReleases(ctx, &rollout, log)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -1599,6 +1603,14 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 	deployTime := currentEntry.Timestamp.Time
 
+	// errorCutoff is the later of the deployment time and any retry timestamp.
+	// Health check LastErrorTime values are now actual condition timestamps, so comparing
+	// against the retry time (not just deploy time) correctly ignores pre-retry failures.
+	errorCutoff := deployTime
+	if currentEntry.LastRetryTimestamp != nil && currentEntry.LastRetryTimestamp.Time.After(errorCutoff) {
+		errorCutoff = currentEntry.LastRetryTimestamp.Time
+	}
+
 	// Check health checks to determine if bake can start
 	allHealthChecks, err := r.listHealthChecks(ctx, namespace, rollout)
 	if err != nil {
@@ -1609,8 +1621,10 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	// Check deployTimeout - if bake hasn't started within deployTimeout, mark as failed
 	// But only if the previous entry was successful (or doesn't exist)
 	if rollout.Spec.DeployTimeout != nil && currentEntry.BakeStartTime == nil {
-		// Bake hasn't started yet - check if deployTimeout has been exceeded
-		if now.After(deployTime.Add(rollout.Spec.DeployTimeout.Duration)) {
+		// Bake hasn't started yet - check if deployTimeout has been exceeded.
+		// Use errorCutoff (max of deployTime and lastRetryTimestamp) so a retry
+		// gets a fresh timeout window instead of inheriting the original deadline.
+		if now.After(errorCutoff.Add(rollout.Spec.DeployTimeout.Duration)) {
 			// Only fail if previous entry was successful (or doesn't exist)
 			shouldFail := true
 			if len(rollout.Status.History) > 1 {
@@ -1627,8 +1641,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				currentEntry.BakeStatusMessage = k8sptr.To("Deploy timeout reached before bake could start (health checks did not become healthy in time).")
 				currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
-				// Collect unhealthy health checks that prevented bake from starting
-				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, deployTime)
+				// Collect unhealthy health checks that prevented bake from starting.
+				// errorCutoff excludes pre-retry stale failures from the record.
+				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff)
 
 				meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 					Type:               rolloutv1alpha1.RolloutReady,
@@ -1648,14 +1663,15 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		}
 	}
 
-	// Check if any health check has reported an error after deployment time
-	// This check happens even during pending phase (before bake starts)
+	// Check if any health check has reported an error after the error cutoff.
+	// LastErrorTime carries the actual failure condition timestamp, so comparing against
+	// errorCutoff (max of deployTime and retryTime) naturally ignores pre-retry failures.
 	healthCheckError := false
 	if len(allHealthChecks) > 0 {
 		for _, hc := range allHealthChecks {
-			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
+			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(errorCutoff) {
 				healthCheckError = true
-				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "deployTime", deployTime)
+				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "errorCutoff", errorCutoff)
 				break
 			}
 		}
@@ -1684,7 +1700,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
 			// Collect all failed health checks with their messages
-			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, deployTime)
+			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, errorCutoff)
 
 			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 				Type:               rolloutv1alpha1.RolloutReady,
@@ -1727,9 +1743,9 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				break
 			}
 
-			if hc.Status.LastChangeTime.Time.Before(deployTime) {
+			if hc.Status.LastChangeTime.Time.Before(errorCutoff) {
 				canStartBake = false
-				log.Info("HealthCheck LastChangeTime is not newer than deployment time", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "deployTime", deployTime)
+				log.Info("HealthCheck LastChangeTime is not newer than error cutoff", "name", hc.Name, "namespace", hc.Namespace, "lastChangeTime", hc.Status.LastChangeTime.Time, "errorCutoff", errorCutoff)
 				break
 			}
 		}
@@ -1874,6 +1890,66 @@ func (r *RolloutReconciler) now() time.Time {
 		return r.Clock.Now()
 	}
 	return time.Now()
+}
+
+// handleRetryAnnotation processes the rollout.kuberik.com/retry annotation.
+// It resets the most recent history entry from Failed back to Deploying, records
+// LastRetryTimestamp so downstream controllers (health checks, kruise step gates)
+// can distinguish stale from fresh failures, and clears the annotation.
+// The annotation value is opaque — domain-specific retry directives (e.g. skip
+// failed RolloutTests) live as separate annotations owned by their respective
+// controllers and keyed off LastRetryTimestamp.
+// No-op unless BakeStatus is Failed and the annotation is present — double-retry
+// attempts during an in-flight retry are therefore idempotent.
+func (r *RolloutReconciler) handleRetryAnnotation(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
+	if rollout.Annotations == nil {
+		return nil
+	}
+	if _, hasAnnotation := rollout.Annotations[rolloutv1alpha1.RetryAnnotation]; !hasAnnotation {
+		return nil
+	}
+
+	clearAnnotation := func() error {
+		patchBase := rollout.DeepCopy()
+		delete(rollout.Annotations, rolloutv1alpha1.RetryAnnotation)
+		return r.Client.Patch(ctx, rollout, client.MergeFrom(patchBase))
+	}
+
+	if len(rollout.Status.History) == 0 {
+		return clearAnnotation()
+	}
+
+	current := &rollout.Status.History[0]
+	if current.BakeStatus == nil || *current.BakeStatus != rolloutv1alpha1.BakeStatusFailed {
+		log.Info("Retry annotation ignored; BakeStatus not Failed",
+			"bakeStatus", k8sptr.Deref(current.BakeStatus, ""))
+		return clearAnnotation()
+	}
+
+	now := metav1.Time{Time: r.now()}
+	deploying := rolloutv1alpha1.BakeStatusDeploying
+	current.LastRetryTimestamp = &now
+	current.BakeStatus = &deploying
+	current.BakeStatusMessage = nil
+	current.BakeStartTime = nil
+	current.BakeEndTime = nil
+	current.FailedHealthChecks = nil
+
+	if err := r.Client.Status().Update(ctx, rollout); err != nil {
+		return fmt.Errorf("failed to reset bake status for retry: %w", err)
+	}
+
+	if err := clearAnnotation(); err != nil {
+		return fmt.Errorf("failed to clear retry annotation: %w", err)
+	}
+
+	if r.Recorder != nil {
+		r.Recorder.Event(rollout, corev1.EventTypeNormal, "RetryRequested",
+			fmt.Sprintf("Retry requested; bake status reset at %s", now.Format(time.RFC3339)))
+	}
+	log.Info("Processed retry annotation; bake status reset to Deploying",
+		"lastRetryTimestamp", now.Format(time.RFC3339))
+	return nil
 }
 
 // hasBakeTimeConfiguration checks if the rollout has any bake time related configuration

@@ -458,6 +458,14 @@ spec:
                         this history entry.
                       format: int64
                       type: integer
+                    lastRetryTimestamp:
+                      description: |-
+                        LastRetryTimestamp is the time when a retry was most recently requested for this deployment.
+                        When set, downstream controllers (health checks, kruise rollout step gates) use this as a
+                        cutoff: stale failure conditions with LastTransitionTime older than LastRetryTimestamp are
+                        ignored as they reflect the pre-retry state.
+                      format: date-time
+                      type: string
                     message:
                       description: |-
                         Message provides a descriptive message about this deployment entry

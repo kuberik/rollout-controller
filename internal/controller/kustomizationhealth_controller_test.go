@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -967,3 +968,329 @@ func stringPtr(s string) *string {
 func int32Ptr(i int32) *int32 {
 	return &i
 }
+
+var _ = Describe("KustomizationHealth stale-failure guard", func() {
+	ctx := context.Background()
+	var namespace string
+	var healthCheck *rolloutv1alpha1.HealthCheck
+	var kustomization *kustomizev1.Kustomization
+	var rollout *rolloutv1alpha1.Rollout
+	var reconciler *KustomizationHealthReconciler
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "stale-fail-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		kustomization = &kustomizev1.Kustomization{
+			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: namespace},
+			Spec: kustomizev1.KustomizationSpec{
+				Path:      "./",
+				SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "GitRepository", Name: "src"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "hc",
+				Namespace: namespace,
+				Annotations: map[string]string{
+					"healthcheck.kuberik.com/kustomization": "ks",
+				},
+			},
+			Spec: rolloutv1alpha1.HealthCheckSpec{Class: stringPtr("kustomization")},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+		rollout = &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
+			Spec:       rolloutv1alpha1.RolloutSpec{},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+		reconciler = &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  &RealClock{},
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	// seedUnhealthyDeployment creates a failing Deployment and registers it as the only
+	// entry in the Kustomization inventory. conditionTransitionAt controls the
+	// LastTransitionTime for its failure conditions — that's what the stale-failure
+	// guard checks against the retry cutoff.
+	seedUnhealthyDeployment := func(conditionTransitionAt time.Time) {
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: namespace},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(3),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "t"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "t"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+		transition := metav1.NewTime(conditionTransitionAt)
+		deployment.Status = appsv1.DeploymentStatus{
+			Replicas:           3,
+			ReadyReplicas:      0,
+			ObservedGeneration: 1,
+			Conditions: []appsv1.DeploymentCondition{
+				{
+					Type:               appsv1.DeploymentProgressing,
+					Status:             corev1.ConditionFalse,
+					LastTransitionTime: transition,
+					LastUpdateTime:     transition,
+					Reason:             "ProgressDeadlineExceeded",
+					Message:            "stalled",
+				},
+				{
+					Type:               appsv1.DeploymentReplicaFailure,
+					Status:             corev1.ConditionTrue,
+					LastTransitionTime: transition,
+					LastUpdateTime:     transition,
+					Reason:             "FailedCreate",
+					Message:            "cannot create pod",
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
+		objMeta := object.ObjMetadata{
+			Namespace: namespace,
+			Name:      "dep",
+			GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"},
+		}
+		kustomization.Status.Inventory = &kustomizev1.ResourceInventory{
+			Entries: []kustomizev1.ResourceRef{{ID: objMeta.String(), Version: "v1"}},
+		}
+		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
+	}
+
+	setRetryCutoff := func(retryAt time.Time) {
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rollout.Name, Namespace: namespace}, rollout)).To(Succeed())
+		ts := metav1.NewTime(retryAt)
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "v1"},
+			Timestamp:          metav1.NewTime(retryAt.Add(-10 * time.Minute)),
+			LastRetryTimestamp: &ts,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+	}
+
+	It("reports unhealthy with a pre-retry LastErrorTime when failure conditions predate the retry", func() {
+		// Deployment conditions transitioned 20m ago, retry stamped 5m ago.
+		// kustomizationhealth still reports Unhealthy — staleness is now handled by the
+		// rollout controller, which compares LastErrorTime against its retry cutoff.
+		retryAt := time.Now().Add(-5 * time.Minute)
+		seedUnhealthyDeployment(time.Now().Add(-20 * time.Minute))
+		setRetryCutoff(retryAt)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+		// LastErrorTime must be older than the retry — the rollout controller uses this
+		// to determine the failure is pre-retry and should not fail the current attempt.
+		Expect(updated.Status.LastErrorTime.Time.Before(retryAt)).To(BeTrue())
+	})
+
+	It("reports unhealthy when failure conditions are newer than retry cutoff", func() {
+		// Retry happened 20m ago, deployment just failed 1m ago → fresh failure.
+		seedUnhealthyDeployment(time.Now().Add(-1 * time.Minute))
+		setRetryCutoff(time.Now().Add(-20 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+	})
+
+	It("reports unhealthy when no retry has been recorded on matching rollout", func() {
+		// No history at all on rollout → no cutoff → any failure is fresh.
+		seedUnhealthyDeployment(time.Now().Add(-1 * time.Hour))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+	})
+})
+
+var _ = DescribeTable("isFailureCondition",
+	func(condType, condStatus string, expected bool) {
+		Expect(isFailureCondition(condType, condStatus)).To(Equal(expected))
+	},
+	// True = problem
+	Entry("Stalled=True", "Stalled", "True", true),
+	Entry("Stalled=False", "Stalled", "False", false),
+	Entry("ReplicaFailure=True", "ReplicaFailure", "True", true),
+	Entry("ReplicaFailure=False", "ReplicaFailure", "False", false),
+	Entry("Degraded=True", "Degraded", "True", true),
+	Entry("Degraded=False", "Degraded", "False", false),
+	Entry("Failed=True", "Failed", "True", true),
+	Entry("Failed=False", "Failed", "False", false),
+	// False = problem
+	Entry("Ready=False", "Ready", "False", true),
+	Entry("Ready=True", "Ready", "True", false),
+	Entry("Available=False", "Available", "False", true),
+	Entry("Available=True", "Available", "True", false),
+	Entry("Progressing=False", "Progressing", "False", true),
+	Entry("Progressing=True", "Progressing", "True", false),
+	Entry("Healthy=False", "Healthy", "False", true),
+	Entry("Healthy=True", "Healthy", "True", false),
+	Entry("Synced=False", "Synced", "False", true),
+	Entry("Synced=True", "Synced", "True", false),
+	// Unknown type
+	Entry("unknown type True", "SomeCondition", "True", false),
+	Entry("unknown type False", "SomeCondition", "False", false),
+)
+
+var _ = Describe("getFailureConditionTime", func() {
+	makeObj := func(conditions []map[string]interface{}) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
+		if conditions != nil {
+			raw := make([]interface{}, len(conditions))
+			for i, c := range conditions {
+				raw[i] = c
+			}
+			_ = unstructured.SetNestedSlice(obj.Object, raw, "status", "conditions")
+		}
+		return obj
+	}
+
+	It("returns nil when object has no conditions", func() {
+		Expect(getFailureConditionTime(makeObj(nil))).To(BeNil())
+	})
+
+	It("returns nil when all conditions are healthy", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Available", "status": "True", "lastTransitionTime": "2025-01-01T00:00:00Z"},
+			{"type": "Progressing", "status": "True", "lastTransitionTime": "2025-01-01T01:00:00Z"},
+		})
+		Expect(getFailureConditionTime(obj)).To(BeNil())
+	})
+
+	It("returns the timestamp of a single failure condition", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T12:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)))
+	})
+
+	It("returns the latest timestamp when multiple failure conditions exist", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+			{"type": "ReplicaFailure", "status": "True", "lastTransitionTime": "2025-06-01T11:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 11, 0, 0, 0, time.UTC)))
+	})
+
+	It("ignores healthy conditions when picking the latest", func() {
+		// Available=True transitions after the failure condition — must not override the result.
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Available", "status": "True", "lastTransitionTime": "2025-06-01T15:00:00Z"},
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)))
+	})
+
+	It("returns nil when failure condition has no lastTransitionTime", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Progressing", "status": "False"},
+		})
+		Expect(getFailureConditionTime(obj)).To(BeNil())
+	})
+})
+
+// These tests verify the nil-errorTime fallback in updateHealthCheckStatus.
+// When a managed resource is Unhealthy but has no condition timestamps
+// (getFailureConditionTime returns nil), LastErrorTime must be set to now
+// so the rollout controller's errorCutoff comparison sees a fresh failure.
+var _ = Describe("KustomizationHealth updateHealthCheckStatus nil errorTime", func() {
+	ctx := context.Background()
+	var namespace string
+	var healthCheck *rolloutv1alpha1.HealthCheck
+	var fakeClock *FakeClock
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "khnil-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: "nil-errtime-hc", Namespace: namespace},
+			Spec:       rolloutv1alpha1.HealthCheckSpec{},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+		fakeClock = NewFakeClock()
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	It("sets LastErrorTime to now when unhealthy but errorTime is nil", func() {
+		reconciler := &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  fakeClock,
+		}
+
+		By("calling updateHealthCheckStatus with nil errorTime")
+		msg := "no condition timestamps available"
+		_, err := reconciler.updateHealthCheckStatus(ctx, healthCheck,
+			rolloutv1alpha1.HealthStatusUnhealthy, msg, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying LastErrorTime is set to the clock's current time")
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil(),
+			"LastErrorTime must be set even when the underlying resource has no condition timestamps")
+		Expect(updated.Status.LastErrorTime.Time).To(Equal(fakeClock.Now()),
+			"LastErrorTime must be stamped with the controller clock's current time")
+	})
+
+	It("uses the provided errorTime when it is non-nil", func() {
+		reconciler := &KustomizationHealthReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  fakeClock,
+		}
+
+		conditionTime := metav1.NewTime(fakeClock.Now().Add(-3 * time.Minute))
+		_, err := reconciler.updateHealthCheckStatus(ctx, healthCheck,
+			rolloutv1alpha1.HealthStatusUnhealthy, "deployment progressing deadline exceeded", &conditionTime)
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+		Expect(updated.Status.LastErrorTime.Time).To(Equal(conditionTime.Time),
+			"when errorTime is provided it must be used verbatim — not overridden by now")
+	})
+})

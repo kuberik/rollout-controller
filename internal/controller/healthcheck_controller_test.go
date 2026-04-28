@@ -251,13 +251,14 @@ var _ = Describe("HealthCheck Controller", func() {
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
 		})
 
-		It("should reset health checks when last error time is older than deployment", func() {
-			By("setting HealthCheck status with old error time")
+		It("should reset health checks when LastChangeTime is nil (no prior evaluation)", func() {
+			By("setting HealthCheck status with only LastErrorTime — no LastChangeTime")
 			oldErrorTime := metav1.NewTime(time.Now().Add(-2 * time.Hour))
 			healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
 				Status:        rolloutv1alpha1.HealthStatusUnhealthy,
 				Message:       stringPtr("Something is wrong"),
 				LastErrorTime: &oldErrorTime,
+				// LastChangeTime intentionally nil
 			}
 			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
@@ -265,9 +266,7 @@ var _ = Describe("HealthCheck Controller", func() {
 			recentTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version: rolloutv1alpha1.VersionInfo{
-						Tag: "v1.0.0",
-					},
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "v1.0.0"},
 					Timestamp: recentTime,
 				},
 			}
@@ -293,9 +292,53 @@ var _ = Describe("HealthCheck Controller", func() {
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("reset due to new deployment"))
 			Expect(updatedHealthCheck.Status.LastChangeTime).NotTo(BeNil())
+		})
+
+		It("should NOT reset when only LastErrorTime is old but LastChangeTime is recent", func() {
+			// LastErrorTime now carries actual condition timestamps — it can be old while the
+			// health check already reconciled successfully after the deployment. Only
+			// LastChangeTime drives the reset trigger.
+			By("setting HealthCheck with recent LastChangeTime and old LastErrorTime")
+			recentChangeTime := metav1.NewTime(time.Now().Add(-30 * time.Minute))
+			oldErrorTime := metav1.NewTime(time.Now().Add(-3 * time.Hour))
+			healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+				Status:         rolloutv1alpha1.HealthStatusHealthy,
+				Message:        stringPtr("Recovered"),
+				LastChangeTime: &recentChangeTime,
+				LastErrorTime:  &oldErrorTime,
+			}
+			Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+			By("adding deployment history older than LastChangeTime")
+			deployTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{
+					Version:   rolloutv1alpha1.VersionInfo{Tag: "v1.0.0"},
+					Timestamp: deployTime,
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+			By("reconciling the health check")
+			controllerReconciler := &HealthCheckReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  &RealClock{},
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: healthCheckNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the health check was NOT reset")
+			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      healthCheck.Name,
+				Namespace: healthCheck.Namespace,
+			}, updatedHealthCheck)).To(Succeed())
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
 		})
 
 		It("should not reset health checks when timestamps are newer than deployment", func() {
@@ -646,5 +689,128 @@ var _ = Describe("HealthCheck Controller", func() {
 			// Health check in current namespace should not be associated (no matching namespace label)
 			Expect(controllerReconciler.isHealthCheckForRollout(healthCheck, rolloutWithNamespaceSelector)).To(BeFalse())
 		})
+	})
+})
+
+var _ = Describe("HealthCheck retry reset", func() {
+	ctx := context.Background()
+	var namespace string
+	var healthCheck *rolloutv1alpha1.HealthCheck
+	var rollout *rolloutv1alpha1.Rollout
+	var reconciler *HealthCheckReconciler
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "retry-hc-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: namespace},
+			Spec:       rolloutv1alpha1.HealthCheckSpec{Class: stringPtr("kustomization")},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+
+		rollout = &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
+			Spec:       rolloutv1alpha1.RolloutSpec{},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+		reconciler = &HealthCheckReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  &RealClock{},
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	setHistory := func(deployAt, retryAt *time.Time) {
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rollout.Name, Namespace: namespace}, rollout)).To(Succeed())
+		entry := rolloutv1alpha1.DeploymentHistoryEntry{
+			Version: rolloutv1alpha1.VersionInfo{Tag: "v1.0.0"},
+		}
+		if deployAt != nil {
+			entry.Timestamp = metav1.NewTime(*deployAt)
+		}
+		if retryAt != nil {
+			ts := metav1.NewTime(*retryAt)
+			entry.LastRetryTimestamp = &ts
+		}
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{entry}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+	}
+
+	It("resets health check when LastErrorTime is before LastRetryTimestamp", func() {
+		deployAt := time.Now().Add(-3 * time.Hour)
+		errAt := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+		retryAt := time.Now().Add(-30 * time.Minute)
+
+		// Seed HealthCheck with an error that is AFTER the deployment but BEFORE the retry.
+		healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusUnhealthy,
+			Message:        stringPtr("stale failure"),
+			LastChangeTime: &errAt,
+			LastErrorTime:  &errAt,
+		}
+		Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+		setHistory(&deployAt, &retryAt)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(updated.Status.LastErrorTime).To(BeNil())
+	})
+
+	It("does not reset when LastErrorTime is after LastRetryTimestamp", func() {
+		deployAt := time.Now().Add(-3 * time.Hour)
+		retryAt := time.Now().Add(-30 * time.Minute)
+		errAt := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+
+		healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusUnhealthy,
+			Message:        stringPtr("fresh failure"),
+			LastChangeTime: &errAt,
+			LastErrorTime:  &errAt,
+		}
+		Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+		setHistory(&deployAt, &retryAt)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(updated.Status.LastErrorTime).NotTo(BeNil())
+	})
+
+	It("uses retry timestamp as cutoff even when deployment is older", func() {
+		// Scenario: deployment long ago, HealthCheck error recorded AFTER deployment,
+		// user then requests retry → LastRetryTimestamp becomes the effective cutoff.
+		deployAt := time.Now().Add(-5 * time.Hour)
+		errAt := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+		retryAt := time.Now().Add(-10 * time.Minute)
+
+		healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusUnhealthy,
+			Message:        stringPtr("post-deploy but pre-retry"),
+			LastChangeTime: &errAt,
+			LastErrorTime:  &errAt,
+		}
+		Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+		setHistory(&deployAt, &retryAt)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 	})
 })
