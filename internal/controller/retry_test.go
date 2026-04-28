@@ -106,9 +106,10 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 	}
 
-	It("resets failed bake status, records LastRetryTimestamp, removes annotation", func() {
+	It("resets failed bake status, records LastRetryTimestamp, removes annotation regardless of value", func() {
 		seedFailedHistory()
-		addRetryAnnotation("2026-04-22T10:00:00Z")
+		// Annotation value is opaque to this controller — any value triggers a retry.
+		addRetryAnnotation("anything-goes")
 
 		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
 
@@ -126,30 +127,6 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(entry.FailedHealthChecks).To(BeEmpty())
 		Expect(entry.LastRetryTimestamp).NotTo(BeNil())
 		Expect(entry.LastRetryTimestamp.Time).To(Equal(fakeClock.Now()))
-		// Unknown annotation value (timestamp) → default mode "retry".
-		Expect(entry.LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
-	})
-
-	It("records LastRetryMode=skip when annotation value is \"skip\"", func() {
-		seedFailedHistory()
-		addRetryAnnotation("skip")
-
-		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
-
-		fetched := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
-		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeSkip))
-	})
-
-	It("records LastRetryMode=retry when annotation value is \"retry\"", func() {
-		seedFailedHistory()
-		addRetryAnnotation("retry")
-
-		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
-
-		fetched := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
-		Expect(fetched.Status.History[0].LastRetryMode).To(Equal(rolloutv1alpha1.RetryModeRetry))
 	})
 
 	It("removes annotation but does not reset when BakeStatus is InProgress (double-retry guard)", func() {
@@ -452,5 +429,144 @@ var _ = Describe("Rollout errorCutoff with retry", func() {
 		fetched := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
 		Expect(*fetched.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+	})
+
+	It("deploy-timeout deadline measured from retry time, not original deploy time", func() {
+		// Deployed 15 min ago, retried 2 min ago, DeployTimeout = 10 min.
+		// errorCutoff = retryTime (2 min ago).  Deadline = retryTime + 10 min = now + 8 min.
+		// now.After(now + 8 min) = false → timeout must NOT fire.
+		// Without the fix (using deployTime): deadline = deployTime + 10 min = now - 5 min.
+		// now.After(now - 5 min) = true → rollout would be immediately marked Failed.
+		retryAt := fakeClock.Now().Add(-2 * time.Minute)
+		deployAt := fakeClock.Now().Add(-15 * time.Minute)
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		retryTs := metav1.NewTime(retryAt)
+		deploying := rolloutv1alpha1.BakeStatusDeploying
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			ID:                 k8sptr.To[int64](1),
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+			Timestamp:          metav1.NewTime(deployAt),
+			BakeStatus:         &deploying,
+			LastRetryTimestamp: &retryTs,
+			// BakeStartTime nil → deploy-timeout check is active
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+		// Patch DeployTimeout = 10 min onto the rollout spec.
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		rollout.Spec.DeployTimeout = &metav1.Duration{Duration: 10 * time.Minute}
+		Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+		// Seed an unhealthy health check so bake cannot start.
+		seedHealthCheck(retryAt.Add(-5 * time.Minute))
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(*fetched.Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed),
+			"deploy-timeout must be measured from errorCutoff (retry time), not original deploy time")
+	})
+
+	It("canStartBake requires LastChangeTime after retry time, not just deploy time", func() {
+		// Deploy 15 min ago, retry 5 min ago.
+		// Health check LastChangeTime = 7 min ago — AFTER deployTime but BEFORE retryTime.
+		// With errorCutoff: LastChangeTime.Before(now-5m) = true → canStartBake = false → bake blocked.
+		// Without fix (using deployTime): LastChangeTime.Before(now-15m) = false → bake would start.
+		retryAt := fakeClock.Now().Add(-5 * time.Minute)
+		deployAt := fakeClock.Now().Add(-15 * time.Minute)
+
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		retryTs := metav1.NewTime(retryAt)
+		deploying := rolloutv1alpha1.BakeStatusDeploying
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			ID:                 k8sptr.To[int64](1),
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+			Timestamp:          metav1.NewTime(deployAt),
+			BakeStatus:         &deploying,
+			LastRetryTimestamp: &retryTs,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+		// Healthy health check, but LastChangeTime is between deployTime and retryTime.
+		hc := &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "hc-",
+				Namespace:    namespace,
+				Labels:       map[string]string{"suite": "errcutoff"},
+			},
+			Spec: rolloutv1alpha1.HealthCheckSpec{},
+		}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		changeTime := metav1.NewTime(fakeClock.Now().Add(-7 * time.Minute))
+		hc.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusHealthy,
+			LastChangeTime: &changeTime,
+		}
+		Expect(k8sClient.Status().Update(ctx, hc)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(fetched.Status.History[0].BakeStartTime).To(BeNil(),
+			"bake must not start when health check LastChangeTime is before the retry time")
+	})
+
+	It("FailedHealthChecks excludes health checks whose LastChangeTime predates the retry", func() {
+		// Deploy 15 min ago, retry 2 min ago, DeployTimeout = 30s (fires immediately since
+		// now > retryTime + 30s). Health check is Healthy but LastChangeTime = 7 min ago
+		// (before retryTime). With errorCutoff the record must include this health check
+		// as stale-relative-to-retry; without the fix (using deployTime) it would be
+		// excluded because LastChangeTime > deployTime looks "fresh enough".
+		retryAt := fakeClock.Now().Add(-2 * time.Minute)
+		deployAt := fakeClock.Now().Add(-15 * time.Minute)
+
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		retryTs := metav1.NewTime(retryAt)
+		deploying := rolloutv1alpha1.BakeStatusDeploying
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			ID:                 k8sptr.To[int64](1),
+			Version:            rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+			Timestamp:          metav1.NewTime(deployAt),
+			BakeStatus:         &deploying,
+			LastRetryTimestamp: &retryTs,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+		// DeployTimeout = 30s → deadline = retryTime + 30s = now - 90s → fires.
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		rollout.Spec.DeployTimeout = &metav1.Duration{Duration: 30 * time.Second}
+		Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+		// Healthy health check whose LastChangeTime is between deployTime and retryTime.
+		hc := &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "stale-hc",
+				Namespace: namespace,
+				Labels:    map[string]string{"suite": "errcutoff"},
+			},
+			Spec: rolloutv1alpha1.HealthCheckSpec{},
+		}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		changeTime := metav1.NewTime(fakeClock.Now().Add(-7 * time.Minute))
+		hc.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusHealthy,
+			LastChangeTime: &changeTime,
+		}
+		Expect(k8sClient.Status().Update(ctx, hc)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		fetched := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		Expect(*fetched.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed),
+			"deploy-timeout should have fired")
+		Expect(fetched.Status.History[0].FailedHealthChecks).To(ContainElement(
+			HaveField("Name", "stale-hc"),
+		), "health check with pre-retry LastChangeTime must appear in FailedHealthChecks")
 	})
 })

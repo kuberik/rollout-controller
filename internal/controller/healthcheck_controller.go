@@ -256,4 +256,3 @@ func healthCheckMatchesRollout(ctx context.Context, c client.Reader, healthCheck
 
 	return true
 }
-
