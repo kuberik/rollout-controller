@@ -429,6 +429,14 @@ spec:
                         BakeStatusMessage provides details about the bake state for this deployment
                         This field contains human-readable information about why the bake status is what it is.
                       type: string
+                    deployedWithUnhealthyHealthChecks:
+                      description: |-
+                        DeployedWithUnhealthyHealthChecks records that this entry was created via a manual
+                        deployment (WantedVersion or force-deploy) while at least one health check was already
+                        unhealthy. The rollout treats this as recovery-mode-during-incident: while the bake has
+                        not yet started (BakeStartTime is nil), health check errors do not fail the rollout,
+                        since the user explicitly chose to deploy into an active incident.
+                      type: boolean
                     failedHealthChecks:
                       description: |-
                         FailedHealthChecks contains all health checks that failed during bake.

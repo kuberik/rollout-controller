@@ -339,6 +339,14 @@ type DeploymentHistoryEntry struct {
 	// ignored as they reflect the pre-retry state.
 	// +optional
 	LastRetryTimestamp *metav1.Time `json:"lastRetryTimestamp,omitempty"`
+
+	// DeployedWithUnhealthyHealthChecks records that this entry was created via a manual
+	// deployment (WantedVersion or force-deploy) while at least one health check was already
+	// unhealthy. The rollout treats this as recovery-mode-during-incident: while the bake has
+	// not yet started (BakeStartTime is nil), health check errors do not fail the rollout,
+	// since the user explicitly chose to deploy into an active incident.
+	// +optional
+	DeployedWithUnhealthyHealthChecks *bool `json:"deployedWithUnhealthyHealthChecks,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -382,6 +390,11 @@ const (
 	RolloutBakeTimeRetrying = "BakeTimeRetrying"
 	// RolloutInvalidBakeTimeConfiguration means the bake time configuration is invalid.
 	RolloutInvalidBakeTimeConfiguration = "InvalidBakeTimeConfiguration"
+	// RolloutDeploymentBlocked means deployment is blocked because health checks are unhealthy.
+	RolloutDeploymentBlocked = "DeploymentBlocked"
+	// RolloutBakeFailureDisabled means health check failures will not fail the current deployment.
+	// This occurs when the previous deployment also failed, allowing recovery without cascading failures.
+	RolloutBakeFailureDisabled = "BakeFailureDisabled"
 )
 
 const (
