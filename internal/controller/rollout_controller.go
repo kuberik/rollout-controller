@@ -146,6 +146,20 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
 
+	// Evaluate health checks once and set DeploymentBlocked. Done before the gate
+	// early-return so the condition surfaces even when gates also block.
+	healthChecksHealthy := true
+	var healthCheckMessage string
+	if !r.hasManualDeployment(&rollout) {
+		var err error
+		healthChecksHealthy, healthCheckMessage, err = r.evaluateHealthChecks(ctx, req.Namespace, &rollout)
+		if err != nil {
+			log.Error(err, "Failed to evaluate health checks")
+			return ctrl.Result{}, err
+		}
+	}
+	r.setDeploymentBlockedCondition(&rollout, healthChecksHealthy, healthCheckMessage)
+
 	// Update status once with both release candidates and gated release candidates
 	if err := r.Client.Status().Update(ctx, &rollout); err != nil {
 		log.Error(err, "Failed to update rollout status with release candidates and gated release candidates")
@@ -231,26 +245,14 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Evaluate health checks - block deployment if health checks are not healthy
-	// For manual deployments (WantedVersion or force-deploy), skip this check
-	if !r.hasManualDeployment(&rollout) {
-		healthChecksHealthy, healthCheckMessage, err := r.evaluateHealthChecks(ctx, req.Namespace, &rollout)
-		if err != nil {
-			log.Error(err, "Failed to evaluate health checks")
-			return ctrl.Result{}, err
+	// Block automatic deploys on unhealthy health checks. Manual deploys bypass; the
+	// recovery state for those is captured by setBakeFailureDisabledForNewDeploy.
+	if !r.hasManualDeployment(&rollout) && !healthChecksHealthy {
+		log.Info("Health checks are not healthy, blocking deployment", "message", healthCheckMessage)
+		if r.Recorder != nil {
+			r.Recorder.Event(&rollout, corev1.EventTypeWarning, "HealthCheckBlocking", healthCheckMessage)
 		}
-		if !healthChecksHealthy {
-			log.Info("Health checks are not healthy, blocking deployment", "message", healthCheckMessage)
-			// Update status before returning
-			if err := r.Client.Status().Update(ctx, &rollout); err != nil {
-				log.Error(err, "Failed to update rollout status")
-			}
-			// Emit event for health check blocking
-			if r.Recorder != nil {
-				r.Recorder.Event(&rollout, corev1.EventTypeWarning, "HealthCheckBlocking", healthCheckMessage)
-			}
-			return ctrl.Result{}, nil
-		}
+		return ctrl.Result{}, nil
 	}
 
 	// Use filteredReleases instead of releases for wantedRelease selection
@@ -1020,6 +1022,68 @@ func (r *RolloutReconciler) evaluateHealthChecks(ctx context.Context, namespace 
 	return true, "", nil
 }
 
+// setBakeFailureDisabledForNewDeploy sets the BakeFailureDisabled condition based on
+// state at the moment a new deployment starts. The condition then persists for the
+// entry's lifetime (overwritten only when the next deploy starts).
+//
+// Recovery-mode reasons:
+//   - PreviousBakeFailed: the prior entry didn't succeed (e.g. mid-rollback).
+//   - DeployedWithUnhealthyHealthChecks: manual deploy issued while any health check
+//     was already Unhealthy (deploy-during-incident).
+func (r *RolloutReconciler) setBakeFailureDisabledForNewDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) {
+	cond := metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutBakeFailureDisabled,
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "Normal",
+	}
+
+	if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil &&
+		*rollout.Status.History[0].BakeStatus != rolloutv1alpha1.BakeStatusSucceeded {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = "PreviousBakeFailed"
+		cond.Message = "Previous deployment failed. Health check failures will not fail this deployment."
+	} else if r.hasManualDeployment(rollout) {
+		hcs, err := r.listHealthChecks(ctx, rollout.Namespace, rollout)
+		if err != nil {
+			log.Error(err, "Failed to list health checks for recovery-mode evaluation")
+		} else {
+			for _, hc := range hcs {
+				if hc.Status.Status == rolloutv1alpha1.HealthStatusUnhealthy {
+					cond.Status = metav1.ConditionTrue
+					cond.Reason = "DeployedWithUnhealthyHealthChecks"
+					cond.Message = "Deployed during an active incident. Health check failures will not fail this deployment."
+					break
+				}
+			}
+		}
+	}
+
+	meta.SetStatusCondition(&rollout.Status.Conditions, cond)
+}
+
+// setDeploymentBlockedCondition sets DeploymentBlocked based on health-check state.
+// Independent of gate blocking so both blockers can surface concurrently.
+func (r *RolloutReconciler) setDeploymentBlockedCondition(rollout *rolloutv1alpha1.Rollout, healthChecksHealthy bool, healthCheckMessage string) {
+	cond := metav1.Condition{
+		Type:               rolloutv1alpha1.RolloutDeploymentBlocked,
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "Allowed",
+		Message:            "",
+	}
+	if r.hasManualDeployment(rollout) {
+		cond.Reason = "ManualDeployment"
+	} else if !healthChecksHealthy {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = "UnhealthyHealthChecks"
+		cond.Message = healthCheckMessage
+	} else {
+		cond.Reason = "HealthChecksHealthy"
+	}
+	meta.SetStatusCondition(&rollout.Status.Conditions, cond)
+}
+
 // hasManualDeployment checks if there's a manual deployment requested (WantedVersion or force deploy)
 func (r *RolloutReconciler) hasManualDeployment(rollout *rolloutv1alpha1.Rollout) bool {
 	// Check for WantedVersion in spec
@@ -1199,6 +1263,10 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 			log.V(5).Info("Could not parse version info from OCI image", "wantedRelease", wantedRelease, "error", err)
 		}
 	}
+
+	// Set BakeFailureDisabled before creating the new entry so it can read the current
+	// (about-to-become-previous) entry's BakeStatus. Persists for the entry's lifetime.
+	r.setBakeFailureDisabledForNewDeploy(ctx, rollout, log)
 
 	nextID := r.getNextHistoryID(rollout)
 	now := metav1.Time{Time: r.now()}
@@ -1625,14 +1693,10 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		// Use errorCutoff (max of deployTime and lastRetryTimestamp) so a retry
 		// gets a fresh timeout window instead of inheriting the original deadline.
 		if now.After(errorCutoff.Add(rollout.Spec.DeployTimeout.Duration)) {
-			// Only fail if previous entry was successful (or doesn't exist)
-			shouldFail := true
-			if len(rollout.Status.History) > 1 {
-				previousEntry := rollout.Status.History[1]
-				if previousEntry.BakeStatus != nil && *previousEntry.BakeStatus != rolloutv1alpha1.BakeStatusSucceeded {
-					shouldFail = false
-					log.Info("Previous rollout entry was not successful, not failing current rollout despite deploy timeout")
-				}
+			// Recovery mode (BakeFailureDisabled=True, set at deploy start) suppresses failure.
+			shouldFail := !meta.IsStatusConditionTrue(rollout.Status.Conditions, rolloutv1alpha1.RolloutBakeFailureDisabled)
+			if !shouldFail {
+				log.Info("Rollout is in recovery mode (BakeFailureDisabled=True); not failing despite deploy timeout")
 			}
 
 			if shouldFail {
@@ -1677,16 +1741,12 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		}
 	}
 
-	// If health check error detected, mark as failed (unless previous entry was not successful)
+	// If a health check error is detected, mark as failed unless the rollout is in
+	// recovery mode (BakeFailureDisabled=True, set at deploy start).
 	if healthCheckError {
-		// Only fail if previous entry was successful (or doesn't exist)
-		shouldFail := true
-		if len(rollout.Status.History) > 1 {
-			previousEntry := rollout.Status.History[1]
-			if previousEntry.BakeStatus != nil && *previousEntry.BakeStatus != rolloutv1alpha1.BakeStatusSucceeded {
-				shouldFail = false
-				log.Info("Previous rollout entry was not successful, not failing current rollout despite health check error")
-			}
+		shouldFail := !meta.IsStatusConditionTrue(rollout.Status.Conditions, rolloutv1alpha1.RolloutBakeFailureDisabled)
+		if !shouldFail {
+			log.Info("Rollout is in recovery mode (BakeFailureDisabled=True); not failing despite health check error")
 		}
 
 		if shouldFail {

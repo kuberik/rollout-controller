@@ -382,6 +382,11 @@ const (
 	RolloutBakeTimeRetrying = "BakeTimeRetrying"
 	// RolloutInvalidBakeTimeConfiguration means the bake time configuration is invalid.
 	RolloutInvalidBakeTimeConfiguration = "InvalidBakeTimeConfiguration"
+	// RolloutDeploymentBlocked means deployment is blocked because health checks are unhealthy.
+	RolloutDeploymentBlocked = "DeploymentBlocked"
+	// RolloutBakeFailureDisabled means health check failures will not fail the current deployment.
+	// This occurs when the previous deployment also failed, allowing recovery without cascading failures.
+	RolloutBakeFailureDisabled = "BakeFailureDisabled"
 )
 
 const (
