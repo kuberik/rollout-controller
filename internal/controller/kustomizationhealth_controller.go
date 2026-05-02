@@ -190,7 +190,11 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 
 		err = r.Get(ctx, client.ObjectKey{Namespace: objMetadata.Namespace, Name: objMetadata.Name}, obj)
 		if err != nil {
-			errorResources = append(errorResources, fmt.Sprintf("%s/%s (not found: %v)", objMetadata.Namespace, objMetadata.Name, err))
+			if client.IgnoreNotFound(err) == nil {
+				// Resource deleted by kustomize (race between inventory snapshot and fetch) — skip
+				continue
+			}
+			errorResources = append(errorResources, fmt.Sprintf("%s/%s (get error: %v)", objMetadata.Namespace, objMetadata.Name, err))
 			continue
 		}
 

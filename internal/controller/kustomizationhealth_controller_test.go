@@ -400,6 +400,15 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.ObservedGeneration = kustomization.Generation
+			kustomization.Status.Conditions = []metav1.Condition{
+				{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					Reason:             "ReconciliationSucceeded",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("reconciling the resource")
@@ -414,13 +423,11 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 
-			By("verifying that the HealthCheck status was updated to unhealthy")
+			By("verifying that the HealthCheck status is healthy — missing managed resource is a race with kustomize deletion")
 			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
-			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
-			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("not found"))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
 		})
 
 		It("should handle cross-namespace kustomization reference", func() {
