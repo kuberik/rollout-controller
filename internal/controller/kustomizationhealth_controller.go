@@ -280,23 +280,22 @@ func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx con
 	}
 }
 
-// getFailureConditionTime returns the LastTransitionTime of the most recent failure-indicating
-// condition on the object. The timestamp accurately reflects when the failure actually occurred,
-// letting the rollout controller compare it against deployment/retry time rather than "now".
+// getFailureConditionTime returns a witness timestamp for the resource's failure
+// state. Prefers Stalled=True (kstatus-standard authoritative failure signal); when
+// absent, falls back to the newest lastTransitionTime across any condition so the
+// caller still gets a stable witness instead of nil. Returns nil only when the
+// object has no conditions with parseable timestamps; the caller falls back to now()
+// in that case.
 func getFailureConditionTime(obj *unstructured.Unstructured) *metav1.Time {
 	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if err != nil || !found {
 		return nil
 	}
-	var latest *metav1.Time
+	var stalled *metav1.Time
+	var newest *metav1.Time
 	for _, c := range conditions {
 		condMap, ok := c.(map[string]interface{})
 		if !ok {
-			continue
-		}
-		condType, _, _ := unstructured.NestedString(condMap, "type")
-		condStatus, _, _ := unstructured.NestedString(condMap, "status")
-		if !isFailureCondition(condType, condStatus) {
 			continue
 		}
 		tsStr, _, _ := unstructured.NestedString(condMap, "lastTransitionTime")
@@ -308,26 +307,21 @@ func getFailureConditionTime(obj *unstructured.Unstructured) *metav1.Time {
 			continue
 		}
 		t := metav1.NewTime(ts)
-		if latest == nil || ts.After(latest.Time) {
-			latest = &t
+		condType, _, _ := unstructured.NestedString(condMap, "type")
+		condStatus, _, _ := unstructured.NestedString(condMap, "status")
+		if condType == "Stalled" && condStatus == "True" {
+			if stalled == nil || ts.After(stalled.Time) {
+				stalled = &t
+			}
+		}
+		if newest == nil || ts.After(newest.Time) {
+			newest = &t
 		}
 	}
-	return latest
-}
-
-// isFailureCondition returns true when (condType, condStatus) indicates failure.
-// Covers kstatus-standard conditions (Stalled, Ready) and common Kubernetes resource
-// conditions including Deployments (Progressing=False, ReplicaFailure=True).
-func isFailureCondition(condType, condStatus string) bool {
-	switch condType {
-	// True = problem
-	case "Stalled", "ReplicaFailure", "Degraded", "Failed":
-		return condStatus == "True"
-	// False = problem
-	case "Ready", "Available", "Progressing", "Healthy", "Synced":
-		return condStatus == "False"
+	if stalled != nil {
+		return stalled
 	}
-	return false
+	return newest
 }
 
 // updateHealthCheckStatus updates the HealthCheck status with proper timestamp handling.

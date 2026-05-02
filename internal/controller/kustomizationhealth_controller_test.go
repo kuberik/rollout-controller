@@ -1132,35 +1132,6 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 	})
 })
 
-var _ = DescribeTable("isFailureCondition",
-	func(condType, condStatus string, expected bool) {
-		Expect(isFailureCondition(condType, condStatus)).To(Equal(expected))
-	},
-	// True = problem
-	Entry("Stalled=True", "Stalled", "True", true),
-	Entry("Stalled=False", "Stalled", "False", false),
-	Entry("ReplicaFailure=True", "ReplicaFailure", "True", true),
-	Entry("ReplicaFailure=False", "ReplicaFailure", "False", false),
-	Entry("Degraded=True", "Degraded", "True", true),
-	Entry("Degraded=False", "Degraded", "False", false),
-	Entry("Failed=True", "Failed", "True", true),
-	Entry("Failed=False", "Failed", "False", false),
-	// False = problem
-	Entry("Ready=False", "Ready", "False", true),
-	Entry("Ready=True", "Ready", "True", false),
-	Entry("Available=False", "Available", "False", true),
-	Entry("Available=True", "Available", "True", false),
-	Entry("Progressing=False", "Progressing", "False", true),
-	Entry("Progressing=True", "Progressing", "True", false),
-	Entry("Healthy=False", "Healthy", "False", true),
-	Entry("Healthy=True", "Healthy", "True", false),
-	Entry("Synced=False", "Synced", "False", true),
-	Entry("Synced=True", "Synced", "True", false),
-	// Unknown type
-	Entry("unknown type True", "SomeCondition", "True", false),
-	Entry("unknown type False", "SomeCondition", "False", false),
-)
-
 var _ = Describe("getFailureConditionTime", func() {
 	makeObj := func(conditions []map[string]interface{}) *unstructured.Unstructured {
 		obj := &unstructured.Unstructured{}
@@ -1179,15 +1150,37 @@ var _ = Describe("getFailureConditionTime", func() {
 		Expect(getFailureConditionTime(makeObj(nil))).To(BeNil())
 	})
 
-	It("returns nil when all conditions are healthy", func() {
+	It("returns the newest condition timestamp when no Stalled=True exists", func() {
 		obj := makeObj([]map[string]interface{}{
 			{"type": "Available", "status": "True", "lastTransitionTime": "2025-01-01T00:00:00Z"},
 			{"type": "Progressing", "status": "True", "lastTransitionTime": "2025-01-01T01:00:00Z"},
 		})
-		Expect(getFailureConditionTime(obj)).To(BeNil())
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)))
 	})
 
-	It("returns the timestamp of a single failure condition", func() {
+	It("prefers Stalled=True over a newer non-Stalled condition", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Stalled", "status": "True", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+			{"type": "Available", "status": "True", "lastTransitionTime": "2025-06-01T15:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)))
+	})
+
+	It("ignores Stalled=False and falls back to newest condition", func() {
+		obj := makeObj([]map[string]interface{}{
+			{"type": "Stalled", "status": "False", "lastTransitionTime": "2025-06-01T09:00:00Z"},
+			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
+		})
+		result := getFailureConditionTime(obj)
+		Expect(result).NotTo(BeNil())
+		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)))
+	})
+
+	It("returns the timestamp of a single condition", func() {
 		obj := makeObj([]map[string]interface{}{
 			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T12:00:00Z"},
 		})
@@ -1196,28 +1189,7 @@ var _ = Describe("getFailureConditionTime", func() {
 		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)))
 	})
 
-	It("returns the latest timestamp when multiple failure conditions exist", func() {
-		obj := makeObj([]map[string]interface{}{
-			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
-			{"type": "ReplicaFailure", "status": "True", "lastTransitionTime": "2025-06-01T11:00:00Z"},
-		})
-		result := getFailureConditionTime(obj)
-		Expect(result).NotTo(BeNil())
-		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 11, 0, 0, 0, time.UTC)))
-	})
-
-	It("ignores healthy conditions when picking the latest", func() {
-		// Available=True transitions after the failure condition — must not override the result.
-		obj := makeObj([]map[string]interface{}{
-			{"type": "Available", "status": "True", "lastTransitionTime": "2025-06-01T15:00:00Z"},
-			{"type": "Progressing", "status": "False", "lastTransitionTime": "2025-06-01T10:00:00Z"},
-		})
-		result := getFailureConditionTime(obj)
-		Expect(result).NotTo(BeNil())
-		Expect(result.Time.UTC()).To(Equal(time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)))
-	})
-
-	It("returns nil when failure condition has no lastTransitionTime", func() {
+	It("returns nil when conditions have no parseable lastTransitionTime", func() {
 		obj := makeObj([]map[string]interface{}{
 			{"type": "Progressing", "status": "False"},
 		})
