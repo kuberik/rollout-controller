@@ -312,13 +312,17 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"hasManualDeployment", r.hasManualDeployment(&rollout),
 			"hasBakeTimeConfig", r.hasBakeTimeConfiguration(&rollout))
 
-		// Check if the current deployment is the wanted version and bake time is in progress
+		// Check if the current deployment is the wanted version and bake is active.
+		// Accept both Deploying and InProgress: on the reconcile where handleBakeTime
+		// transitions Deploying→InProgress, the refetched rollout may still show
+		// Deploying due to informer cache lag — we must still schedule a requeue.
 		if len(rollout.Status.History) > 0 &&
 			rollout.Status.History[0].Version.Tag == *wantedRelease &&
 			rollout.Status.History[0].BakeStatus != nil &&
-			*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress {
+			(*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusInProgress ||
+				*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusDeploying) {
 			requeueAfter := r.calculateRequeueTime(&rollout)
-			log.Info("Manual deployment already deployed with in-progress bake time, requeuing to monitor", "requeueAfter", requeueAfter)
+			log.Info("Manual deployment bake active, requeuing to monitor", "bakeStatus", *rollout.Status.History[0].BakeStatus, "requeueAfter", requeueAfter)
 			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		} else {
 			log.Info("No requeue needed for manual deployment",

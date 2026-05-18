@@ -2496,6 +2496,43 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(result.RequeueAfter).To(BeNumerically("<=", 5*time.Minute))
 			})
 
+			It("should requeue manual deployment when bake is still Deploying (health checks not healthy)", func() {
+				By("Setting wantedVersion and bake time")
+				rollout.Spec.WantedVersion = k8sptr.To(version0_1_0)
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				By("Pushing the wanted version to ImagePolicy")
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: version0_1_0,
+				}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("First reconcile: deploys wanted version, bake status = Deploying (health checks not healthy yet)")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying deployment created with Deploying status (health checks not healthy)")
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History).To(HaveLen(1))
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
+				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil())
+
+				By("Second reconcile: health checks still not healthy, bake stays Deploying")
+				// Health check exists but has no LastChangeTime, so bake can't start.
+				// This simulates the informer-cache stale read: handleBakeTime runs but can't
+				// transition to InProgress, and the refetched rollout still shows Deploying.
+				// The manual deployment monitor must still schedule a requeue.
+				result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying requeue is scheduled (not zero) so bake monitoring continues")
+				Expect(result.RequeueAfter).To(BeNumerically(">", 0),
+					"manual deployment with Deploying bake must requeue to keep monitoring even before bake starts")
+			})
+
 			It("should cancel existing deploying bake when deploying new version", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
