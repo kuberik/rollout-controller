@@ -1382,15 +1382,24 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 			log.Error(err, "Failed to patch rollout to clear force deploy annotations")
 			return err
 		}
-	} else if r.hasManualDeployment(rollout) {
-		// Clear deploy-message and deploy-user annotations when WantedVersion was used
-		patch := client.MergeFrom(rollout.DeepCopy())
-		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
-		delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
+	} else if rollout.Annotations != nil {
+		// Clear the one-shot deploy-message/deploy-user intent annotations after any
+		// deployment, not just manual ones. They are consumed by this deployment; an
+		// automatic deploy only runs when no manual intent (WantedVersion/force-deploy)
+		// exists, so any deploy-user/deploy-message still set at that point is stale
+		// (e.g. left over from clearing a version pin). Leaving them set would
+		// misattribute or mislabel subsequent automatic deployments.
+		_, hasMessage := rollout.Annotations["rollout.kuberik.com/deploy-message"]
+		_, hasUser := rollout.Annotations["rollout.kuberik.com/deploy-user"]
+		if hasMessage || hasUser {
+			patch := client.MergeFrom(rollout.DeepCopy())
+			delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+			delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
 
-		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
-			log.Error(err, "Failed to patch rollout to clear deploy-message and deploy-user annotations")
-			return err
+			if err := r.Client.Patch(ctx, rollout, patch); err != nil {
+				log.Error(err, "Failed to patch rollout to clear deploy-message and deploy-user annotations")
+				return err
+			}
 		}
 	}
 
@@ -2038,10 +2047,14 @@ func (r *RolloutReconciler) getNextHistoryID(rollout *rolloutv1alpha1.Rollout) i
 }
 
 // extractTriggeredByInfo extracts triggered by information from annotations.
-// Returns nil if no user annotation is found (indicating a system-triggered deployment).
+// A deployment is only attributed to a User when it is an actual manual deployment
+// (WantedVersion or force-deploy). The deploy-user annotation is a one-shot intent
+// set by the dashboard; it can linger after non-deploying actions such as clearing a
+// version pin. Reading it unconditionally previously misattributed subsequent
+// automatic deployments to whoever last set the annotation, so automatic deployments
+// are always reported as System regardless of any stale deploy-user annotation.
 func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Rollout, isManualDeployment bool) *rolloutv1alpha1.TriggeredByInfo {
-	// Check for user annotation (similar to how we check deploy-message annotation)
-	if rollout.Annotations != nil {
+	if isManualDeployment && rollout.Annotations != nil {
 		if userName, exists := rollout.Annotations["rollout.kuberik.com/deploy-user"]; exists && userName != "" {
 			return &rolloutv1alpha1.TriggeredByInfo{
 				Kind: "User",
@@ -2050,7 +2063,7 @@ func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Roll
 		}
 	}
 
-	// If no user annotation found, it's a system-triggered deployment
+	// Automatic deployment (or no user annotation) - system-triggered.
 	return &rolloutv1alpha1.TriggeredByInfo{
 		Kind: "System",
 		Name: "rollout-controller",

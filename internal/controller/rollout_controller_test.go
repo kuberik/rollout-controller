@@ -3854,6 +3854,83 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("rollout-controller"))
 			})
 
+			It("should record system-triggered deployment and clear a stale deploy-user annotation on automatic deploy", func() {
+				// Regression: a deploy-user annotation can linger after a non-deploying
+				// action such as clearing a version pin (wantedVersion=nil). The next
+				// automatic deployment must NOT be attributed to that user, and the stale
+				// annotation must be cleared so it doesn't keep mislabeling deployments.
+				By("Setting up a rollout with a stale deploy-user/deploy-message but no manual deployment")
+				staleAnnotationRollout := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "stale-deploy-user-rollout",
+						Namespace: namespace,
+						Annotations: map[string]string{
+							"rollout.kuberik.com/deploy-user":    "dave@example.com",
+							"rollout.kuberik.com/deploy-message": "Cleared version pin",
+						},
+					},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
+							Name: "test-image-policy",
+						},
+					},
+					Status: rolloutv1alpha1.RolloutStatus{
+						AvailableReleases: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
+							{Tag: "1.0.0"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, staleAnnotationRollout)).To(Succeed())
+				Expect(k8sClient.Status().Update(ctx, staleAnnotationRollout)).To(Succeed())
+
+				By("Setting up ImagePolicy with releases")
+				var imagePolicy imagev1beta2.ImagePolicy
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "test-image-policy",
+					Namespace: namespace,
+				}, &imagePolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+					Tag: "1.0.0",
+				}
+				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+
+				By("Reconciling (automatic deployment) with a stale deploy-user present")
+				controllerReconciler := &RolloutReconciler{
+					Client: k8sClient,
+					Scheme: k8sClient.Scheme(),
+				}
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      "stale-deploy-user-rollout",
+						Namespace: namespace,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the automatic deployment is attributed to System, not the stale user")
+				var updatedRollout rolloutv1alpha1.Rollout
+				err = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "stale-deploy-user-rollout",
+					Namespace: namespace,
+				}, &updatedRollout)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("System"))
+				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("rollout-controller"))
+
+				By("Verifying the stale one-shot annotations were cleared")
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+			})
+
 			It("should clear deploy-user annotation when force deploy is used", func() {
 				By("Setting up a rollout with force-deploy and deploy-user annotations")
 				clearAnnotationRollout := &rolloutv1alpha1.Rollout{
@@ -5604,7 +5681,10 @@ var _ = Describe("extractTriggeredByInfo", func() {
 		Expect(result.Name).To(Equal("alice@example.com"))
 	})
 
-	It("should return User kind even when isManualDeployment is false but annotation exists", func() {
+	It("should return System kind when isManualDeployment is false even if a (stale) deploy-user annotation exists", func() {
+		// Regression: a deploy-user annotation can linger after a non-deploying action
+		// (e.g. clearing a version pin). Automatic deployments must not be attributed to
+		// that user — they are always System.
 		rollout := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{
@@ -5616,8 +5696,8 @@ var _ = Describe("extractTriggeredByInfo", func() {
 		result := reconciler.extractTriggeredByInfo(rollout, false)
 
 		Expect(result).NotTo(BeNil())
-		Expect(result.Kind).To(Equal("User"))
-		Expect(result.Name).To(Equal("bob@example.com"))
+		Expect(result.Kind).To(Equal("System"))
+		Expect(result.Name).To(Equal("rollout-controller"))
 	})
 
 	It("should return System kind when deploy-user annotation is not present", func() {
