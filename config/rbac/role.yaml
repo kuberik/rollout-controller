@@ -88,6 +88,22 @@ rules:
   - update
   - watch
 - apiGroups:
+  - rollout.kuberik.com
+  resources:
+  - rollouttests
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - rollout.kuberik.com
+  resources:
+  - rollouttests/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - source.toolkit.fluxcd.io
   resources:
   - ocirepositories

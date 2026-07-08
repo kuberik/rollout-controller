@@ -1,0 +1,19 @@
+apiVersion: rollout.kuberik.com/v1alpha1
+kind: RolloutTest
+metadata:
+  name: smoke
+  labels:
+    kuberik.com/environment: prod
+spec:
+  rolloutName: my-app
+  stepIndex: 1
+  upstreamGate:
+    environment: dev
+  jobTemplate:
+    template:
+      spec:
+        restartPolicy: Never
+        containers:
+          - name: smoke
+            image: busybox:latest
+            command: ["sh", "-c", "echo smoke test passed"]

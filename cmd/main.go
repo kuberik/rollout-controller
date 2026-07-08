@@ -42,6 +42,7 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
+	rolloutkuberikv1alpha1 "github.com/kuberik/rollout-controller/api/rollout/v1alpha1"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -56,6 +57,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(kuberikcomv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(rolloutkuberikv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(sourcev1.AddToScheme(scheme))
 	utilruntime.Must(imagev1beta2.AddToScheme(scheme))
 	utilruntime.Must(kustomizev1.AddToScheme(scheme))
@@ -257,6 +259,13 @@ func main() {
 		Clock:    &controller.RealClock{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterRolloutSchedule")
+		os.Exit(1)
+	}
+	if err = (&controller.RolloutTestUpstreamGateReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RolloutTestUpstreamGate")
 		os.Exit(1)
 	}
 
