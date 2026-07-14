@@ -33,7 +33,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	k8sptr "k8s.io/utils/ptr"
@@ -58,7 +58,7 @@ var _ = Describe("Rollout Controller", func() {
 		var namespace string
 		var typeNamespacedName types.NamespacedName
 		var rollout *rolloutv1alpha1.Rollout
-		var imagePolicy *imagev1beta2.ImagePolicy
+		var imagePolicy *imagev1.ImagePolicy
 		var bakeTime *metav1.Duration
 		var healthCheckSelector *rolloutv1alpha1.HealthCheckSelectorConfig
 
@@ -79,17 +79,17 @@ var _ = Describe("Rollout Controller", func() {
 			}
 
 			By("creating the ImagePolicy")
-			imagePolicy = &imagev1beta2.ImagePolicy{
+			imagePolicy = &imagev1.ImagePolicy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				},
-				Spec: imagev1beta2.ImagePolicySpec{
+				Spec: imagev1.ImagePolicySpec{
 					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 						Name: "test-image-repo",
 					},
-					Policy: imagev1beta2.ImagePolicyChoice{
-						SemVer: &imagev1beta2.SemVerPolicy{
+					Policy: imagev1.ImagePolicyChoice{
+						SemVer: &imagev1.SemVerPolicy{
 							Range: ">=0.1.0",
 						},
 					},
@@ -138,7 +138,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update deployment history after successful deployment", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -211,7 +211,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should assign auto-incrementing IDs to history entries", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "1.0.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -280,7 +280,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should continue incrementing IDs when history limit is reached", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "1.0.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -361,7 +361,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting up ImagePolicy with new release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "3.0.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -393,7 +393,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should respect the history limit", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "0.1.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -473,7 +473,7 @@ var _ = Describe("Rollout Controller", func() {
 			// Deploy 11 versions to exceed the default limit of 10
 			for i := 1; i <= 11; i++ {
 				version := fmt.Sprintf("0.%d.0", i)
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -553,7 +553,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should use custom deployment message when annotation is provided", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -594,7 +594,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update available releases in status", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -620,7 +620,7 @@ var _ = Describe("Rollout Controller", func() {
 			}))
 
 			By("Setting up ImagePolicy with a release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_2_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -643,7 +643,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update release candidates in status", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -682,7 +682,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_1_0}))
 
 			By("Adding more releases to ImagePolicy")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_2_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -741,7 +741,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should support rollback to a previous version", func() {
 			By("Updating image policy with version 0.1.0")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -764,7 +764,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 
 			By("Publishing version 0.2.0")
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_2_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1254,17 +1254,17 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, rollout3)).To(Succeed())
 
 			By("Creating the ImagePolicy")
-			imagePolicy := &imagev1beta2.ImagePolicy{
+			imagePolicy := &imagev1.ImagePolicy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				},
-				Spec: imagev1beta2.ImagePolicySpec{
+				Spec: imagev1.ImagePolicySpec{
 					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 						Name: "test-image-repo",
 					},
-					Policy: imagev1beta2.ImagePolicyChoice{
-						SemVer: &imagev1beta2.SemVerPolicy{
+					Policy: imagev1.ImagePolicyChoice{
+						SemVer: &imagev1.SemVerPolicy{
 							Range: ">=0.1.0",
 						},
 					},
@@ -1322,7 +1322,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment when status is Deploying (minimal case)", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1340,7 +1340,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1358,7 +1358,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment if bake is in progress", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1388,7 +1388,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1410,7 +1410,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when rollout is in progress", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1440,7 +1440,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1469,7 +1469,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when rollout is in deploying status", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1485,7 +1485,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1508,7 +1508,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when bake status changes to failed", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1536,7 +1536,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1566,7 +1566,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment if previous bake failed", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1596,7 +1596,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1620,7 +1620,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment if previous bake succeeded", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1651,7 +1651,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing and deploying a new image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1677,7 +1677,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow wantedVersion override regardless of bake status", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1707,7 +1707,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1732,7 +1732,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing in-progress bake when deploying new version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1762,7 +1762,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1780,7 +1780,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment after bake time completes", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1796,7 +1796,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1851,7 +1851,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment if bake succeeded and LastErrorTime is nil", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1881,7 +1881,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1905,7 +1905,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle health check errors that occur exactly at deployment time", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -1964,7 +1964,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2020,7 +2020,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle health check errors that occur before deployment time", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2066,7 +2066,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should fail bake when health check errors occur during deploying phase (before bake starts)", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2108,7 +2108,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2139,7 +2139,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record failed health checks when health check errors occur during deploying phase", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2177,7 +2177,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record failed health checks when health check errors occur after bake starts", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2238,7 +2238,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2296,7 +2296,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2335,7 +2335,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record health checks without messages when message is nil", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2369,7 +2369,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle requeue timing correctly during bake process", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2410,7 +2410,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle bake status transitions correctly", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2460,7 +2460,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2502,7 +2502,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing the wanted version to ImagePolicy")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2535,7 +2535,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing deploying bake when deploying new version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2555,7 +2555,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2581,7 +2581,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing in-progress bake when deploying wanted version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2615,7 +2615,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2690,7 +2690,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block automatic deployment when health check is unhealthy", func() {
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2711,7 +2711,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow automatic deployment when health check is healthy", func() {
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2760,7 +2760,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should not block deployment when health check has pending status", func() {
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2786,7 +2786,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -2824,7 +2824,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: version0_1_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -3064,7 +3064,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "1.1.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -3134,7 +3134,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, combinedRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "1.1.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -3200,7 +3200,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Setting up ImagePolicy with multiple releases")
 				// Get the existing ImagePolicy and update it with multiple releases
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
@@ -3208,7 +3208,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with multiple releases
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "3.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3353,7 +3353,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, customMessageRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with multiple releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
@@ -3361,7 +3361,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with multiple releases
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "3.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3460,7 +3460,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Updating ImagePolicy with releases (but not 3.0.0)")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
@@ -3468,7 +3468,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases (but not 3.0.0)
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "2.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3533,7 +3533,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Updating ImagePolicy with releases")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
@@ -3541,7 +3541,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "2.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3606,7 +3606,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				By("Updating ImagePolicy with releases")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
@@ -3614,7 +3614,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "1.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3677,14 +3677,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "2.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3746,14 +3746,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "1.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3814,14 +3814,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, systemTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "1.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3881,14 +3881,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "2.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -3947,14 +3947,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "1.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
@@ -4020,7 +4020,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, freshRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: "1.1.0",
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
@@ -4837,7 +4837,7 @@ var _ = Describe("Rollout Controller", func() {
 	Describe("Enhanced HealthCheckSelector", func() {
 		var namespace1, namespace2, namespace3 string
 		var rollout *rolloutv1alpha1.Rollout
-		var imagePolicy *imagev1beta2.ImagePolicy
+		var imagePolicy *imagev1.ImagePolicy
 
 		BeforeEach(func() {
 			By("creating test namespaces")
@@ -4878,17 +4878,17 @@ var _ = Describe("Rollout Controller", func() {
 			namespace3 = ns3.Name
 
 			By("creating the ImagePolicy")
-			imagePolicy = &imagev1beta2.ImagePolicy{
+			imagePolicy = &imagev1.ImagePolicy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image-policy",
 					Namespace: namespace1,
 				},
-				Spec: imagev1beta2.ImagePolicySpec{
+				Spec: imagev1.ImagePolicySpec{
 					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 						Name: "test-image-repo",
 					},
-					Policy: imagev1beta2.ImagePolicyChoice{
-						SemVer: &imagev1beta2.SemVerPolicy{
+					Policy: imagev1.ImagePolicyChoice{
+						SemVer: &imagev1.SemVerPolicy{
 							Range: ">=0.1.0",
 						},
 					},
@@ -5377,12 +5377,12 @@ var _ = Describe("Rollout Controller", func() {
 		Context("getImageRepositoryAuthentication", func() {
 			It("should return default keychain when no secret is configured", func() {
 				// Create ImagePolicy without secret
-				imagePolicy := &imagev1beta2.ImagePolicy{
+				imagePolicy := &imagev1.ImagePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-policy",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImagePolicySpec{
+					Spec: imagev1.ImagePolicySpec{
 						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 							Name: "test-repo",
 						},
@@ -5390,12 +5390,12 @@ var _ = Describe("Rollout Controller", func() {
 				}
 
 				// Create ImageRepository without secret
-				imageRepo := &imagev1beta2.ImageRepository{
+				imageRepo := &imagev1.ImageRepository{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-repo",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImageRepositorySpec{
+					Spec: imagev1.ImageRepositorySpec{
 						Image: "test-registry.com/test/image",
 					},
 				}
@@ -5430,12 +5430,12 @@ var _ = Describe("Rollout Controller", func() {
 				}
 
 				// Create ImagePolicy with secret
-				imagePolicy := &imagev1beta2.ImagePolicy{
+				imagePolicy := &imagev1.ImagePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-policy",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImagePolicySpec{
+					Spec: imagev1.ImagePolicySpec{
 						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 							Name: "test-repo",
 						},
@@ -5443,12 +5443,12 @@ var _ = Describe("Rollout Controller", func() {
 				}
 
 				// Create ImageRepository with secret
-				imageRepo := &imagev1beta2.ImageRepository{
+				imageRepo := &imagev1.ImageRepository{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-repo",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImageRepositorySpec{
+					Spec: imagev1.ImageRepositorySpec{
 						Image: "test-registry.com/test/image",
 						SecretRef: &fluxmeta.LocalObjectReference{
 							Name: "test-secret",
@@ -5470,12 +5470,12 @@ var _ = Describe("Rollout Controller", func() {
 			})
 
 			It("should return error when ImageRepository is not found", func() {
-				imagePolicy := &imagev1beta2.ImagePolicy{
+				imagePolicy := &imagev1.ImagePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-policy",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImagePolicySpec{
+					Spec: imagev1.ImagePolicySpec{
 						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 							Name: "nonexistent-repo",
 						},
@@ -5493,12 +5493,12 @@ var _ = Describe("Rollout Controller", func() {
 		Context("parseOCIManifest", func() {
 			It("should handle invalid image references gracefully", func() {
 				// Create a minimal ImagePolicy for testing
-				imagePolicy := &imagev1beta2.ImagePolicy{
+				imagePolicy := &imagev1.ImagePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-policy",
 						Namespace: namespace,
 					},
-					Spec: imagev1beta2.ImagePolicySpec{
+					Spec: imagev1.ImagePolicySpec{
 						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
 							Name: "nonexistent-repo",
 						},

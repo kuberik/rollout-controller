@@ -24,7 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
@@ -87,7 +87,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 	var (
 		namespace   string
 		rollout     *rolloutv1alpha1.Rollout
-		imagePolicy *imagev1beta2.ImagePolicy
+		imagePolicy *imagev1.ImagePolicy
 		healthCheck *rolloutv1alpha1.HealthCheck
 		fakeClock   *FakeClock
 		reconciler  *RolloutReconciler
@@ -99,12 +99,12 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		imagePolicy = &imagev1beta2.ImagePolicy{
+		imagePolicy = &imagev1.ImagePolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "rec-ip", Namespace: namespace},
-			Spec: imagev1beta2.ImagePolicySpec{
+			Spec: imagev1.ImagePolicySpec{
 				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1beta2.ImagePolicyChoice{
-					SemVer: &imagev1beta2.SemVerPolicy{Range: ">=0.0.0"},
+				Policy: imagev1.ImagePolicyChoice{
+					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
 				},
 			},
 		}
@@ -112,7 +112,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		imagePolicy.Status.Conditions = []metav1.Condition{{
 			Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now(), Reason: "Ready",
 		}}
-		imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{Tag: "1.0.0"}
+		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
 		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 		rollout = &rolloutv1alpha1.Rollout{
@@ -302,7 +302,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		Expect(bakeFailureCondition().Reason).To(Equal("DeployedWithUnhealthyHealthChecks"))
 
 		// Make a new release available.
-		imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{Tag: "2.0.0"}
+		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "2.0.0"}
 		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 		// Heal the HC so the next deploy is created with healthy HCs.
@@ -332,7 +332,7 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 	var (
 		namespace   string
 		rollout     *rolloutv1alpha1.Rollout
-		imagePolicy *imagev1beta2.ImagePolicy
+		imagePolicy *imagev1.ImagePolicy
 		healthCheck *rolloutv1alpha1.HealthCheck
 		fakeClock   *FakeClock
 		reconciler  *RolloutReconciler
@@ -344,12 +344,12 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		imagePolicy = &imagev1beta2.ImagePolicy{
+		imagePolicy = &imagev1.ImagePolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "block-ip", Namespace: namespace},
-			Spec: imagev1beta2.ImagePolicySpec{
+			Spec: imagev1.ImagePolicySpec{
 				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1beta2.ImagePolicyChoice{
-					SemVer: &imagev1beta2.SemVerPolicy{Range: ">=0.0.0"},
+				Policy: imagev1.ImagePolicyChoice{
+					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
 				},
 			},
 		}
@@ -357,7 +357,7 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 		imagePolicy.Status.Conditions = []metav1.Condition{{
 			Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now(), Reason: "Ready",
 		}}
-		imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{Tag: "1.0.0"}
+		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
 		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
 		rollout = &rolloutv1alpha1.Rollout{

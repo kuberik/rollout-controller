@@ -45,7 +45,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -359,7 +359,7 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
 		Watches(
-			&imagev1beta2.ImagePolicy{},
+			&imagev1.ImagePolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
 		).
 		Watches(
@@ -397,7 +397,7 @@ func getNextReleaseCandidates(releases []rolloutv1alpha1.VersionInfo, status *ro
 }
 
 // getImageRepositoryAuthentication extracts authentication information from ImageRepository
-func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context, imagePolicy *imagev1beta2.ImagePolicy) (authn.Keychain, error) {
+func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context, imagePolicy *imagev1.ImagePolicy) (authn.Keychain, error) {
 	// Get the ImageRepository referenced by the ImagePolicy
 	imageRepoRef := imagePolicy.Spec.ImageRepositoryRef
 	imageRepoNamespace := imagePolicy.Namespace
@@ -405,7 +405,7 @@ func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context
 		imageRepoNamespace = imageRepoRef.Namespace
 	}
 
-	imageRepo := &imagev1beta2.ImageRepository{}
+	imageRepo := &imagev1.ImageRepository{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imageRepoNamespace,
 		Name:      imageRepoRef.Name,
@@ -449,7 +449,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 
 	// Get the ImagePolicy
 	imagePolicyNamespace := rollout.Namespace
-	imagePolicy := &imagev1beta2.ImagePolicy{}
+	imagePolicy := &imagev1.ImagePolicy{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imagePolicyNamespace,
 		Name:      rollout.Spec.ReleasesImagePolicy.Name,
@@ -464,7 +464,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 		imageRepoNamespace = imageRepoRef.Namespace
 	}
 
-	imageRepo := &imagev1beta2.ImageRepository{}
+	imageRepo := &imagev1.ImageRepository{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imageRepoNamespace,
 		Name:      imageRepoRef.Name,
@@ -490,7 +490,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 }
 
 // parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, source, title, and description.
-func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1beta2.ImagePolicy) (version, revision, artifactType, source, title, description *string, created *metav1.Time, err error) {
+func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1.ImagePolicy) (version, revision, artifactType, source, title, description *string, created *metav1.Time, err error) {
 	log := logf.FromContext(ctx)
 
 	// Get authentication keychain from ImageRepository
@@ -631,7 +631,7 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	// Get the ImagePolicy
 	imagePolicyNamespace := rollout.Namespace
 
-	imagePolicy := &imagev1beta2.ImagePolicy{}
+	imagePolicy := &imagev1.ImagePolicy{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imagePolicyNamespace,
 		Name:      rollout.Spec.ReleasesImagePolicy.Name,
@@ -2165,7 +2165,7 @@ func (r *RolloutReconciler) resetFailedBakeStatus(ctx context.Context, rollout *
 
 // findRolloutsForImagePolicy finds all rollouts that reference the given ImagePolicy.
 func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj client.Object) []reconcile.Request {
-	imagePolicy, ok := obj.(*imagev1beta2.ImagePolicy)
+	imagePolicy, ok := obj.(*imagev1.ImagePolicy)
 	if !ok {
 		return nil
 	}

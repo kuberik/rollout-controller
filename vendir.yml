@@ -11,7 +11,7 @@ directories:
           url: https://raw.githubusercontent.com/fluxcd/kustomize-controller/refs/tags/v1.6.1/config/crd/bases/kustomize.toolkit.fluxcd.io_kustomizations.yaml
       - path: imagepolicies
         http:
-          url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v0.35.2/config/crd/bases/image.toolkit.fluxcd.io_imagepolicies.yaml
+          url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v1.1.2/config/crd/bases/image.toolkit.fluxcd.io_imagepolicies.yaml
       - path: imagerepositories
         http:
-          url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v0.35.2/config/crd/bases/image.toolkit.fluxcd.io_imagerepositories.yaml
+          url: https://raw.githubusercontent.com/fluxcd/image-reflector-controller/refs/tags/v1.1.2/config/crd/bases/image.toolkit.fluxcd.io_imagerepositories.yaml

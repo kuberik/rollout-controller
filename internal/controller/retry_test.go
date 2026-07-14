@@ -23,7 +23,7 @@ import (
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	imagev1beta2 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
+	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
@@ -43,12 +43,12 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		policy := &imagev1beta2.ImagePolicy{
+		policy := &imagev1.ImagePolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "retry-ip", Namespace: namespace},
-			Spec: imagev1beta2.ImagePolicySpec{
+			Spec: imagev1.ImagePolicySpec{
 				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1beta2.ImagePolicyChoice{
-					SemVer: &imagev1beta2.SemVerPolicy{Range: ">=0.0.0"},
+				Policy: imagev1.ImagePolicyChoice{
+					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
 				},
 			},
 		}
@@ -313,17 +313,17 @@ var _ = Describe("Rollout errorCutoff with retry", func() {
 		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 
 		// Image policy required by the reconcile loop.
-		policy := &imagev1beta2.ImagePolicy{
+		policy := &imagev1.ImagePolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "ip", Namespace: namespace},
-			Spec: imagev1beta2.ImagePolicySpec{
+			Spec: imagev1.ImagePolicySpec{
 				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1beta2.ImagePolicyChoice{
-					SemVer: &imagev1beta2.SemVerPolicy{Range: ">=0.0.0"},
+				Policy: imagev1.ImagePolicyChoice{
+					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.LatestRef = &imagev1beta2.ImageRef{Tag: "1.0.0"}
+		policy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
 		rollout = &rolloutv1alpha1.Rollout{
