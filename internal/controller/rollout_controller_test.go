@@ -642,6 +642,17 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should update release candidates in status", func() {
+			By("Seeding an initial deployment so the blocking gate is enforced (gates are skipped on first deploy)")
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{Version: rolloutv1alpha1.VersionInfo{Tag: "0.0.9"}, Timestamp: metav1.Now()},
+			}
+			// The currently-deployed version must be present in AvailableReleases for
+			// release-candidate computation to find newer releases.
+			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				{Tag: "0.0.9"},
+			}
+			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
 			By("Setting up ImagePolicy with initial release")
 			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 				Tag: version0_1_0,
@@ -861,7 +872,10 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should block deployment if a single gate is not passing", func() {
-			By("Setting available releases")
+			By("Seeding an initial deployment so gate blocking applies (gates are skipped on first deploy)")
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+			}
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
@@ -881,11 +895,12 @@ var _ = Describe("Rollout Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that deployment was blocked")
+			By("Verifying that the new deployment was blocked and history is unchanged")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
 			Expect(updatedRollout.Status.Gates[0].Passing).ToNot(BeNil())
 			Expect(*updatedRollout.Status.Gates[0].Passing).To(BeFalse())
@@ -934,7 +949,10 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should block deployment if no allowed releases remain after gate filtering", func() {
-			By("Setting available releases")
+			By("Seeding an initial deployment so gate filtering applies (gates are skipped on first deploy)")
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+			}
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
@@ -955,11 +973,12 @@ var _ = Describe("Rollout Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that deployment was blocked")
+			By("Verifying that the new deployment was blocked and history is unchanged")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(1))
 		})
 
@@ -1030,7 +1049,10 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should block deployment if one of multiple gates is not passing", func() {
-			By("Setting available releases")
+			By("Seeding an initial deployment so gate blocking applies (gates are skipped on first deploy)")
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+			}
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
@@ -1059,12 +1081,111 @@ var _ = Describe("Rollout Controller", func() {
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying that deployment was blocked")
+			By("Verifying that the new deployment was blocked and history is unchanged")
 			updatedRollout := &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRollout.Status.History).To(BeEmpty())
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			Expect(updatedRollout.Status.Gates).To(HaveLen(2))
+		})
+
+		// First-deploy behavior: with an empty history there is no running version, so gate
+		// blocking and health checks are skipped and the rollout always reaches its initial version.
+		When("performing the first deploy with an empty history", func() {
+			It("should deploy the initial version despite a non-passing gate", func() {
+				By("Setting up ImagePolicy with the initial release")
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Creating a gate that is not passing (would block all releases)")
+				gate := &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: "blocking-gate", Namespace: namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef: &corev1.LocalObjectReference{Name: resourceName},
+						Passing:    k8sptr.To(false),
+					},
+				}
+				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the initial version was deployed despite the blocking gate")
+				updatedRollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, updatedRollout)).To(Succeed())
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
+
+			It("should fall back to raw release candidates when a passing gate filters out every candidate", func() {
+				By("Setting up ImagePolicy with the initial release")
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Creating a passing gate that allows only an unavailable version")
+				gate := &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: "filtering-gate", Namespace: namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: resourceName},
+						Passing:         k8sptr.To(true),
+						AllowedVersions: &[]string{"0.9.9"},
+					},
+				}
+				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the initial version was deployed via the raw-candidate fallback")
+				updatedRollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, updatedRollout)).To(Succeed())
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
+		})
+
+		When("performing the first deploy with an unhealthy health check", func() {
+			BeforeEach(func() {
+				healthCheckSelector = &rolloutv1alpha1.HealthCheckSelectorConfig{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "first-deploy-app"},
+					},
+				}
+			})
+
+			It("should deploy the initial version despite the unhealthy health check", func() {
+				By("Creating an unhealthy health check that the rollout selects")
+				healthCheck := &rolloutv1alpha1.HealthCheck{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "unhealthy-check",
+						Namespace: namespace,
+						Labels:    map[string]string{"app": "first-deploy-app"},
+					},
+				}
+				Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+				By("Setting up ImagePolicy with the initial release")
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+
+				By("Reconciling")
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the initial version was deployed despite the unhealthy health check")
+				updatedRollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, updatedRollout)).To(Succeed())
+				Expect(updatedRollout.Status.History).To(HaveLen(1))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			})
 		})
 
 		It("should patch Kustomization with rollout-specific substitute annotation", func() {
@@ -2689,9 +2810,17 @@ var _ = Describe("Rollout Controller", func() {
 			})
 
 			It("should block automatic deployment when health check is unhealthy", func() {
-				By("Setting image policy status")
+				By("Seeding an initial deployment so health checks are enforced (skipped on first deploy)")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+				}
+				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+				By("Setting image policy to a newer version")
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
+					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
@@ -2704,9 +2833,10 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying deployment was blocked")
+				By("Verifying the new deployment was blocked and history is unchanged")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
-				Expect(rollout.Status.History).To(HaveLen(0), "Deployment should be blocked by unhealthy health check")
+				Expect(rollout.Status.History).To(HaveLen(1), "New deployment should be blocked by unhealthy health check")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			})
 
 			It("should allow automatic deployment when health check is healthy", func() {
@@ -2803,6 +2933,14 @@ var _ = Describe("Rollout Controller", func() {
 			})
 
 			It("should block deployment when at least one health check is unhealthy", func() {
+				By("Seeding an initial deployment so health checks are enforced (skipped on first deploy)")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+				}
+				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
 				By("Creating a second health check")
 				healthCheck2 := &rolloutv1alpha1.HealthCheck{
 					ObjectMeta: metav1.ObjectMeta{
@@ -2823,9 +2961,9 @@ var _ = Describe("Rollout Controller", func() {
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
-				By("Setting image policy status")
+				By("Setting image policy to a newer version")
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
+					Tag: version0_2_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
@@ -2834,9 +2972,10 @@ var _ = Describe("Rollout Controller", func() {
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Verifying deployment was blocked by second unhealthy check")
+				By("Verifying the new deployment was blocked by the second unhealthy check")
 				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
-				Expect(rollout.Status.History).To(HaveLen(0), "Should be blocked by one unhealthy health check")
+				Expect(rollout.Status.History).To(HaveLen(1), "Should be blocked by one unhealthy health check")
+				Expect(rollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 			})
 		})
 
@@ -2911,9 +3050,13 @@ var _ = Describe("Rollout Controller", func() {
 		})
 
 		It("should ignore bypass-gates annotation for version not in candidates", func() {
-			By("Setting available releases")
+			By("Seeding an initial deployment so gates are enforced (skipped on first deploy)")
+			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+			}
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
+				{Tag: version0_3_0},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
@@ -2952,8 +3095,9 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Should not have deployment history since gates are blocking
-			Expect(updatedRollout.Status.History).To(HaveLen(0))
+			// History should be unchanged since gates block the new candidate (bypass version is not a candidate)
+			Expect(updatedRollout.Status.History).To(HaveLen(1))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 
 			// Should have gates not passing condition
 			gatesCondition := meta.FindStatusCondition(updatedRollout.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
@@ -3887,14 +4031,14 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, staleAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1beta2.ImagePolicy
+				var imagePolicy imagev1.ImagePolicy
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "test-image-policy",
 					Namespace: namespace,
 				}, &imagePolicy)
 				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1beta2.ImageRef{
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
 					Tag: "1.0.0",
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
