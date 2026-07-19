@@ -236,7 +236,8 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Gating logic: gates already evaluated at the beginning, check if deployment should be blocked
-	if !r.hasManualDeployment(&rollout) {
+	// Skip gate blocking on first deploy (empty history) so a rollout always reaches its initial version.
+	if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 {
 		if !gatesPassing {
 			return ctrl.Result{}, nil // Status already updated at the beginning
 		}
@@ -245,9 +246,16 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// On first deploy, fall back to raw release candidates if gates filtered them all out.
+	if len(rollout.Status.History) == 0 && len(gatedReleaseCandidates) == 0 {
+		gatedReleaseCandidates = releaseCandidates
+	}
+
 	// Block automatic deploys on unhealthy health checks. Manual deploys bypass; the
 	// recovery state for those is captured by setBakeFailureDisabledForNewDeploy.
-	if !r.hasManualDeployment(&rollout) && !healthChecksHealthy {
+	// Skip on first deploy (empty history) — nothing is running yet, so health checks
+	// will be unhealthy by definition.
+	if !r.hasManualDeployment(&rollout) && len(rollout.Status.History) > 0 && !healthChecksHealthy {
 		log.Info("Health checks are not healthy, blocking deployment", "message", healthCheckMessage)
 		if r.Recorder != nil {
 			r.Recorder.Event(&rollout, corev1.EventTypeWarning, "HealthCheckBlocking", healthCheckMessage)
