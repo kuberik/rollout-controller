@@ -7,6 +7,7 @@ resources:
   - bases/kuberik.com_healthchecks.yaml
   - bases/kuberik.com_rolloutschedules.yaml
   - bases/kuberik.com_clusterrolloutschedules.yaml
+  - bases/rollout.kuberik.com_rollouttests.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

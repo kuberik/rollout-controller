@@ -17,4 +17,5 @@ resources:
   - v1alpha1_rolloutschedule_combined_constraints.yaml
   - v1alpha1_clusterrolloutschedule_holiday_freeze.yaml
   - v1alpha1_clusterrolloutschedule_peak_hours_deny.yaml
+  - rollout_v1alpha1_rollouttest.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

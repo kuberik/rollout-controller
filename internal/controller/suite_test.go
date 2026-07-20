@@ -35,6 +35,7 @@ import (
 	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	rolloutkuberikv1alpha1 "github.com/kuberik/rollout-controller/api/rollout/v1alpha1"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -63,6 +64,9 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	err = kuberikcomv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = rolloutkuberikv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = sourcev1.AddToScheme(scheme.Scheme)
