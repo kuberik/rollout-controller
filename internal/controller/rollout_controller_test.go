@@ -5925,3 +5925,189 @@ func (m *mockResource) RegistryStr() string {
 func (m *mockResource) String() string {
 	return m.registry
 }
+
+var _ = Describe("Rollout gated by a RolloutDependency", func() {
+	// Exercises both controllers against the same pair of Rollouts: the
+	// dependency controller decides which consumer releases are admissible and
+	// publishes a gate, and the rollout controller is what actually refuses to
+	// advance. Testing them apart would let the gate be right while the rollout
+	// ignores it.
+	ctx := context.Background()
+
+	const (
+		providerName = "provider-app"
+		consumerName = "consumer-app"
+		contract     = "api"
+	)
+
+	var (
+		namespace            string
+		dependencyReconciler *RolloutDependencyReconciler
+		rolloutReconciler    *RolloutReconciler
+	)
+
+	newImagePolicy := func(name, latestTag string) {
+		policy := &imagev1.ImagePolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: imagev1.ImagePolicySpec{
+				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "test-image-repo"},
+				Policy: imagev1.ImagePolicyChoice{
+					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.1"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+		policy.Status.LatestRef = &imagev1.ImageRef{Tag: latestTag}
+		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+	}
+
+	// newRollout creates a Rollout whose history already holds deployedTag, so
+	// that gate evaluation applies — a Rollout with no history deploys its
+	// newest release regardless of gates.
+	newRollout := func(name, deployedTag, deployedVersion string, available []rolloutv1alpha1.VersionInfo) *rolloutv1alpha1.Rollout {
+		newImagePolicy(name, available[len(available)-1].Tag)
+
+		rollout := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: rolloutv1alpha1.RolloutSpec{
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: name},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+		succeeded := rolloutv1alpha1.BakeStatusSucceeded
+		deployed := rolloutv1alpha1.VersionInfo{Tag: deployedTag}
+		if deployedVersion != "" {
+			deployed.Version = &deployedVersion
+		}
+		rollout.Status.AvailableReleases = available
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:    deployed,
+			Timestamp:  metav1.Now(),
+			BakeStatus: &succeeded,
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+		return rollout
+	}
+
+	reconcileDependency := func() {
+		_, err := dependencyReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "consumer-needs-api", Namespace: namespace},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	reconcileRollout := func(name string) {
+		_, err := rolloutReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	deployedTag := func(name string) string {
+		rollout := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, rollout)).To(Succeed())
+		return rollout.Status.History[0].Version.Tag
+	}
+
+	JustBeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "dep-e2e-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+
+		dependencyReconciler = &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		rolloutReconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}
+
+		By("deploying a provider that serves contract api 1.0.0")
+		newRollout(providerName, "provider-1", "1.0.0-1", []rolloutv1alpha1.VersionInfo{
+			{Tag: "provider-1", Version: ptrTo("1.0.0-1")},
+		})
+
+		By("deploying a consumer whose next release needs a newer contract than that")
+		newRollout(consumerName, "consumer-1", "2.0.0-1", []rolloutv1alpha1.VersionInfo{
+			{Tag: "consumer-1", Version: ptrTo("2.0.0-1"), Requires: map[string]string{contract: "^1.0.0"}},
+			{Tag: "consumer-2", Version: ptrTo("2.1.0-2"), Requires: map[string]string{contract: "^1.1.0"}},
+		})
+
+		dependency := &rolloutv1alpha1.RolloutDependency{
+			ObjectMeta: metav1.ObjectMeta{Name: "consumer-needs-api", Namespace: namespace},
+			Spec: rolloutv1alpha1.RolloutDependencySpec{
+				RolloutRef:  corev1.LocalObjectReference{Name: consumerName},
+				ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: providerName},
+				Contract:    ptrTo(contract),
+			},
+		}
+		Expect(k8sClient.Create(ctx, dependency)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: namespace},
+		})).To(Succeed())
+	})
+
+	It("holds the consumer back until the provider deploys the contract it needs", func() {
+		By("evaluating the dependency against the currently deployed provider")
+		reconcileDependency()
+
+		gate := &rolloutv1alpha1.RolloutGate{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "dependency-consumer-needs-api", Namespace: namespace,
+		}, gate)).To(Succeed())
+		Expect(*gate.Spec.AllowedVersions).To(Equal([]string{"consumer-1"}))
+
+		By("reconciling the consumer, which must refuse to advance")
+		reconcileRollout(consumerName)
+		Expect(deployedTag(consumerName)).To(Equal("consumer-1"))
+
+		consumer := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: consumerName, Namespace: namespace}, consumer)).To(Succeed())
+		Expect(consumer.Status.ReleaseCandidates).To(HaveLen(1))
+		Expect(consumer.Status.GatedReleaseCandidates).To(BeEmpty())
+		gatesPassing := meta.FindStatusCondition(consumer.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+		Expect(gatesPassing).NotTo(BeNil())
+		Expect(gatesPassing.Reason).To(Equal("NoAllowedVersions"))
+
+		By("advancing the provider to a release that serves contract api 1.1.0")
+		provider := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: providerName, Namespace: namespace}, provider)).To(Succeed())
+		succeeded := rolloutv1alpha1.BakeStatusSucceeded
+		provider.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:    rolloutv1alpha1.VersionInfo{Tag: "provider-2", Version: ptrTo("1.1.0-2")},
+			Timestamp:  metav1.Now(),
+			BakeStatus: &succeeded,
+		}}, provider.Status.History...)
+		Expect(k8sClient.Status().Update(ctx, provider)).To(Succeed())
+
+		By("re-evaluating the dependency, which now admits the blocked release")
+		reconcileDependency()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "dependency-consumer-needs-api", Namespace: namespace,
+		}, gate)).To(Succeed())
+		Expect(*gate.Spec.AllowedVersions).To(ConsistOf("consumer-1", "consumer-2"))
+
+		By("reconciling the consumer, which now advances")
+		reconcileRollout(consumerName)
+		Expect(deployedTag(consumerName)).To(Equal("consumer-2"))
+	})
+
+	It("keeps the consumer blocked while the provider is still baking", func() {
+		By("putting the provider's newer release mid-bake")
+		provider := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: providerName, Namespace: namespace}, provider)).To(Succeed())
+		inProgress := rolloutv1alpha1.BakeStatusInProgress
+		provider.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:    rolloutv1alpha1.VersionInfo{Tag: "provider-2", Version: ptrTo("1.1.0-2")},
+			Timestamp:  metav1.Now(),
+			BakeStatus: &inProgress,
+		}}, provider.Status.History...)
+		Expect(k8sClient.Status().Update(ctx, provider)).To(Succeed())
+
+		reconcileDependency()
+		reconcileRollout(consumerName)
+
+		// The contract is not being served until the bake succeeds, so the
+		// consumer must not start on the strength of a deploy in flight.
+		Expect(deployedTag(consumerName)).To(Equal("consumer-1"))
+	})
+})

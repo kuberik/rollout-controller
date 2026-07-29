@@ -121,8 +121,8 @@ spec:
                       type: string
                     requiredVersion:
                       description: |-
-                        RequiredVersion is the contract version the candidate requires from the
-                        provider.
+                        RequiredVersion is the version constraint the candidate places on the
+                        provider's contract, verbatim from its requires annotation.
                       type: string
                     tag:
                       description: Tag is the image tag of the blocked release candidate.

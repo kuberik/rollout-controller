@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Masterminds/semver/v3"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -70,6 +71,62 @@ var _ = Describe("RolloutDependency helpers", func() {
 			triple, err := contractTriple("2.0.0-alpha.1")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(triple.String()).To(Equal("2.0.0-alpha.1"))
+		})
+	})
+
+	Describe("requirementConstraint", func() {
+		// A bare version must not mean "exactly this". A provider that advanced
+		// past it would otherwise stop satisfying every consumer built against
+		// it, stranding them — including on rollback.
+		It("reads a bare version as >=", func() {
+			constraint, err := requirementConstraint("1.2.0")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(constraint.String()).To(Equal(">=1.2.0"))
+		})
+
+		It("honours an explicit exact-match constraint", func() {
+			constraint, err := requirementConstraint("=1.2.0")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(constraint.Check(semver.MustParse("1.3.0"))).To(BeFalse())
+			Expect(constraint.Check(semver.MustParse("1.2.0"))).To(BeTrue())
+		})
+
+		It("rejects a constraint it cannot parse", func() {
+			_, err := requirementConstraint("not a constraint")
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("providerSatisfies constraint grammar", func() {
+		DescribeTable("evaluates the requirement against the provider's contract version",
+			func(provided, requirement string, expected bool) {
+				ok, err := providerSatisfies(provided, requirement)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(Equal(expected))
+			},
+			// Caret: compatible within the major.
+			Entry("caret admits a newer minor", "1.5.0-7", "^1.2.0", true),
+			Entry("caret admits the exact floor", "1.2.0-7", "^1.2.0", true),
+			Entry("caret blocks an older minor", "1.1.0-7", "^1.2.0", false),
+			Entry("caret blocks the next major", "2.0.0-7", "^1.2.0", false),
+			// Tilde: compatible within the minor.
+			Entry("tilde admits a newer patch", "1.2.9-7", "~1.2.0", true),
+			Entry("tilde blocks a newer minor", "1.3.0-7", "~1.2.0", false),
+			// Ranges and wildcards.
+			Entry("range admits inside the window", "1.5.0-7", ">=1.2.0 <2.0.0", true),
+			Entry("range blocks outside the window", "2.0.0-7", ">=1.2.0 <2.0.0", false),
+			Entry("wildcard admits a matching patch", "1.2.9-7", "1.2.x", true),
+			Entry("wildcard blocks a different minor", "1.3.0-7", "1.2.x", false),
+			// Bare version keeps its >= meaning.
+			Entry("bare version admits a newer provider", "1.5.0-7", "1.2.0", true),
+			Entry("bare version blocks an older provider", "1.1.0-7", "1.2.0", false),
+			// A real pre-release has not shipped the triple yet.
+			Entry("caret blocks a provider still in pre-release", "1.2.0-alpha.1", "^1.2.0", false),
+		)
+
+		It("errors on an unparseable constraint", func() {
+			_, err := providerSatisfies("1.2.0-7", "latest")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 

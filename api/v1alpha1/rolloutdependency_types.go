@@ -22,9 +22,12 @@ import (
 )
 
 // RequiresAnnotationPrefix is the OCI annotation prefix used by a release to
-// declare the contract versions it was built against. The annotation key is
-// "com.kuberik.rollout.requires.<contract>" and the value is a bare
-// MAJOR.MINOR.PATCH semantic version with no pre-release suffix.
+// declare what it requires of another service's contract. The annotation key is
+// "com.kuberik.rollout.requires.<contract>".
+//
+// The value is a SemVer constraint: "^1.2.0", "~1.2", ">=1.2.0 <2.0.0", "1.2.x"
+// and combinations are all accepted. A bare version ("1.2.0") means ">=1.2.0",
+// so a provider that has since advanced still satisfies it.
 const RequiresAnnotationPrefix = "com.kuberik.rollout.requires."
 
 // ProviderRolloutReference identifies the Rollout that provides a contract.
@@ -95,8 +98,8 @@ type BlockedRelease struct {
 	// +required
 	Tag string `json:"tag"`
 
-	// RequiredVersion is the contract version the candidate requires from the
-	// provider.
+	// RequiredVersion is the version constraint the candidate places on the
+	// provider's contract, verbatim from its requires annotation.
 	// +optional
 	RequiredVersion *string `json:"requiredVersion,omitempty"`
 

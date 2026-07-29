@@ -126,14 +126,27 @@ dependency travels with the image rather than the manifests:
 
 ```
 org.opencontainers.image.version    = <MAJOR.MINOR.PATCH>-<seq>   # own contract version
-com.kuberik.rollout.requires.<name> = <MAJOR.MINOR.PATCH>         # per consumed contract
+com.kuberik.rollout.requires.<name> = <constraint>                # per consumed contract
 ```
 
-The `-<seq>` suffix is a monotonic per-release ordinal, attached as a SemVer
-**pre-release** identifier (not build metadata, which SemVer ignores for
-precedence). Comparison strips it: the gate compares triples only, because by
-SemVer §11 a pre-release sorts below its own triple, so a suffixed provider
-version would never satisfy a bare requirement.
+The requirement is a full SemVer constraint, parsed by `Masterminds/semver`:
+`^1.2.0`, `~1.2`, `>=1.2.0 <2.0.0`, `1.2.x` and combinations all work. A bare
+version (`1.2.0`) is read as `>=1.2.0` rather than the grammar's usual exact
+match — exact would strand every consumer the moment the provider advanced, and
+would break rollback, since the older release must stay deployable. A consumer
+that genuinely cannot tolerate a newer provider writes `=1.2.0`.
+
+The `-<seq>` suffix on the provider's own version is a monotonic per-release
+ordinal, attached as a SemVer **pre-release** identifier (not build metadata,
+which SemVer ignores for precedence). That ordinal, and only that ordinal, is
+stripped before the constraint is evaluated: by SemVer §11 a pre-release sorts
+below its own triple, so a suffixed provider version would never satisfy a
+constraint on that triple. A real pre-release (`2.0.0-alpha.1`) is kept, and
+correctly fails a constraint on `2.0.0`.
+
+Parsing is strict. Lenient SemVer coerces `1.2` into `1.2.0` and a CalVer stamp
+like `2024-01-15` into `2024.0.0`, which would satisfy every constraint ever
+written; an unparseable version blocks instead.
 
 The controller reads each consumer release's `requires` values from
 `Rollout.status.availableReleases` (populated by `parseOCIManifest`), compares

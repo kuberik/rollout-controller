@@ -64,20 +64,46 @@ func contractTriple(version string) (*semver.Version, error) {
 	return semver.New(parsed.Major(), parsed.Minor(), parsed.Patch(), "", ""), nil
 }
 
-// providerSatisfies reports whether a provider's contract version satisfies the
-// version a consumer requires. Both are compared on their MAJOR.MINOR.PATCH
-// triple, and the provider satisfies the requirement when its triple is greater
-// than or equal to the required one.
-func providerSatisfies(providedVersion, requiredVersion string) (bool, error) {
+// requirementConstraint parses what a release says it requires of a contract.
+//
+// The full SemVer constraint grammar is supported, so a release can ask for
+// "^1.2.0", "~1.2", ">=1.2.0 <2.0.0", "1.2.x", or a comma/space separated
+// combination of those.
+//
+// A bare version ("1.2.0") is read as ">=1.2.0", not as an exact match. Exact
+// is the usual constraint-grammar default, but it is the wrong default here: a
+// provider that has since advanced to 1.3.0 would stop satisfying every
+// consumer built against 1.2.0, which would strand them — including on
+// rollback, where the older release must stay deployable. A consumer that
+// genuinely cannot tolerate a newer provider can still say "=1.2.0".
+func requirementConstraint(requirement string) (*semver.Constraints, error) {
+	if _, err := semver.StrictNewVersion(requirement); err == nil {
+		requirement = ">=" + requirement
+	}
+	constraint, err := semver.NewConstraint(requirement)
+	if err != nil {
+		return nil, fmt.Errorf("invalid version constraint %q: %w", requirement, err)
+	}
+	return constraint, nil
+}
+
+// providerSatisfies reports whether a provider's contract version satisfies
+// what a consumer requires of that contract.
+//
+// The provider side is reduced to the version it actually announces (see
+// contractTriple); the consumer side is a constraint. A provider still on a
+// real pre-release of a triple does not satisfy a constraint on that triple,
+// which is what SemVer means and what a rollout gate wants.
+func providerSatisfies(providedVersion, requirement string) (bool, error) {
 	provided, err := contractTriple(providedVersion)
 	if err != nil {
 		return false, fmt.Errorf("provided version: %w", err)
 	}
-	required, err := contractTriple(requiredVersion)
+	constraint, err := requirementConstraint(requirement)
 	if err != nil {
 		return false, fmt.Errorf("required version: %w", err)
 	}
-	return provided.Compare(required) >= 0, nil
+	return constraint.Check(provided), nil
 }
 
 // deployedRelease returns the newest release in a Rollout's history whose bake
