@@ -254,6 +254,16 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    requires:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Requires maps a contract name to the contract version this release was built
+                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        RolloutDependency uses these to gate this release on the deployed version of
+                        the Rollout providing each contract.
+                      type: object
                     revision:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.
@@ -352,6 +362,16 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    requires:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Requires maps a contract name to the contract version this release was built
+                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        RolloutDependency uses these to gate this release on the deployed version of
+                        the Rollout providing each contract.
+                      type: object
                     revision:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.
@@ -516,6 +536,16 @@ spec:
                           description: Digest is the image digest if available from
                             the ImagePolicy.
                           type: string
+                        requires:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Requires maps a contract name to the contract version this release was built
+                            against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                            annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                            RolloutDependency uses these to gate this release on the deployed version of
+                            the Rollout providing each contract.
+                          type: object
                         revision:
                           description: Revision is the revision information extracted
                             from OCI annotations if available.
@@ -552,6 +582,16 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    requires:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Requires maps a contract name to the contract version this release was built
+                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        RolloutDependency uses these to gate this release on the deployed version of
+                        the Rollout providing each contract.
+                      type: object
                     revision:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.

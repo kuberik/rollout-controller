@@ -45,6 +45,14 @@ type VersionInfo struct {
 	// Created is the creation timestamp extracted from OCI annotations if available.
 	// +optional
 	Created *metav1.Time `json:"created,omitempty"`
+
+	// Requires maps a contract name to the contract version this release was built
+	// against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+	// annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+	// RolloutDependency uses these to gate this release on the deployed version of
+	// the Rollout providing each contract.
+	// +optional
+	Requires map[string]string `json:"requires,omitempty"`
 }
 
 // HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.
