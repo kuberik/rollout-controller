@@ -111,9 +111,51 @@ spec:
 
 - **Rollout**: Main resource defining deployment strategy
 - **RolloutGate**: Conditions that must pass before deployment
+- **RolloutDependency**: Gates a rollout on the deployed contract version of another rollout
 - **RolloutSchedule**: Scheduled deployment configurations
 - **HealthCheck**: Health status from various sources
 - **ClusterRolloutSchedule**: Cross-cluster schedules
+
+## Rollout Dependencies
+
+`RolloutDependency` orders rollouts by inter-service contract version: a
+consumer waits until the provider it was built against has actually deployed.
+
+Releases declare what they were built against using OCI annotations, so the
+dependency travels with the image rather than the manifests:
+
+```
+org.opencontainers.image.version    = <MAJOR.MINOR.PATCH>-<seq>   # own contract version
+com.kuberik.rollout.requires.<name> = <MAJOR.MINOR.PATCH>         # per consumed contract
+```
+
+The `-<seq>` suffix is a monotonic per-release ordinal, attached as a SemVer
+**pre-release** identifier (not build metadata, which SemVer ignores for
+precedence). Comparison strips it: the gate compares triples only, because by
+SemVer §11 a pre-release sorts below its own triple, so a suffixed provider
+version would never satisfy a bare requirement.
+
+The controller reads each consumer release's `requires` values from
+`Rollout.status.availableReleases` (populated by `parseOCIManifest`), compares
+them against the contract version of the provider's successfully baked release,
+and publishes the verdict as a managed `RolloutGate` named
+`dependency-<name>` whose `allowedVersions` holds exactly the admitted
+releases. Rollout admission logic is untouched.
+
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutDependency
+metadata:
+  name: frontend-needs-backend
+spec:
+  rolloutRef:                 # consumer being gated (same namespace)
+    name: frontend-app
+  providerRef:                # provider, optionally in another namespace
+    name: backend-app
+  contract: backend           # defaults to providerRef.name
+```
+
+Worked example: `../rollout-dashboard/example/hello-dep`.
 
 ## Rollout Spec Example
 
