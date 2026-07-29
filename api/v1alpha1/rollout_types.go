@@ -51,6 +51,11 @@ type VersionInfo struct {
 	// annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
 	// RolloutDependency uses these to gate this release on the deployed version of
 	// the Rollout providing each contract.
+	//
+	// Bounded because it is populated from image annotations, which are outside
+	// this controller's trust boundary, and is stored on every release and every
+	// history entry.
+	// +kubebuilder:validation:MaxProperties=32
 	// +optional
 	Requires map[string]string `json:"requires,omitempty"`
 }

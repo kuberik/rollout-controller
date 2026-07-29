@@ -49,6 +49,28 @@ var _ = Describe("RolloutDependency helpers", func() {
 			_, err := contractTriple("main-1784664084-1d5defa")
 			Expect(err).To(HaveOccurred())
 		})
+
+		// Lenient parsing coerces these into enormous triples that satisfy every
+		// requirement ever written: "2024-01-15" becomes 2024.0.0 and "1.2"
+		// becomes 1.2.0. Parsing must be strict so callers block instead.
+		DescribeTable("rejects versions that only lenient parsing would accept",
+			func(version string) {
+				_, err := contractTriple(version)
+				Expect(err).To(HaveOccurred())
+			},
+			Entry("CalVer date", "2024-01-15"),
+			Entry("bare date", "20240115"),
+			Entry("major.minor", "1.2"),
+			Entry("major only", "1"),
+		)
+
+		// Only the numeric release ordinal is a suffix to be ignored. A real
+		// pre-release announces that the triple has not shipped yet.
+		It("keeps a non-ordinal pre-release", func() {
+			triple, err := contractTriple("2.0.0-alpha.1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(triple.String()).To(Equal("2.0.0-alpha.1"))
+		})
 	})
 
 	Describe("providerSatisfies", func() {
@@ -83,6 +105,17 @@ var _ = Describe("RolloutDependency helpers", func() {
 			_, err := providerSatisfies("not-semver", "1.0.0")
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("blocks a provider still on a pre-release of the required triple", func() {
+			ok, err := providerSatisfies("2.0.0-alpha.1", "2.0.0")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeFalse())
+		})
+
+		It("blocks a provider whose version is a CalVer stamp", func() {
+			_, err := providerSatisfies("2024-01-15", "1.0.0")
+			Expect(err).To(HaveOccurred())
+		})
 	})
 
 	Describe("deployedRelease", func() {
@@ -105,8 +138,14 @@ var _ = Describe("RolloutDependency helpers", func() {
 			Expect(deployedRelease(newRollout())).To(BeNil())
 		})
 
-		It("returns an entry with no bake status", func() {
-			Expect(deployedRelease(newRollout(entry("v2", nil))).Version.Tag).To(Equal("v2"))
+		// Absent evidence is not evidence of a successful deploy.
+		It("skips an entry with no bake status recorded", func() {
+			Expect(deployedRelease(newRollout(entry("v2", nil)))).To(BeNil())
+		})
+
+		It("falls back past an entry with no bake status", func() {
+			rollout := newRollout(entry("v2", nil), entry("v1", &succeeded))
+			Expect(deployedRelease(rollout).Version.Tag).To(Equal("v1"))
 		})
 
 		It("skips a release that is still baking and falls back to the last good one", func() {
@@ -348,8 +387,10 @@ var _ = Describe("RolloutDependency Controller", func() {
 		Expect(*gate.OwnerReferences[0].Controller).To(BeTrue())
 	})
 
-	It("reports a missing provider instead of silently admitting everything", func() {
-		newRollout("consumer", nil, nil)
+	It("blocks the consumer when the provider does not exist", func() {
+		newRollout("consumer", []kuberikcomv1alpha1.VersionInfo{
+			{Tag: "consumer-1", Requires: map[string]string{"db": "1.0.0"}},
+		}, nil)
 		dependency := newDependency("consumer-needs-db", "consumer", "missing-provider", "db")
 		reconcileDependency(dependency)
 
@@ -358,6 +399,12 @@ var _ = Describe("RolloutDependency Controller", func() {
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 		Expect(condition.Reason).To(Equal("ProviderNotFound"))
+
+		// A dependency pointing at a provider that does not exist yet, or at a
+		// typo, must not leave the consumer ungated.
+		gate := getGate(dependency)
+		Expect(gate.Spec.AllowedVersions).NotTo(BeNil())
+		Expect(*gate.Spec.AllowedVersions).To(BeEmpty())
 	})
 
 	It("only reports blocked releases the consumer could actually deploy next", func() {

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/Masterminds/semver/v3"
 
@@ -29,22 +30,38 @@ const (
 	LabelDependencyName = "gate.kuberik.com/dependency-name"
 )
 
-// contractTriple parses a version string and strips any pre-release and build
-// metadata, leaving only the MAJOR.MINOR.PATCH triple.
+// releaseOrdinal matches the monotonic per-revision ordinal that releases carry
+// as a SemVer pre-release identifier.
+var releaseOrdinal = regexp.MustCompile(`^[0-9]+$`)
+
+// contractTriple parses a version string and returns the MAJOR.MINOR.PATCH
+// triple it announces as a contract version.
 //
 // Release versions carry a monotonic per-revision ordinal as a SemVer
 // pre-release identifier (e.g. "1.110.0-1785243823") so that images sharing a
 // triple still sort by build order. That ordinal says nothing about the
 // contract, and by SemVer §11 a pre-release sorts *below* its own triple — so
 // comparing a suffixed provider version against a bare required version would
-// never admit. Dependency checks therefore compare triples only.
+// never admit. That ordinal, and only that ordinal, is therefore stripped.
+//
+// Any other pre-release ("2.0.0-alpha.1", "2.0.0-rc.1") is a real pre-release:
+// it announces that the triple has not shipped yet, so it is kept and compared
+// as SemVer defines, which sorts it below the triple.
+//
+// Parsing is strict. Lenient SemVer parsing coerces partial and non-SemVer
+// versions into enormous triples — "1.2" becomes 1.2.0 and a CalVer stamp like
+// "2024-01-15" becomes 2024.0.0, which would satisfy every requirement ever
+// written. A version this function cannot parse strictly is an error, and
+// callers block on it.
 func contractTriple(version string) (*semver.Version, error) {
-	parsed, err := semver.NewVersion(version)
+	parsed, err := semver.StrictNewVersion(version)
 	if err != nil {
 		return nil, fmt.Errorf("invalid semantic version %q: %w", version, err)
 	}
-	triple := semver.New(parsed.Major(), parsed.Minor(), parsed.Patch(), "", "")
-	return triple, nil
+	if prerelease := parsed.Prerelease(); prerelease != "" && !releaseOrdinal.MatchString(prerelease) {
+		return parsed, nil
+	}
+	return semver.New(parsed.Major(), parsed.Minor(), parsed.Patch(), "", ""), nil
 }
 
 // providerSatisfies reports whether a provider's contract version satisfies the
@@ -63,18 +80,23 @@ func providerSatisfies(providedVersion, requiredVersion string) (bool, error) {
 	return provided.Compare(required) >= 0, nil
 }
 
-// deployedRelease returns the newest release in a Rollout's history that has
-// finished deploying successfully.
+// deployedRelease returns the newest release in a Rollout's history whose bake
+// succeeded.
 //
-// A history entry counts as deployed when its bake succeeded, or when no bake
-// status is recorded at all (the Rollout has no bakeTime configured, so the
-// deploy is complete as soon as it is recorded). Entries that are still
-// deploying, baking, failed, or cancelled are skipped: a consumer must not be
-// unblocked by a provider release that has not proven itself.
+// Entries that are still deploying, baking, failed, or cancelled are skipped: a
+// consumer must not be unblocked by a provider release that has not proven
+// itself. An entry with no bake status recorded is skipped for the same reason
+// — absent evidence is not evidence of success.
+//
+// Note that a provider with no bakeTime configured records BakeStatus=Succeeded
+// the moment the deploy is written, before the workload has rolled. For such a
+// provider this is a happens-after ordering on the Rollout record, not proof
+// that the contract is being served. Configure bakeTime on providers whose
+// consumers must not start until the contract is actually live.
 func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.DeploymentHistoryEntry {
 	for i := range rollout.Status.History {
 		entry := &rollout.Status.History[i]
-		if entry.BakeStatus == nil || *entry.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded {
+		if entry.BakeStatus != nil && *entry.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded {
 			return entry
 		}
 	}

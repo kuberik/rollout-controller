@@ -84,6 +84,11 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// The provider Rollout may live in another namespace: a shared contract is
 	// often produced by a service deployed elsewhere in the cluster.
+	//
+	// A missing provider must block, not disappear. A dependency created before
+	// its provider — or pointing at a typo — would otherwise leave the consumer
+	// with no gate at all and free rein to deploy, which is the exact failure
+	// this resource exists to prevent.
 	provider := &kuberikcomv1alpha1.Rollout{}
 	providerKey := types.NamespacedName{
 		Namespace: dependency.Spec.ProviderNamespace(dependency.Namespace),
@@ -91,8 +96,12 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	if err := r.Get(ctx, providerKey, provider); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, r.markNotReady(ctx, dependency, "ProviderNotFound",
-				fmt.Sprintf("Provider Rollout %s not found", providerKey))
+			message := fmt.Sprintf("Provider Rollout %s not found", providerKey)
+			if _, syncErr := r.syncGate(ctx, dependency, consumer, nil); syncErr != nil {
+				return ctrl.Result{}, errors.Join(syncErr,
+					r.markNotReady(ctx, dependency, "GateSyncFailed", syncErr.Error()))
+			}
+			return ctrl.Result{}, r.markNotReady(ctx, dependency, "ProviderNotFound", message)
 		}
 		return ctrl.Result{}, err
 	}
@@ -125,8 +134,8 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	pending := pendingReleases(consumer)
-	blocking := blockedTags(blocked, pending)
+	pending, pendingKnown := pendingReleases(consumer)
+	blocking := blockedTags(blocked, pending, pendingKnown)
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -170,24 +179,30 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // pendingReleases returns the tags the consumer Rollout could still move to,
 // i.e. releases newer than the one currently deployed.
-func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) []string {
+//
+// The second return value reports whether that set could be determined at all.
+// When it could not, callers must not read "no pending releases" as "nothing is
+// held back" — that would report the dependency as satisfied while its gate is
+// in fact blocking every release.
+func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) ([]string, bool) {
 	candidates, err := getNextReleaseCandidates(consumer.Status.AvailableReleases, &consumer.Status)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	tags := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		tags = append(tags, candidate.Tag)
 	}
-	return tags
+	return tags, true
 }
 
 // blockedTags returns the tags of blocked releases that the consumer could
-// otherwise deploy right now.
-func blockedTags(blocked []kuberikcomv1alpha1.BlockedRelease, pending []string) []string {
+// otherwise deploy right now. When the pending set is unknown, every blocked
+// release counts, so the dependency reports what it is actually holding back.
+func blockedTags(blocked []kuberikcomv1alpha1.BlockedRelease, pending []string, pendingKnown bool) []string {
 	var tags []string
 	for _, release := range blocked {
-		if slices.Contains(pending, release.Tag) {
+		if !pendingKnown || slices.Contains(pending, release.Tag) {
 			tags = append(tags, release.Tag)
 		}
 	}

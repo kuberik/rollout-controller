@@ -263,6 +263,11 @@ spec:
                         annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
+
+                        Bounded because it is populated from image annotations, which are outside
+                        this controller's trust boundary, and is stored on every release and every
+                        history entry.
+                      maxProperties: 32
                       type: object
                     revision:
                       description: Revision is the revision information extracted
@@ -371,6 +376,11 @@ spec:
                         annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
+
+                        Bounded because it is populated from image annotations, which are outside
+                        this controller's trust boundary, and is stored on every release and every
+                        history entry.
+                      maxProperties: 32
                       type: object
                     revision:
                       description: Revision is the revision information extracted
@@ -545,6 +555,11 @@ spec:
                             annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
                             RolloutDependency uses these to gate this release on the deployed version of
                             the Rollout providing each contract.
+
+                            Bounded because it is populated from image annotations, which are outside
+                            this controller's trust boundary, and is stored on every release and every
+                            history entry.
+                          maxProperties: 32
                           type: object
                         revision:
                           description: Revision is the revision information extracted
@@ -591,6 +606,11 @@ spec:
                         annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
+
+                        Bounded because it is populated from image annotations, which are outside
+                        this controller's trust boundary, and is stored on every release and every
+                        history entry.
+                      maxProperties: 32
                       type: object
                     revision:
                       description: Revision is the revision information extracted

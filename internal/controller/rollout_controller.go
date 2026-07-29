@@ -484,12 +484,12 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	imageRef := imageRepo.Spec.Image + ":" + tag
 
 	// Parse OCI manifest to extract version information
-	if meta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
-		versionInfo.Version = meta.Version
-		versionInfo.Revision = meta.Revision
-		versionInfo.Created = meta.Created
-		versionInfo.Requires = meta.Requires
-		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", meta.Version, "revision", meta.Revision, "created", meta.Created, "requires", meta.Requires)
+	if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		versionInfo.Version = ociMeta.Version
+		versionInfo.Revision = ociMeta.Revision
+		versionInfo.Created = ociMeta.Created
+		versionInfo.Requires = ociMeta.Requires
+		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", ociMeta.Version, "revision", ociMeta.Revision, "created", ociMeta.Created, "requires", ociMeta.Requires)
 	} else {
 		log.V(5).Info("Could not parse OCI manifest", "imageRef", imageRef, "error", err)
 		// Return the versionInfo even if parsing failed - we still have the tag
@@ -497,6 +497,19 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 
 	return versionInfo, nil
 }
+
+// hasResolvedMetadata reports whether a release carries any metadata read from
+// its OCI manifest. A release with none was recorded from a manifest fetch that
+// failed.
+func hasResolvedMetadata(release rolloutv1alpha1.VersionInfo) bool {
+	return release.Version != nil || release.Revision != nil ||
+		release.Created != nil || release.Requires != nil
+}
+
+// maxRequiresAnnotations bounds how many contract requirements one image may
+// declare. It matches the MaxProperties on VersionInfo.Requires, so a hostile
+// or broken image cannot produce a status the API server would then reject.
+const maxRequiresAnnotations = 32
 
 // ociMetadata holds the image metadata the rollout controller reads out of an
 // OCI manifest.
@@ -566,10 +579,22 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 
 	// Collect required contract versions from both manifest and config annotations.
 	// Manifest annotations take precedence over config annotations for the same contract.
+	// An empty value is kept rather than dropped. Dropping it would make a
+	// mis-templated annotation indistinguishable from "declares no requirement",
+	// which admits the release; keeping it fails the version check instead.
+	//
+	// Capped at maxRequiresAnnotations: these come from image annotations, and an
+	// image carrying thousands of them would otherwise inflate Rollout status
+	// past what the API server will store.
 	for _, annotations := range []map[string]string{manifestData.Config.Annotations, manifestData.Annotations} {
 		for key, value := range annotations {
 			contract, found := strings.CutPrefix(key, rolloutv1alpha1.RequiresAnnotationPrefix)
-			if !found || contract == "" || value == "" {
+			if !found || contract == "" {
+				continue
+			}
+			if _, existing := requires[contract]; !existing && len(requires) >= maxRequiresAnnotations {
+				log.Info("Ignoring requires annotation beyond the supported limit",
+					"imageRef", imageRef, "contract", contract, "limit", maxRequiresAnnotations)
 				continue
 			}
 			if requires == nil {
@@ -710,14 +735,14 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type, source, title, and description
 		// This is a limitation of the current design - we could optimize this further
 		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if meta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 			// Set rollout-level metadata from the latest release
-			rollout.Status.ArtifactType = meta.ArtifactType
-			rollout.Status.Source = meta.Source
-			rollout.Status.Title = meta.Title
-			rollout.Status.Description = meta.Description
-			if meta.ArtifactType != nil || meta.Source != nil || meta.Title != nil || meta.Description != nil {
-				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", meta.ArtifactType, "source", meta.Source, "title", meta.Title, "description", meta.Description)
+			rollout.Status.ArtifactType = ociMeta.ArtifactType
+			rollout.Status.Source = ociMeta.Source
+			rollout.Status.Title = ociMeta.Title
+			rollout.Status.Description = ociMeta.Description
+			if ociMeta.ArtifactType != nil || ociMeta.Source != nil || ociMeta.Title != nil || ociMeta.Description != nil {
+				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", ociMeta.ArtifactType, "source", ociMeta.Source, "title", ociMeta.Title, "description", ociMeta.Description)
 			}
 		} else {
 			log.V(5).Info("Could not parse OCI manifest for rollout metadata", "imageRef", imageRef, "error", err)
@@ -731,11 +756,22 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	for _, newRelease := range newReleases {
 		// Check if this release already exists by comparing tags
 		found := false
-		for _, existing := range existingReleases {
-			if existing.Tag == newRelease.Tag {
-				found = true
-				break
+		for i, existing := range existingReleases {
+			if existing.Tag != newRelease.Tag {
+				continue
 			}
+			found = true
+			// A release recorded while the registry was unreachable carries no
+			// metadata at all, and is otherwise never revisited. Left alone it
+			// would look like a release that declares no requirements, which is
+			// indistinguishable to a RolloutDependency from one that is safe to
+			// admit. Refresh it once the metadata resolves.
+			if !hasResolvedMetadata(existing) && hasResolvedMetadata(newRelease) {
+				newRelease.Digest = existing.Digest
+				existingReleases[i] = newRelease
+				log.V(4).Info("Refreshed release with metadata that failed to resolve earlier", "tag", newRelease.Tag)
+			}
+			break
 		}
 		if !found {
 			existingReleases = append(existingReleases, newRelease)
