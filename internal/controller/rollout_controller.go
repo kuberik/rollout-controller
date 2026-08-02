@@ -491,6 +491,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 		versionInfo.Requires = ociMeta.Requires
 		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", ociMeta.Version, "revision", ociMeta.Revision, "created", ociMeta.Created, "requires", ociMeta.Requires)
 	} else {
+		versionInfo.MetadataUnresolved = true
 		log.V(5).Info("Could not parse OCI manifest", "imageRef", imageRef, "error", err)
 		// Return the versionInfo even if parsing failed - we still have the tag
 	}
@@ -498,18 +499,18 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	return versionInfo, nil
 }
 
-// hasResolvedMetadata reports whether a release carries any metadata read from
-// its OCI manifest. A release with none was recorded from a manifest fetch that
-// failed.
-func hasResolvedMetadata(release rolloutv1alpha1.VersionInfo) bool {
-	return release.Version != nil || release.Revision != nil ||
-		release.Created != nil || release.Requires != nil
-}
-
-// maxRequiresAnnotations bounds how many contract requirements one image may
-// declare. It matches the MaxProperties on VersionInfo.Requires, so a hostile
-// or broken image cannot produce a status the API server would then reject.
-const maxRequiresAnnotations = 32
+// Bounds on the requires annotations one image may declare. maxRequiresAnnotations
+// matches the MaxProperties marker on VersionInfo.Requires, so a hostile or broken
+// image cannot produce a status the API server would then reject. Exceeding any of
+// these is an error rather than a truncation — see parseOCIManifest.
+//
+// A contract name is a service name and a value is a SemVer constraint; neither is
+// ever long.
+const (
+	maxRequiresAnnotations = 32
+	maxRequiresKeyLength   = 64
+	maxRequiresValueLength = 256
+)
 
 // ociMetadata holds the image metadata the rollout controller reads out of an
 // OCI manifest.
@@ -583,19 +584,26 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 	// mis-templated annotation indistinguishable from "declares no requirement",
 	// which admits the release; keeping it fails the version check instead.
 	//
-	// Capped at maxRequiresAnnotations: these come from image annotations, and an
-	// image carrying thousands of them would otherwise inflate Rollout status
-	// past what the API server will store.
+	// These come from image annotations, which are outside this controller's
+	// trust boundary, so the limits below fail closed. Dropping the excess
+	// instead would be a gate bypass: Go randomises map iteration, so an image
+	// carrying more junk requires.* annotations than the cap would push the real
+	// requirement out of the map at random, and a release with no recorded
+	// requirement is one a dependency admits.
 	for _, annotations := range []map[string]string{manifestData.Config.Annotations, manifestData.Annotations} {
 		for key, value := range annotations {
 			contract, found := strings.CutPrefix(key, rolloutv1alpha1.RequiresAnnotationPrefix)
 			if !found || contract == "" {
 				continue
 			}
+			if len(contract) > maxRequiresKeyLength || len(value) > maxRequiresValueLength {
+				return ociMetadata{}, fmt.Errorf(
+					"requires annotation for contract %q on %s exceeds the size limit (%d/%d bytes)",
+					contract, imageRef, maxRequiresKeyLength, maxRequiresValueLength)
+			}
 			if _, existing := requires[contract]; !existing && len(requires) >= maxRequiresAnnotations {
-				log.Info("Ignoring requires annotation beyond the supported limit",
-					"imageRef", imageRef, "contract", contract, "limit", maxRequiresAnnotations)
-				continue
+				return ociMetadata{}, fmt.Errorf(
+					"%s declares more than %d requires annotations", imageRef, maxRequiresAnnotations)
 			}
 			if requires == nil {
 				requires = make(map[string]string)
@@ -761,12 +769,10 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 				continue
 			}
 			found = true
-			// A release recorded while the registry was unreachable carries no
-			// metadata at all, and is otherwise never revisited. Left alone it
-			// would look like a release that declares no requirements, which is
-			// indistinguishable to a RolloutDependency from one that is safe to
-			// admit. Refresh it once the metadata resolves.
-			if !hasResolvedMetadata(existing) && hasResolvedMetadata(newRelease) {
+			// A release recorded while the registry was unreachable is blocked by
+			// any RolloutDependency until its metadata resolves, and is otherwise
+			// never revisited. Refresh it once the fetch succeeds.
+			if existing.MetadataUnresolved && !newRelease.MetadataUnresolved {
 				newRelease.Digest = existing.Digest
 				existingReleases[i] = newRelease
 				log.V(4).Info("Refreshed release with metadata that failed to resolve earlier", "tag", newRelease.Tag)

@@ -171,6 +171,28 @@ spec:
   contract: backend           # defaults to providerRef.name
 ```
 
+### Trust model and limits
+
+- **The requires annotation is a self-declaration.** It gates the release that
+  carries it, so anyone who can push to the consumer's image repo can also write
+  `>=0.0.0` and self-admit. `RolloutDependency` is a coordination and ordering
+  control, not an authorization boundary — it does not contain a hostile image
+  publisher.
+- **A first deploy is not gated.** A Rollout with no history falls back to the
+  raw release candidates when gates filter them all out, so a brand-new consumer
+  reaches an initial version regardless of an unmet dependency. It is gated from
+  its second release on.
+- **A provider with no `bakeTime` records `Succeeded` immediately**, before the
+  workload has rolled. Configure `bakeTime` on providers whose consumers must
+  not start until the contract is actually live.
+- **Apply the CRDs before rolling the controller.** `requires` is a new property
+  on the existing Rollout CRD; if the schema is not updated first the API server
+  prunes it on every status write and releases read back as declaring nothing.
+- Releases already in `status.availableReleases` from before this change carry no
+  `requires`, and are only re-resolved when the image policy points at them
+  again. A dependency added to an existing Rollout does not retroactively gate
+  that backlog.
+
 Worked example: `../rollout-dashboard/example/hello-dep`.
 
 ## Rollout Spec Example

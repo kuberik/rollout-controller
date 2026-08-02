@@ -67,6 +67,7 @@ spec:
                 properties:
                   name:
                     description: Name is the name of the providing Rollout.
+                    minLength: 1
                     type: string
                   namespace:
                     description: |-
@@ -80,6 +81,10 @@ spec:
                 description: |-
                   RolloutRef references the consumer Rollout that this dependency gates.
                   The Rollout must live in the same namespace as this RolloutDependency.
+
+                  The name is validated here because corev1.LocalObjectReference defaults it
+                  to the empty string, which would otherwise be admitted and then fail every
+                  lookup.
                 properties:
                   name:
                     default: ""
@@ -92,6 +97,9 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: rolloutRef.name must not be empty
+                  rule: self.name != ''
             required:
             - providerRef
             - rolloutRef
@@ -103,13 +111,17 @@ spec:
                 description: |-
                   AdmittedVersions lists the consumer release candidate tags admitted by this
                   dependency. This is the allow list published to the managed RolloutGate.
+                  Named for symmetry with RolloutGate.allowedVersions, which also holds tags.
+                  Capped at the newest entries; see maxPublishedReleases.
                 items:
                   type: string
+                maxItems: 50
                 type: array
               blockedReleases:
                 description: |-
                   BlockedReleases lists the consumer release candidates held back by this
-                  dependency, with the contract version each is waiting for.
+                  dependency, with the constraint each places on the contract.
+                  Capped at the newest entries; see maxPublishedReleases.
                 items:
                   description: |-
                     BlockedRelease describes a consumer release candidate held back by this
@@ -130,6 +142,7 @@ spec:
                   required:
                   - tag
                   type: object
+                maxItems: 50
                 type: array
               conditions:
                 description: |-
@@ -137,8 +150,8 @@ spec:
 
                   Condition types:
                   - "Ready": the dependency was evaluated and its gate is in sync
-                  - "Satisfied": at least one consumer release candidate is admitted, or
-                    there is nothing to gate
+                  - "Satisfied": no release the consumer could deploy next is held back by
+                    this dependency
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -210,7 +223,9 @@ spec:
                 description: |-
                   ProvidedVersion is the contract version currently deployed by the provider
                   Rollout, taken from the OCI version annotation of its deployed release with
-                  any pre-release suffix stripped.
+                  the numeric per-build ordinal stripped. A real pre-release identifier
+                  ("2.0.0-alpha.1") is preserved, because it means the triple has not
+                  shipped.
                 type: string
             type: object
         required:

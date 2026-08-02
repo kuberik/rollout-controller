@@ -127,6 +127,17 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 	return nil
 }
 
+// maxPublishedReleases bounds the admitted and blocked lists this dependency
+// publishes.
+//
+// They are derived from availableReleases, which only grows — and grows fastest
+// exactly when a dependency is holding a consumer back, because the retention
+// sweep runs on the deploy-success path. Left unbounded the same list is written
+// three times (dependency status, gate spec, and the rollout's gate summary) and
+// walks toward the API server's object size limit. Keeping the newest N leaves
+// recent rollback targets addressable.
+const maxPublishedReleases = 50
+
 // evaluateDependency partitions a consumer's releases into those admitted by
 // this dependency and those blocked by it.
 //
@@ -143,6 +154,17 @@ func evaluateDependency(
 	providedVersion string,
 ) (admitted []string, blocked []rolloutv1alpha1.BlockedRelease) {
 	for _, release := range releases {
+		// A release whose manifest could not be read has no annotations to
+		// consult, which would otherwise read as "declares no requirement" and
+		// be admitted. A registry outage must not open the gate.
+		if release.MetadataUnresolved {
+			blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
+				Tag:    release.Tag,
+				Reason: "MetadataUnresolved",
+			})
+			continue
+		}
+
 		required, requires := release.Requires[contract]
 		if !requires {
 			// Nothing to gate on: this release does not consume the contract.
@@ -181,5 +203,14 @@ func evaluateDependency(
 			})
 		}
 	}
-	return admitted, blocked
+	return newest(admitted), newest(blocked)
+}
+
+// newest keeps the tail of a release-ordered slice, which is the newest end:
+// availableReleases is appended to as releases are discovered.
+func newest[T any](releases []T) []T {
+	if len(releases) <= maxPublishedReleases {
+		return releases
+	}
+	return releases[len(releases)-maxPublishedReleases:]
 }

@@ -268,6 +268,27 @@ var _ = Describe("RolloutDependency helpers", func() {
 			Expect(blocked[0].Reason).To(Equal("ConstraintNotSatisfied"))
 		})
 
+		// A registry outage must not read as "this release needs nothing".
+		It("blocks a release whose metadata could not be resolved", func() {
+			admitted, blocked := evaluateDependency(
+				[]kuberikcomv1alpha1.VersionInfo{{Tag: "v1", MetadataUnresolved: true}},
+				"db", "1.0.0",
+			)
+			Expect(admitted).To(BeEmpty())
+			Expect(blocked).To(HaveLen(1))
+			Expect(blocked[0].Reason).To(Equal("MetadataUnresolved"))
+		})
+
+		It("caps the published lists at the newest entries", func() {
+			var releases []kuberikcomv1alpha1.VersionInfo
+			for i := 0; i < maxPublishedReleases+10; i++ {
+				releases = append(releases, release(fmt.Sprintf("v%d", i), nil))
+			}
+			admitted, _ := evaluateDependency(releases, "db", "1.0.0")
+			Expect(admitted).To(HaveLen(maxPublishedReleases))
+			Expect(admitted[len(admitted)-1]).To(Equal(fmt.Sprintf("v%d", maxPublishedReleases+9)))
+		})
+
 		It("blocks releases with an unparseable requirement", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", map[string]string{"db": "latest"})},
@@ -450,6 +471,22 @@ var _ = Describe("RolloutDependency Controller", func() {
 		Expect(gate.OwnerReferences[0].Kind).To(Equal("RolloutDependency"))
 		Expect(gate.OwnerReferences[0].Name).To(Equal(dependency.Name))
 		Expect(*gate.OwnerReferences[0].Controller).To(BeTrue())
+	})
+
+	It("blocks the consumer when its Rollout cannot be read", func() {
+		// No consumer Rollout is created at all. The gate must still exist and
+		// admit nothing, otherwise the dependency is a no-op until it first
+		// succeeds.
+		newRollout("provider", nil, nil)
+		dependency := newDependency("consumer-needs-db", "missing-consumer", "provider", "db")
+		reconcileDependency(dependency)
+
+		gate := &kuberikcomv1alpha1.RolloutGate{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: dependencyGateName(dependency), Namespace: namespace,
+		}, gate)).To(Succeed())
+		Expect(*gate.Spec.AllowedVersions).To(BeEmpty())
+		Expect(gate.Spec.RolloutRef.Name).To(Equal("missing-consumer"))
 	})
 
 	It("blocks the consumer when the provider does not exist", func() {

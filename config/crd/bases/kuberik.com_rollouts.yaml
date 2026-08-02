@@ -254,13 +254,23 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    metadataUnresolved:
+                      description: |-
+                        MetadataUnresolved is true when this release's OCI manifest could not be
+                        read, so Requires and the version fields say nothing about the image.
+                        A RolloutDependency blocks such a release rather than reading the absent
+                        annotations as "declares no requirement", which would open the gate
+                        whenever the registry is unreachable.
+                      type: boolean
                     requires:
                       additionalProperties:
                         type: string
                       description: |-
-                        Requires maps a contract name to the contract version this release was built
-                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
-                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        Requires maps a contract name to what this release requires of that
+                        contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are version constraints as defined by
+                        github.com/Masterminds/semver, applied verbatim — note that a bare version
+                        is an exact match there, not a floor.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
 
@@ -367,13 +377,23 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    metadataUnresolved:
+                      description: |-
+                        MetadataUnresolved is true when this release's OCI manifest could not be
+                        read, so Requires and the version fields say nothing about the image.
+                        A RolloutDependency blocks such a release rather than reading the absent
+                        annotations as "declares no requirement", which would open the gate
+                        whenever the registry is unreachable.
+                      type: boolean
                     requires:
                       additionalProperties:
                         type: string
                       description: |-
-                        Requires maps a contract name to the contract version this release was built
-                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
-                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        Requires maps a contract name to what this release requires of that
+                        contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are version constraints as defined by
+                        github.com/Masterminds/semver, applied verbatim — note that a bare version
+                        is an exact match there, not a floor.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
 
@@ -546,13 +566,23 @@ spec:
                           description: Digest is the image digest if available from
                             the ImagePolicy.
                           type: string
+                        metadataUnresolved:
+                          description: |-
+                            MetadataUnresolved is true when this release's OCI manifest could not be
+                            read, so Requires and the version fields say nothing about the image.
+                            A RolloutDependency blocks such a release rather than reading the absent
+                            annotations as "declares no requirement", which would open the gate
+                            whenever the registry is unreachable.
+                          type: boolean
                         requires:
                           additionalProperties:
                             type: string
                           description: |-
-                            Requires maps a contract name to the contract version this release was built
-                            against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
-                            annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                            Requires maps a contract name to what this release requires of that
+                            contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                            annotations. Values are version constraints as defined by
+                            github.com/Masterminds/semver, applied verbatim — note that a bare version
+                            is an exact match there, not a floor.
                             RolloutDependency uses these to gate this release on the deployed version of
                             the Rollout providing each contract.
 
@@ -597,13 +627,23 @@ spec:
                       description: Digest is the image digest if available from the
                         ImagePolicy.
                       type: string
+                    metadataUnresolved:
+                      description: |-
+                        MetadataUnresolved is true when this release's OCI manifest could not be
+                        read, so Requires and the version fields say nothing about the image.
+                        A RolloutDependency blocks such a release rather than reading the absent
+                        annotations as "declares no requirement", which would open the gate
+                        whenever the registry is unreachable.
+                      type: boolean
                     requires:
                       additionalProperties:
                         type: string
                       description: |-
-                        Requires maps a contract name to the contract version this release was built
-                        against, extracted from "com.kuberik.rollout.requires.<contract>" OCI
-                        annotations. Values are bare MAJOR.MINOR.PATCH semantic versions.
+                        Requires maps a contract name to what this release requires of that
+                        contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+                        annotations. Values are version constraints as defined by
+                        github.com/Masterminds/semver, applied verbatim — note that a bare version
+                        is an exact match there, not a floor.
                         RolloutDependency uses these to gate this release on the deployed version of
                         the Rollout providing each contract.
 

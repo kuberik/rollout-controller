@@ -43,8 +43,8 @@ import (
 // It translates an inter-service version dependency into the gate vocabulary the
 // Rollout controller already understands: for each RolloutDependency it
 // maintains one RolloutGate whose allowedVersions list holds exactly those
-// consumer releases whose required contract version is already deployed by the
-// provider Rollout. Rollout admission itself is untouched — it keeps evaluating
+// consumer releases whose contract requirement is satisfied by what the provider
+// Rollout has deployed. Rollout admission itself is untouched — it keeps evaluating
 // gates the same way it does for schedules and manual approvals.
 type RolloutDependencyReconciler struct {
 	client.Client
@@ -68,12 +68,29 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	contract := dependency.Spec.ContractName()
+	consumerName := dependency.Spec.RolloutRef.Name
+	if consumerName == "" {
+		return ctrl.Result{}, r.markNotReady(ctx, dependency, "ConsumerNotSpecified",
+			"spec.rolloutRef.name is empty")
+	}
+
+	// Establish the gate closed before anything that can fail.
+	//
+	// An absent gate is not a neutral state: evaluateGates only sees gates that
+	// exist, so a dependency that errors out before its first successful
+	// evaluation would leave the consumer entirely unrestricted. Publishing an
+	// empty allow list first means every failure path below degrades to
+	// "nothing admitted" rather than "no opinion".
+	if _, err := r.ensureGate(ctx, dependency, consumerName); err != nil {
+		return ctrl.Result{}, errors.Join(err,
+			r.markNotReady(ctx, dependency, "GateSyncFailed", err.Error()))
+	}
 
 	// The consumer Rollout is the one being gated. It must live alongside the
 	// dependency, because a RolloutGate can only reference a Rollout in its own
 	// namespace.
 	consumer := &kuberikcomv1alpha1.Rollout{}
-	consumerKey := types.NamespacedName{Namespace: dependency.Namespace, Name: dependency.Spec.RolloutRef.Name}
+	consumerKey := types.NamespacedName{Namespace: dependency.Namespace, Name: consumerName}
 	if err := r.Get(ctx, consumerKey, consumer); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, r.markNotReady(ctx, dependency, "ConsumerNotFound",
@@ -96,12 +113,8 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	if err := r.Get(ctx, providerKey, provider); err != nil {
 		if apierrors.IsNotFound(err) {
-			message := fmt.Sprintf("Provider Rollout %s not found", providerKey)
-			if _, syncErr := r.syncGate(ctx, dependency, consumer, nil); syncErr != nil {
-				return ctrl.Result{}, errors.Join(syncErr,
-					r.markNotReady(ctx, dependency, "GateSyncFailed", syncErr.Error()))
-			}
-			return ctrl.Result{}, r.markNotReady(ctx, dependency, "ProviderNotFound", message)
+			return ctrl.Result{}, r.markNotReady(ctx, dependency, "ProviderNotFound",
+				fmt.Sprintf("Provider Rollout %s not found", providerKey))
 		}
 		return ctrl.Result{}, err
 	}
@@ -125,7 +138,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	admitted, blocked := evaluateDependency(consumer.Status.AvailableReleases, contract, providedVersion)
 
-	gateName, err := r.syncGate(ctx, dependency, consumer, admitted)
+	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
 		return ctrl.Result{}, errors.Join(err, r.markNotReady(ctx, dependency, "GateSyncFailed", err.Error()))
 	}
@@ -134,8 +147,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	pending, pendingKnown := pendingReleases(consumer)
-	blocking := blockedTags(blocked, pending, pendingKnown)
+	blocking := blockedTags(blocked, pendingReleases(consumer))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -160,10 +172,20 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	if len(blocking) > 0 {
 		satisfied.Status = metav1.ConditionFalse
-		satisfied.Reason = "WaitingForProvider"
-		satisfied.Message = fmt.Sprintf(
-			"Waiting for %s to provide contract %q at a newer version (deployed: %s); blocked releases: %v",
-			providerKey, contract, orNone(providedVersion), blocking)
+		// "Newer version" would be wrong twice over: an exact constraint is unmet
+		// by a provider that has moved *past* it, and an unparseable requirement
+		// is never resolved by waiting at all — that one needs the image fixed.
+		if unevaluable(blocked, blocking) {
+			satisfied.Reason = "RequirementUnevaluable"
+			satisfied.Message = fmt.Sprintf(
+				"Cannot evaluate contract %q for release(s) %s; fix the requires annotation on the image",
+				contract, summarizeTags(blocking))
+		} else {
+			satisfied.Reason = "WaitingForProvider"
+			satisfied.Message = fmt.Sprintf(
+				"Waiting for %s to serve contract %q at a version satisfying release(s) %s (deployed: %s)",
+				providerKey, contract, summarizeTags(blocking), orNone(providedVersion))
+		}
 	}
 	meta.SetStatusCondition(&dependency.Status.Conditions, satisfied)
 
@@ -180,29 +202,43 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // pendingReleases returns the tags the consumer Rollout could still move to,
 // i.e. releases newer than the one currently deployed.
 //
-// The second return value reports whether that set could be determined at all.
-// When it could not, callers must not read "no pending releases" as "nothing is
-// held back" — that would report the dependency as satisfied while its gate is
-// in fact blocking every release.
-func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) ([]string, bool) {
+// An empty result means the consumer has nothing to advance to — either there
+// are no releases at all, or its deployed tag is no longer in availableReleases
+// (retention pruned it), so no upgrade path can be computed. Both are correctly
+// read as "this dependency is holding nothing back": the Rollout has no
+// candidate to deploy regardless of what any gate says.
+func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) []string {
 	candidates, err := getNextReleaseCandidates(consumer.Status.AvailableReleases, &consumer.Status)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 	tags := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		tags = append(tags, candidate.Tag)
 	}
-	return tags, true
+	return tags
+}
+
+// unevaluable reports whether any currently-blocking release is blocked because
+// its requirement could not be parsed, rather than because the provider has not
+// caught up. The two need different advice: one waits, the other needs a human.
+func unevaluable(blocked []kuberikcomv1alpha1.BlockedRelease, blocking []string) bool {
+	for _, release := range blocked {
+		if release.Reason == "InvalidVersion" && slices.Contains(blocking, release.Tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // blockedTags returns the tags of blocked releases that the consumer could
-// otherwise deploy right now. When the pending set is unknown, every blocked
-// release counts, so the dependency reports what it is actually holding back.
-func blockedTags(blocked []kuberikcomv1alpha1.BlockedRelease, pending []string, pendingKnown bool) []string {
+// otherwise deploy right now. Releases behind the deployed one are excluded:
+// they are unreachable anyway, so reporting them would make the dependency look
+// unsatisfied when it is holding nothing back.
+func blockedTags(blocked []kuberikcomv1alpha1.BlockedRelease, pending []string) []string {
 	var tags []string
 	for _, release := range blocked {
-		if !pendingKnown || slices.Contains(pending, release.Tag) {
+		if slices.Contains(pending, release.Tag) {
 			tags = append(tags, release.Tag)
 		}
 	}
@@ -219,7 +255,7 @@ func blockedTags(blocked []kuberikcomv1alpha1.BlockedRelease, pending []string, 
 func (r *RolloutDependencyReconciler) syncGate(
 	ctx context.Context,
 	dependency *kuberikcomv1alpha1.RolloutDependency,
-	consumer *kuberikcomv1alpha1.Rollout,
+	consumerName string,
 	admitted []string,
 ) (string, error) {
 	passing := true
@@ -243,7 +279,7 @@ func (r *RolloutDependencyReconciler) syncGate(
 			gate.Labels = map[string]string{}
 		}
 		gate.Labels[LabelDependencyName] = dependency.Name
-		gate.Labels[LabelRolloutName] = consumer.Name
+		gate.Labels[LabelRolloutName] = consumerName
 
 		if gate.Annotations == nil {
 			gate.Annotations = map[string]string{}
@@ -253,7 +289,7 @@ func (r *RolloutDependencyReconciler) syncGate(
 			"Holds back releases that require a newer version of contract %q than %s has deployed.",
 			dependency.Spec.ContractName(), dependency.Spec.ProviderRef.Name)
 
-		gate.Spec.RolloutRef = &corev1.LocalObjectReference{Name: consumer.Name}
+		gate.Spec.RolloutRef = &corev1.LocalObjectReference{Name: consumerName}
 		gate.Spec.Passing = &passing
 		gate.Spec.AllowedVersions = &allowed
 
@@ -264,6 +300,28 @@ func (r *RolloutDependencyReconciler) syncGate(
 	}
 
 	return gate.Name, nil
+}
+
+// ensureGate makes sure the managed gate exists before evaluation runs, so that
+// a failure part-way through leaves the consumer blocked rather than
+// unrestricted. An existing gate is left untouched — its allow list is this
+// dependency's last good verdict, and re-closing it on every reconcile would
+// stall deploys for the duration of any transient error.
+func (r *RolloutDependencyReconciler) ensureGate(
+	ctx context.Context,
+	dependency *kuberikcomv1alpha1.RolloutDependency,
+	consumerName string,
+) (string, error) {
+	gate := &kuberikcomv1alpha1.RolloutGate{}
+	key := types.NamespacedName{Name: dependencyGateName(dependency), Namespace: dependency.Namespace}
+	switch err := r.Get(ctx, key, gate); {
+	case err == nil:
+		return gate.Name, nil
+	case apierrors.IsNotFound(err):
+		return r.syncGate(ctx, dependency, consumerName, nil)
+	default:
+		return "", err
+	}
 }
 
 // dependencyGateName is the deterministic name of the gate managed by a
@@ -289,6 +347,18 @@ func (r *RolloutDependencyReconciler) markNotReady(
 		r.Recorder.Event(dependency, corev1.EventTypeWarning, reason, message)
 	}
 	return r.Status().Update(ctx, dependency)
+}
+
+// summarizeTags renders a tag list for a condition message, which the API server
+// caps at 32KiB. The full set always stays in status.blockedReleases; a message
+// that outgrew the cap would make every status write fail with a non-retryable
+// 422 and wedge the reconciler for good.
+func summarizeTags(tags []string) string {
+	const shown = 10
+	if len(tags) <= shown {
+		return fmt.Sprintf("%v", tags)
+	}
+	return fmt.Sprintf("%v and %d more", tags[:shown], len(tags)-shown)
 }
 
 func nilIfEmpty(value string) *string {

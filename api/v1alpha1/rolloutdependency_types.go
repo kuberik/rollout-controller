@@ -38,6 +38,7 @@ const RequiresAnnotationPrefix = "com.kuberik.rollout.requires."
 type ProviderRolloutReference struct {
 	// Name is the name of the providing Rollout.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	// +required
 	Name string `json:"name"`
 
@@ -50,17 +51,22 @@ type ProviderRolloutReference struct {
 // RolloutDependencySpec defines the desired state of RolloutDependency.
 //
 // A RolloutDependency gates a consumer Rollout on the deployed contract version
-// of a provider Rollout. Each release candidate of the consumer declares the
-// contract versions it was built against via
-// "com.kuberik.rollout.requires.<contract>" OCI annotations. A candidate is
-// admitted only once the provider has successfully deployed a release whose own
-// contract version (org.opencontainers.image.version) is greater than or equal
-// to the required version. The result is a topological rollout: providers
-// advance before the consumers that depend on them.
+// of a provider Rollout. Each release candidate of the consumer declares what it
+// requires of the contract via a "com.kuberik.rollout.requires.<contract>" OCI
+// annotation. A candidate is admitted only once the provider has successfully
+// deployed a release whose own contract version
+// (org.opencontainers.image.version) satisfies that constraint. The result is a
+// topological rollout: providers advance before the consumers that depend on
+// them.
 type RolloutDependencySpec struct {
 	// RolloutRef references the consumer Rollout that this dependency gates.
 	// The Rollout must live in the same namespace as this RolloutDependency.
+	//
+	// The name is validated here because corev1.LocalObjectReference defaults it
+	// to the empty string, which would otherwise be admitted and then fail every
+	// lookup.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="rolloutRef.name must not be empty"
 	// +required
 	RolloutRef corev1.LocalObjectReference `json:"rolloutRef"`
 
@@ -118,8 +124,8 @@ type RolloutDependencyStatus struct {
 	//
 	// Condition types:
 	// - "Ready": the dependency was evaluated and its gate is in sync
-	// - "Satisfied": at least one consumer release candidate is admitted, or
-	//   there is nothing to gate
+	// - "Satisfied": no release the consumer could deploy next is held back by
+	//   this dependency
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -127,7 +133,9 @@ type RolloutDependencyStatus struct {
 
 	// ProvidedVersion is the contract version currently deployed by the provider
 	// Rollout, taken from the OCI version annotation of its deployed release with
-	// any pre-release suffix stripped.
+	// the numeric per-build ordinal stripped. A real pre-release identifier
+	// ("2.0.0-alpha.1") is preserved, because it means the triple has not
+	// shipped.
 	// +optional
 	ProvidedVersion *string `json:"providedVersion,omitempty"`
 
@@ -138,11 +146,16 @@ type RolloutDependencyStatus struct {
 
 	// AdmittedVersions lists the consumer release candidate tags admitted by this
 	// dependency. This is the allow list published to the managed RolloutGate.
+	// Named for symmetry with RolloutGate.allowedVersions, which also holds tags.
+	// Capped at the newest entries; see maxPublishedReleases.
+	// +kubebuilder:validation:MaxItems=50
 	// +optional
 	AdmittedVersions []string `json:"admittedVersions,omitempty"`
 
 	// BlockedReleases lists the consumer release candidates held back by this
-	// dependency, with the contract version each is waiting for.
+	// dependency, with the constraint each places on the contract.
+	// Capped at the newest entries; see maxPublishedReleases.
+	// +kubebuilder:validation:MaxItems=50
 	// +optional
 	BlockedReleases []BlockedRelease `json:"blockedReleases,omitempty"`
 
@@ -157,8 +170,8 @@ const (
 	// and its managed RolloutGate reflects that evaluation.
 	RolloutDependencyReady = "Ready"
 
-	// RolloutDependencySatisfied indicates at least one consumer release
-	// candidate is admitted by this dependency, or that there is nothing to gate.
+	// RolloutDependencySatisfied indicates that no release the consumer could
+	// deploy next is held back by this dependency.
 	RolloutDependencySatisfied = "Satisfied"
 )
 
