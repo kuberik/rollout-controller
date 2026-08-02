@@ -25,9 +25,13 @@ import (
 // declare what it requires of another service's contract. The annotation key is
 // "com.kuberik.rollout.requires.<contract>".
 //
-// The value is a SemVer constraint: "^1.2.0", "~1.2", ">=1.2.0 <2.0.0", "1.2.x"
-// and combinations are all accepted. A bare version ("1.2.0") means ">=1.2.0",
-// so a provider that has since advanced still satisfies it.
+// The value is a version constraint as defined by github.com/Masterminds/semver,
+// applied verbatim:
+// https://github.com/Masterminds/semver#checking-version-constraints
+//
+// Note that a bare version ("1.2.0") is an exact match there. A release that
+// tolerates later providers should say so — "^1.2.0" (compatible within the
+// major), "~1.2.0" (within the minor), or ">=1.2.0".
 const RequiresAnnotationPrefix = "com.kuberik.rollout.requires."
 
 // ProviderRolloutReference identifies the Rollout that provides a contract.

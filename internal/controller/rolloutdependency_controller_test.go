@@ -75,20 +75,20 @@ var _ = Describe("RolloutDependency helpers", func() {
 	})
 
 	Describe("requirementConstraint", func() {
-		// A bare version must not mean "exactly this". A provider that advanced
-		// past it would otherwise stop satisfying every consumer built against
-		// it, stranding them — including on rollback.
-		It("reads a bare version as >=", func() {
+		// Semantics come from github.com/Masterminds/semver unchanged. These
+		// specs pin that we pass the value through rather than reinterpreting
+		// it — a bare version is an exact match there, not a floor.
+		It("treats a bare version as an exact match", func() {
 			constraint, err := requirementConstraint("1.2.0")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(constraint.String()).To(Equal(">=1.2.0"))
+			Expect(constraint.Check(semver.MustParse("1.2.0"))).To(BeTrue())
+			Expect(constraint.Check(semver.MustParse("1.3.0"))).To(BeFalse())
 		})
 
-		It("honours an explicit exact-match constraint", func() {
-			constraint, err := requirementConstraint("=1.2.0")
+		It("keeps the constraint exactly as written", func() {
+			constraint, err := requirementConstraint("^1.2.0")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(constraint.Check(semver.MustParse("1.3.0"))).To(BeFalse())
-			Expect(constraint.Check(semver.MustParse("1.2.0"))).To(BeTrue())
+			Expect(constraint.String()).To(Equal("^1.2.0"))
 		})
 
 		It("rejects a constraint it cannot parse", func() {
@@ -117,8 +117,9 @@ var _ = Describe("RolloutDependency helpers", func() {
 			Entry("range blocks outside the window", "2.0.0-7", ">=1.2.0 <2.0.0", false),
 			Entry("wildcard admits a matching patch", "1.2.9-7", "1.2.x", true),
 			Entry("wildcard blocks a different minor", "1.3.0-7", "1.2.x", false),
-			// Bare version keeps its >= meaning.
-			Entry("bare version admits a newer provider", "1.5.0-7", "1.2.0", true),
+			// A bare version is an exact match, per Masterminds.
+			Entry("bare version admits the exact contract", "1.2.0-7", "1.2.0", true),
+			Entry("bare version blocks a newer provider", "1.5.0-7", "1.2.0", false),
 			Entry("bare version blocks an older provider", "1.1.0-7", "1.2.0", false),
 			// A real pre-release has not shipped the triple yet.
 			Entry("caret blocks a provider still in pre-release", "1.2.0-alpha.1", "^1.2.0", false),
@@ -131,23 +132,30 @@ var _ = Describe("RolloutDependency helpers", func() {
 	})
 
 	Describe("providerSatisfies", func() {
-		// A suffixed provider version must still satisfy a bare requirement on
-		// the same triple. Comparing full semver would fail here, because by
-		// SemVer §11 a pre-release sorts below its own triple.
-		It("admits a suffixed provider version equal to the required triple", func() {
+		// The build ordinal must not affect the outcome: a provider on
+		// "1.110.0-1785243823" is serving contract 1.110.0. Left in place SemVer
+		// would read it as a pre-release, which satisfies no constraint on the
+		// triple.
+		It("ignores the build ordinal on the provider version", func() {
 			ok, err := providerSatisfies("1.110.0-1785243823", "1.110.0")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeTrue())
 		})
 
-		It("admits a newer provider triple", func() {
-			ok, err := providerSatisfies("1.111.0-1", "1.110.0")
+		It("admits a newer provider triple under a caret constraint", func() {
+			ok, err := providerSatisfies("1.111.0-1", "^1.110.0")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeTrue())
 		})
 
 		It("blocks an older provider triple", func() {
-			ok, err := providerSatisfies("1.109.0-999999", "1.110.0")
+			ok, err := providerSatisfies("1.109.0-999999", "^1.110.0")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeFalse())
+		})
+
+		It("blocks a major bump under a caret constraint", func() {
+			ok, err := providerSatisfies("2.0.0-1", "^1.110.0")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeFalse())
 		})
@@ -164,7 +172,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 		})
 
 		It("blocks a provider still on a pre-release of the required triple", func() {
-			ok, err := providerSatisfies("2.0.0-alpha.1", "2.0.0")
+			ok, err := providerSatisfies("2.0.0-alpha.1", "^2.0.0")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeFalse())
 		})
@@ -248,16 +256,16 @@ var _ = Describe("RolloutDependency helpers", func() {
 		It("splits releases on the deployed provider version", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{
-					release("v1", map[string]string{"db": "1.0.0"}),
-					release("v2", map[string]string{"db": "1.178.0"}),
-					release("v3", map[string]string{"db": "2.0.0"}),
+					release("v1", map[string]string{"db": "^1.0.0"}),
+					release("v2", map[string]string{"db": "^1.178.0"}),
+					release("v3", map[string]string{"db": "^2.0.0"}),
 				},
 				"db", "1.178.0",
 			)
 			Expect(admitted).To(Equal([]string{"v1", "v2"}))
 			Expect(blocked).To(HaveLen(1))
 			Expect(blocked[0].Tag).To(Equal("v3"))
-			Expect(blocked[0].Reason).To(Equal("ProviderVersionTooOld"))
+			Expect(blocked[0].Reason).To(Equal("ConstraintNotSatisfied"))
 		})
 
 		It("blocks releases with an unparseable requirement", func() {
@@ -364,8 +372,8 @@ var _ = Describe("RolloutDependency Controller", func() {
 			Version: ptrTo("1.0.0-100"),
 		})
 		newRollout("consumer", []kuberikcomv1alpha1.VersionInfo{
-			{Tag: "consumer-1", Version: ptrTo("2.0.0-100"), Requires: map[string]string{"db": "1.0.0"}},
-			{Tag: "consumer-2", Version: ptrTo("2.1.0-200"), Requires: map[string]string{"db": "1.1.0"}},
+			{Tag: "consumer-1", Version: ptrTo("2.0.0-100"), Requires: map[string]string{"db": "^1.0.0"}},
+			{Tag: "consumer-2", Version: ptrTo("2.1.0-200"), Requires: map[string]string{"db": "^1.1.0"}},
 		}, nil)
 
 		dependency := newDependency("consumer-needs-db", "consumer", "provider", "db")

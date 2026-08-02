@@ -129,12 +129,15 @@ org.opencontainers.image.version    = <MAJOR.MINOR.PATCH>-<seq>   # own contract
 com.kuberik.rollout.requires.<name> = <constraint>                # per consumed contract
 ```
 
-The requirement is a full SemVer constraint, parsed by `Masterminds/semver`:
-`^1.2.0`, `~1.2`, `>=1.2.0 <2.0.0`, `1.2.x` and combinations all work. A bare
-version (`1.2.0`) is read as `>=1.2.0` rather than the grammar's usual exact
-match — exact would strand every consumer the moment the provider advanced, and
-would break rollback, since the older release must stay deployable. A consumer
-that genuinely cannot tolerate a newer provider writes `=1.2.0`.
+The requirement is a version constraint parsed by
+[Masterminds/semver](https://github.com/Masterminds/semver#checking-version-constraints),
+applied verbatim — this controller adds no rules of its own, so that page is the
+reference. `^1.2.0`, `~1.2.0`, `>=1.2.0 <2.0.0`, `1.2.x` and combinations all
+work.
+
+Note that a bare version (`1.2.0`) is an **exact match** there, not a floor. A
+release that tolerates later providers has to say so: `^1.2.0` for
+compatible-within-major, `~1.2.0` for within-minor, `>=1.2.0` for anything later.
 
 The `-<seq>` suffix on the provider's own version is a monotonic per-release
 ordinal, attached as a SemVer **pre-release** identifier (not build metadata,

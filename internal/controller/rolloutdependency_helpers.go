@@ -34,25 +34,27 @@ const (
 // as a SemVer pre-release identifier.
 var releaseOrdinal = regexp.MustCompile(`^[0-9]+$`)
 
-// contractTriple parses a version string and returns the MAJOR.MINOR.PATCH
-// triple it announces as a contract version.
+// contractTriple returns the contract version a provider release announces.
 //
-// Release versions carry a monotonic per-revision ordinal as a SemVer
-// pre-release identifier (e.g. "1.110.0-1785243823") so that images sharing a
-// triple still sort by build order. That ordinal says nothing about the
-// contract, and by SemVer §11 a pre-release sorts *below* its own triple — so
-// comparing a suffixed provider version against a bare required version would
-// never admit. That ordinal, and only that ordinal, is therefore stripped.
+// This is provider-side normalisation, not constraint evaluation: it decides
+// *what version the provider is serving*, and the consumer's constraint is then
+// applied to that by ordinary SemVer rules.
 //
-// Any other pre-release ("2.0.0-alpha.1", "2.0.0-rc.1") is a real pre-release:
-// it announces that the triple has not shipped yet, so it is kept and compared
-// as SemVer defines, which sorts it below the triple.
+// A release carries a monotonic per-revision ordinal as a SemVer pre-release
+// identifier (e.g. "1.110.0-1785243823") so that images sharing a triple still
+// sort by build order. That ordinal is a property of the build, not of the
+// contract — the release serves contract 1.110.0 — and SemVer would otherwise
+// read it as a pre-release, which sorts below the triple and satisfies no
+// constraint on it. It is therefore stripped.
+//
+// Any other pre-release ("2.0.0-alpha.1", "2.0.0-rc.1") is left alone: it means
+// the triple genuinely has not shipped yet, and SemVer's own handling of that
+// is the behaviour we want.
 //
 // Parsing is strict. Lenient SemVer parsing coerces partial and non-SemVer
 // versions into enormous triples — "1.2" becomes 1.2.0 and a CalVer stamp like
-// "2024-01-15" becomes 2024.0.0, which would satisfy every requirement ever
-// written. A version this function cannot parse strictly is an error, and
-// callers block on it.
+// "2024-01-15" becomes 2024.0.0, which would satisfy almost any constraint. A
+// version this function cannot parse strictly is an error, and callers block.
 func contractTriple(version string) (*semver.Version, error) {
 	parsed, err := semver.StrictNewVersion(version)
 	if err != nil {
@@ -66,20 +68,16 @@ func contractTriple(version string) (*semver.Version, error) {
 
 // requirementConstraint parses what a release says it requires of a contract.
 //
-// The full SemVer constraint grammar is supported, so a release can ask for
-// "^1.2.0", "~1.2", ">=1.2.0 <2.0.0", "1.2.x", or a comma/space separated
-// combination of those.
+// The value is a constraint in github.com/Masterminds/semver, whose semantics
+// apply verbatim — this controller adds no rules of its own, so the upstream
+// documentation is the reference:
+// https://github.com/Masterminds/semver#checking-version-constraints
 //
-// A bare version ("1.2.0") is read as ">=1.2.0", not as an exact match. Exact
-// is the usual constraint-grammar default, but it is the wrong default here: a
-// provider that has since advanced to 1.3.0 would stop satisfying every
-// consumer built against 1.2.0, which would strand them — including on
-// rollback, where the older release must stay deployable. A consumer that
-// genuinely cannot tolerate a newer provider can still say "=1.2.0".
+// In particular a bare version ("1.2.0") is an exact match there, not a floor.
+// A release that should tolerate later providers says so: "^1.2.0" for
+// compatible-within-major, "~1.2.0" for within-minor, ">=1.2.0" for any later
+// version.
 func requirementConstraint(requirement string) (*semver.Constraints, error) {
-	if _, err := semver.StrictNewVersion(requirement); err == nil {
-		requirement = ">=" + requirement
-	}
 	constraint, err := semver.NewConstraint(requirement)
 	if err != nil {
 		return nil, fmt.Errorf("invalid version constraint %q: %w", requirement, err)
@@ -133,9 +131,9 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 // this dependency and those blocked by it.
 //
 // A release is admitted when it declares no requirement on the contract, or
-// when the provider's deployed contract version is greater than or equal to the
-// version the release requires. When the provider has no known contract version
-// yet, every release that requires the contract is blocked.
+// when the provider's deployed contract version satisfies the constraint the
+// release places on it. When the provider has no known contract version yet,
+// every release that requires the contract is blocked.
 //
 // providedVersion is the provider's deployed contract version, or "" when it is
 // not known.
@@ -174,10 +172,12 @@ func evaluateDependency(
 		if satisfied {
 			admitted = append(admitted, release.Tag)
 		} else {
+			// Not necessarily "too old": an exact constraint is also unmet by a
+			// provider that has moved past it.
 			blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
 				Tag:             release.Tag,
 				RequiredVersion: &required,
-				Reason:          "ProviderVersionTooOld",
+				Reason:          "ConstraintNotSatisfied",
 			})
 		}
 	}
