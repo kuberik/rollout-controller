@@ -484,12 +484,14 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	imageRef := imageRepo.Spec.Image + ":" + tag
 
 	// Parse OCI manifest to extract version information
-	if version, revision, _, _, _, _, created, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
-		versionInfo.Version = version
-		versionInfo.Revision = revision
-		versionInfo.Created = created
-		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", version, "revision", revision, "created", created)
+	if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		versionInfo.Version = ociMeta.Version
+		versionInfo.Revision = ociMeta.Revision
+		versionInfo.Created = ociMeta.Created
+		versionInfo.Requires = ociMeta.Requires
+		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", ociMeta.Version, "revision", ociMeta.Revision, "created", ociMeta.Created, "requires", ociMeta.Requires)
 	} else {
+		versionInfo.MetadataUnresolved = true
 		log.V(5).Info("Could not parse OCI manifest", "imageRef", imageRef, "error", err)
 		// Return the versionInfo even if parsing failed - we still have the tag
 	}
@@ -497,26 +499,55 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	return versionInfo, nil
 }
 
-// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, source, title, and description.
-func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1.ImagePolicy) (version, revision, artifactType, source, title, description *string, created *metav1.Time, err error) {
+// Bounds on the requires annotations one image may declare. maxRequiresAnnotations
+// matches the MaxProperties marker on VersionInfo.Requires, so a hostile or broken
+// image cannot produce a status the API server would then reject. Exceeding any of
+// these is an error rather than a truncation — see parseOCIManifest.
+//
+// A contract name is a service name and a value is a SemVer constraint; neither is
+// ever long.
+const (
+	maxRequiresAnnotations = 32
+	maxRequiresKeyLength   = 64
+	maxRequiresValueLength = 256
+)
+
+// ociMetadata holds the image metadata the rollout controller reads out of an
+// OCI manifest.
+type ociMetadata struct {
+	Version      *string
+	Revision     *string
+	ArtifactType *string
+	Source       *string
+	Title        *string
+	Description  *string
+	Created      *metav1.Time
+
+	// Requires maps a contract name to the version required by this image, read
+	// from "com.kuberik.rollout.requires.<contract>" annotations.
+	Requires map[string]string
+}
+
+// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, source, title, description, and required contract versions.
+func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1.ImagePolicy) (ociMetadata, error) {
 	log := logf.FromContext(ctx)
 
 	// Get authentication keychain from ImageRepository
 	keychain, err := r.getImageRepositoryAuthentication(ctx, imagePolicy)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
+		return ociMetadata{}, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
 	}
 
 	// Parse the image reference
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
+		return ociMetadata{}, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
 	}
 
 	// Fetch the manifest with authentication using keychain
 	manifest, err := crane.Manifest(ref.String(), crane.WithAuthFromKeychain(keychain))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
+		return ociMetadata{}, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
 	}
 
 	// Parse the manifest JSON
@@ -530,12 +561,13 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(manifest, &manifestData); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
+		return ociMetadata{}, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
 	}
 
 	// Extract all metadata
 	var versionStr, revisionStr, artifactTypeStr, sourceStr, titleStr, descriptionStr *string
 	var createdTime *metav1.Time
+	var requires map[string]string
 
 	// Determine artifact type (preference order: artifactType, config.mediaType, manifest.mediaType)
 	if manifestData.ArtifactType != "" {
@@ -544,6 +576,40 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 		artifactTypeStr = &manifestData.Config.MediaType
 	} else if manifestData.MediaType != "" {
 		artifactTypeStr = &manifestData.MediaType
+	}
+
+	// Collect required contract versions from both manifest and config annotations.
+	// Manifest annotations take precedence over config annotations for the same contract.
+	// An empty value is kept rather than dropped. Dropping it would make a
+	// mis-templated annotation indistinguishable from "declares no requirement",
+	// which admits the release; keeping it fails the version check instead.
+	//
+	// These come from image annotations, which are outside this controller's
+	// trust boundary, so the limits below fail closed. Dropping the excess
+	// instead would be a gate bypass: Go randomises map iteration, so an image
+	// carrying more junk requires.* annotations than the cap would push the real
+	// requirement out of the map at random, and a release with no recorded
+	// requirement is one a dependency admits.
+	for _, annotations := range []map[string]string{manifestData.Config.Annotations, manifestData.Annotations} {
+		for key, value := range annotations {
+			contract, found := strings.CutPrefix(key, rolloutv1alpha1.RequiresAnnotationPrefix)
+			if !found || contract == "" {
+				continue
+			}
+			if len(contract) > maxRequiresKeyLength || len(value) > maxRequiresValueLength {
+				return ociMetadata{}, fmt.Errorf(
+					"requires annotation for contract %q on %s exceeds the size limit (%d/%d bytes)",
+					contract, imageRef, maxRequiresKeyLength, maxRequiresValueLength)
+			}
+			if _, existing := requires[contract]; !existing && len(requires) >= maxRequiresAnnotations {
+				return ociMetadata{}, fmt.Errorf(
+					"%s declares more than %d requires annotations", imageRef, maxRequiresAnnotations)
+			}
+			if requires == nil {
+				requires = make(map[string]string)
+			}
+			requires[contract] = value
+		}
 	}
 
 	// Check manifest annotations first
@@ -630,8 +696,17 @@ func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef strin
 		}
 	}
 
-	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr, "title", titleStr, "description", descriptionStr, "created", createdTime)
-	return versionStr, revisionStr, artifactTypeStr, sourceStr, titleStr, descriptionStr, createdTime, nil
+	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr, "title", titleStr, "description", descriptionStr, "created", createdTime, "requires", requires)
+	return ociMetadata{
+		Version:      versionStr,
+		Revision:     revisionStr,
+		ArtifactType: artifactTypeStr,
+		Source:       sourceStr,
+		Title:        titleStr,
+		Description:  descriptionStr,
+		Created:      createdTime,
+		Requires:     requires,
+	}, nil
 }
 
 // updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
@@ -668,14 +743,14 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type, source, title, and description
 		// This is a limitation of the current design - we could optimize this further
 		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if _, _, artifactType, source, title, description, _, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
+		if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
 			// Set rollout-level metadata from the latest release
-			rollout.Status.ArtifactType = artifactType
-			rollout.Status.Source = source
-			rollout.Status.Title = title
-			rollout.Status.Description = description
-			if artifactType != nil || source != nil || title != nil || description != nil {
-				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", artifactType, "source", source, "title", title, "description", description)
+			rollout.Status.ArtifactType = ociMeta.ArtifactType
+			rollout.Status.Source = ociMeta.Source
+			rollout.Status.Title = ociMeta.Title
+			rollout.Status.Description = ociMeta.Description
+			if ociMeta.ArtifactType != nil || ociMeta.Source != nil || ociMeta.Title != nil || ociMeta.Description != nil {
+				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", ociMeta.ArtifactType, "source", ociMeta.Source, "title", ociMeta.Title, "description", ociMeta.Description)
 			}
 		} else {
 			log.V(5).Info("Could not parse OCI manifest for rollout metadata", "imageRef", imageRef, "error", err)
@@ -689,11 +764,20 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	for _, newRelease := range newReleases {
 		// Check if this release already exists by comparing tags
 		found := false
-		for _, existing := range existingReleases {
-			if existing.Tag == newRelease.Tag {
-				found = true
-				break
+		for i, existing := range existingReleases {
+			if existing.Tag != newRelease.Tag {
+				continue
 			}
+			found = true
+			// A release recorded while the registry was unreachable is blocked by
+			// any RolloutDependency until its metadata resolves, and is otherwise
+			// never revisited. Refresh it once the fetch succeeds.
+			if existing.MetadataUnresolved && !newRelease.MetadataUnresolved {
+				newRelease.Digest = existing.Digest
+				existingReleases[i] = newRelease
+				log.V(4).Info("Refreshed release with metadata that failed to resolve earlier", "tag", newRelease.Tag)
+			}
+			break
 		}
 		if !found {
 			existingReleases = append(existingReleases, newRelease)

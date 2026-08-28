@@ -44,6 +44,7 @@ rules:
   - clusterrolloutschedules
   - healthchecks
   - kustomizationhealths
+  - rolloutdependencies
   - rolloutgates
   - rollouts
   - rolloutschedules
@@ -61,6 +62,7 @@ rules:
   - clusterrolloutschedules/finalizers
   - healthchecks/finalizers
   - kustomizationhealths/finalizers
+  - rolloutdependencies/finalizers
   - rollouts/finalizers
   - rolloutschedules/finalizers
   verbs:
@@ -71,6 +73,7 @@ rules:
   - clusterrolloutschedules/status
   - healthchecks/status
   - kustomizationhealths/status
+  - rolloutdependencies/status
   - rollouts/status
   - rolloutschedules/status
   verbs:

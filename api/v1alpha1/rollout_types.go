@@ -45,6 +45,29 @@ type VersionInfo struct {
 	// Created is the creation timestamp extracted from OCI annotations if available.
 	// +optional
 	Created *metav1.Time `json:"created,omitempty"`
+
+	// Requires maps a contract name to what this release requires of that
+	// contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
+	// annotations. Values are version constraints as defined by
+	// github.com/Masterminds/semver, applied verbatim — note that a bare version
+	// is an exact match there, not a floor.
+	// RolloutDependency uses these to gate this release on the deployed version of
+	// the Rollout providing each contract.
+	//
+	// Bounded because it is populated from image annotations, which are outside
+	// this controller's trust boundary, and is stored on every release and every
+	// history entry.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	Requires map[string]string `json:"requires,omitempty"`
+
+	// MetadataUnresolved is true when this release's OCI manifest could not be
+	// read, so Requires and the version fields say nothing about the image.
+	// A RolloutDependency blocks such a release rather than reading the absent
+	// annotations as "declares no requirement", which would open the gate
+	// whenever the registry is unreachable.
+	// +optional
+	MetadataUnresolved bool `json:"metadataUnresolved,omitempty"`
 }
 
 // HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.

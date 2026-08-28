@@ -1,0 +1,21 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutDependency
+metadata:
+  labels:
+    app.kubernetes.io/name: rollout-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: rolloutdependency-sample
+spec:
+  # The Rollout being gated. Its releases declare the contract versions they
+  # were built against via com.kuberik.rollout.requires.<contract> OCI
+  # annotations.
+  rolloutRef:
+    name: frontend-app
+  # The Rollout providing the contract. Its deployed release announces the
+  # version it serves in org.opencontainers.image.version.
+  providerRef:
+    name: backend-app
+    # namespace: backend-prod
+  # Matched against com.kuberik.rollout.requires.<contract>.
+  # Defaults to the provider Rollout name.
+  contract: backend

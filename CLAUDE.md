@@ -111,9 +111,89 @@ spec:
 
 - **Rollout**: Main resource defining deployment strategy
 - **RolloutGate**: Conditions that must pass before deployment
+- **RolloutDependency**: Gates a rollout on the deployed contract version of another rollout
 - **RolloutSchedule**: Scheduled deployment configurations
 - **HealthCheck**: Health status from various sources
 - **ClusterRolloutSchedule**: Cross-cluster schedules
+
+## Rollout Dependencies
+
+`RolloutDependency` orders rollouts by inter-service contract version: a
+consumer waits until the provider it was built against has actually deployed.
+
+Releases declare what they were built against using OCI annotations, so the
+dependency travels with the image rather than the manifests:
+
+```
+org.opencontainers.image.version    = <MAJOR.MINOR.PATCH>-<seq>   # own contract version
+com.kuberik.rollout.requires.<name> = <constraint>                # per consumed contract
+```
+
+The requirement is a version constraint parsed by
+[Masterminds/semver](https://github.com/Masterminds/semver#checking-version-constraints),
+applied verbatim — this controller adds no rules of its own, so that page is the
+reference. `^1.2.0`, `~1.2.0`, `>=1.2.0 <2.0.0`, `1.2.x` and combinations all
+work.
+
+Note that a bare version (`1.2.0`) is an **exact match** there, not a floor. A
+release that tolerates later providers has to say so: `^1.2.0` for
+compatible-within-major, `~1.2.0` for within-minor, `>=1.2.0` for anything later.
+
+The `-<seq>` suffix on the provider's own version is a monotonic per-release
+ordinal, attached as a SemVer **pre-release** identifier (not build metadata,
+which SemVer ignores for precedence). That ordinal, and only that ordinal, is
+stripped before the constraint is evaluated: by SemVer §11 a pre-release sorts
+below its own triple, so a suffixed provider version would never satisfy a
+constraint on that triple. A real pre-release (`2.0.0-alpha.1`) is kept, and
+correctly fails a constraint on `2.0.0`.
+
+Parsing is strict. Lenient SemVer coerces `1.2` into `1.2.0` and a CalVer stamp
+like `2024-01-15` into `2024.0.0`, which would satisfy every constraint ever
+written; an unparseable version blocks instead.
+
+The controller reads each consumer release's `requires` values from
+`Rollout.status.availableReleases` (populated by `parseOCIManifest`), compares
+them against the contract version of the provider's successfully baked release,
+and publishes the verdict as a managed `RolloutGate` named
+`dependency-<name>` whose `allowedVersions` holds exactly the admitted
+releases. Rollout admission logic is untouched.
+
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutDependency
+metadata:
+  name: frontend-needs-backend
+spec:
+  rolloutRef:                 # consumer being gated (same namespace)
+    name: frontend-app
+  providerRef:                # provider, optionally in another namespace
+    name: backend-app
+  contract: backend           # defaults to providerRef.name
+```
+
+### Trust model and limits
+
+- **The requires annotation is a self-declaration.** It gates the release that
+  carries it, so anyone who can push to the consumer's image repo can also write
+  `>=0.0.0` and self-admit. `RolloutDependency` is a coordination and ordering
+  control, not an authorization boundary — it does not contain a hostile image
+  publisher.
+- **A first deploy is not gated.** A Rollout with no history falls back to the
+  raw release candidates when gates filter them all out, so a brand-new consumer
+  reaches an initial version regardless of an unmet dependency. It is gated from
+  its second release on.
+- **A provider with no `bakeTime` records `Succeeded` immediately**, before the
+  workload has rolled. Configure `bakeTime` on providers whose consumers must
+  not start until the contract is actually live.
+- **Apply the CRDs before rolling the controller.** `requires` is a new property
+  on the existing Rollout CRD; if the schema is not updated first the API server
+  prunes it on every status write and releases read back as declaring nothing.
+- Releases already in `status.availableReleases` from before this change carry no
+  `requires`, and are only re-resolved when the image policy points at them
+  again. A dependency added to an existing Rollout does not retroactively gate
+  that backlog.
+
+Worked example: `../rollout-dashboard/example/hello-dep`.
 
 ## Rollout Spec Example
 
