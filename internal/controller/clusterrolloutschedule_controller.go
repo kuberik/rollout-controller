@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -146,6 +147,11 @@ func (r *ClusterRolloutScheduleReconciler) Reconcile(ctx context.Context, req ct
 	} else {
 		schedule.Status.NextTransition = nil
 	}
+	// namespaceList.Items / rolloutList.Items order is a cache indexer map walk
+	// and is not stable across reconciles; sort so an unchanged set of managed
+	// gates produces an identical status slice instead of churning
+	// resourceVersion on order alone.
+	sort.Strings(managedGates)
 	schedule.Status.ManagedGates = managedGates
 	schedule.Status.MatchingRollouts = len(allMatchingRollouts)
 

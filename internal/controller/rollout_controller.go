@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -855,60 +856,8 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		}
 	}
 
-	for _, gate := range gateList.Items {
-		if gate.Spec.RolloutRef != nil && gate.Spec.RolloutRef.Name == rollout.Name {
-			summary := rolloutv1alpha1.RolloutGateStatusSummary{
-				Name:    gate.Name,
-				Passing: gate.Spec.Passing,
-			}
-
-			// If bypass is enabled, mark gates as bypassed but still evaluate them for status reporting
-			if bypassEnabled {
-				summary.Message = "Gate bypassed for version " + bypassVersion
-				summary.BypassGates = true
-			} else {
-				summary.BypassGates = false
-			}
-
-			if gate.Spec.Passing != nil && !*gate.Spec.Passing {
-				if !bypassEnabled {
-					summary.Message = "Gate is not passing"
-					gatesPassing = false
-				}
-			} else if gate.Spec.AllowedVersions != nil {
-				summary.AllowedVersions = *gate.Spec.AllowedVersions
-
-				if !bypassEnabled {
-					// Filter gatedReleaseCandidates to only those in allowedVersions
-					var filtered []rolloutv1alpha1.VersionInfo
-					for _, r := range gatedReleaseCandidates {
-						if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
-							filtered = append(filtered, r)
-						}
-					}
-					gatedReleaseCandidates = filtered
-
-					allowed := false
-					for _, r := range releaseCandidates {
-						if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						summary.Message = "Gate does not allow any release candidate"
-					} else {
-						summary.Message = "Gate is passing"
-					}
-				}
-			} else {
-				if !bypassEnabled {
-					summary.Message = "Gate is passing"
-				}
-			}
-			rollout.Status.Gates = append(rollout.Status.Gates, summary)
-		}
-	}
+	rollout.Status.Gates, gatedReleaseCandidates, gatesPassing = buildGateSummaries(
+		gateList.Items, rollout.Name, releaseCandidates, gatedReleaseCandidates, bypassEnabled, bypassVersion)
 
 	// If bypass is enabled, allow the bypassed version through
 	if bypassEnabled {
@@ -959,6 +908,91 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	}
 
 	return gatedReleaseCandidates, gatesPassing, nil
+}
+
+// buildGateSummaries evaluates gates belonging to rolloutName and returns the
+// status summaries, the release candidates filtered by allowedVersions, and
+// whether all gates are passing.
+//
+// gates is a snapshot from a List() call against the cache's indexer, which
+// walks a Go map and is therefore not stable across calls even when the
+// underlying gate set hasn't changed. The returned summaries are always
+// sorted by gate name so that an unchanged gate set produces byte-identical
+// status regardless of the order gates arrived in — otherwise every
+// reconcile would write a status that differs only in order, churning
+// resourceVersion and every watcher of the Rollout.
+func buildGateSummaries(
+	gates []rolloutv1alpha1.RolloutGate,
+	rolloutName string,
+	releaseCandidates []rolloutv1alpha1.VersionInfo,
+	gatedReleaseCandidates []rolloutv1alpha1.VersionInfo,
+	bypassEnabled bool,
+	bypassVersion string,
+) ([]rolloutv1alpha1.RolloutGateStatusSummary, []rolloutv1alpha1.VersionInfo, bool) {
+	var summaries []rolloutv1alpha1.RolloutGateStatusSummary
+	gatesPassing := true
+
+	for _, gate := range gates {
+		if gate.Spec.RolloutRef == nil || gate.Spec.RolloutRef.Name != rolloutName {
+			continue
+		}
+		summary := rolloutv1alpha1.RolloutGateStatusSummary{
+			Name:    gate.Name,
+			Passing: gate.Spec.Passing,
+		}
+
+		// If bypass is enabled, mark gates as bypassed but still evaluate them for status reporting
+		if bypassEnabled {
+			summary.Message = "Gate bypassed for version " + bypassVersion
+			summary.BypassGates = true
+		} else {
+			summary.BypassGates = false
+		}
+
+		if gate.Spec.Passing != nil && !*gate.Spec.Passing {
+			if !bypassEnabled {
+				summary.Message = "Gate is not passing"
+				gatesPassing = false
+			}
+		} else if gate.Spec.AllowedVersions != nil {
+			summary.AllowedVersions = *gate.Spec.AllowedVersions
+
+			if !bypassEnabled {
+				// Filter gatedReleaseCandidates to only those in allowedVersions
+				var filtered []rolloutv1alpha1.VersionInfo
+				for _, r := range gatedReleaseCandidates {
+					if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
+						filtered = append(filtered, r)
+					}
+				}
+				gatedReleaseCandidates = filtered
+
+				allowed := false
+				for _, r := range releaseCandidates {
+					if slices.Contains(*gate.Spec.AllowedVersions, r.Tag) {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					summary.Message = "Gate does not allow any release candidate"
+				} else {
+					summary.Message = "Gate is passing"
+				}
+			}
+		} else {
+			if !bypassEnabled {
+				summary.Message = "Gate is passing"
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].Name < summaries[j].Name
+	})
+
+	return summaries, gatedReleaseCandidates, gatesPassing
 }
 
 // listHealthChecks lists all health checks matching the rollout's health check selector.
