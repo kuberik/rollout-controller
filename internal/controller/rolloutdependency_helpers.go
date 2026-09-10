@@ -31,8 +31,14 @@ const (
 )
 
 // releaseOrdinal matches the monotonic per-revision ordinal that releases carry
-// as a SemVer pre-release identifier.
-var releaseOrdinal = regexp.MustCompile(`^[0-9]+$`)
+// as a SemVer pre-release identifier, optionally followed by the short commit
+// hash that disambiguates two builds at the same ordinal.
+//
+// Both shapes are one build stamp: "1.110.0-1785243823" and
+// "1.110.0-7626.5109b32". Numeric identifiers sort before alphanumeric ones
+// (SemVer 11.4), so appending the hash preserves ordering by ordinal, and a
+// producer that emits it is still announcing the triple.
+var releaseOrdinal = regexp.MustCompile(`^[0-9]+(\.[0-9a-f]{7,40})?$`)
 
 // contractTriple returns the contract version a provider release announces.
 //
@@ -41,11 +47,12 @@ var releaseOrdinal = regexp.MustCompile(`^[0-9]+$`)
 // applied to that by ordinary SemVer rules.
 //
 // A release carries a monotonic per-revision ordinal as a SemVer pre-release
-// identifier (e.g. "1.110.0-1785243823") so that images sharing a triple still
-// sort by build order. That ordinal is a property of the build, not of the
-// contract — the release serves contract 1.110.0 — and SemVer would otherwise
-// read it as a pre-release, which sorts below the triple and satisfies no
-// constraint on it. It is therefore stripped.
+// identifier (e.g. "1.110.0-1785243823"), optionally with the short commit hash
+// after it ("1.110.0-7626.5109b32"), so that images sharing a triple still sort
+// by build order. That stamp is a property of the build, not of the contract —
+// the release serves contract 1.110.0 — and SemVer would otherwise read it as a
+// pre-release, which sorts below the triple and satisfies no constraint on it.
+// It is therefore stripped.
 //
 // Any other pre-release ("2.0.0-alpha.1", "2.0.0-rc.1") is left alone: it means
 // the triple genuinely has not shipped yet, and SemVer's own handling of that
