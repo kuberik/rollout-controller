@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.9.0] - 2026-09-10
+
+### Added
+
+- Gate rollouts on inter-service contract versions (#49)
+
+
+### Chore
+
+- Migrate image-reflector-controller API to v1
+
+
+### Fixed
+
+- Attribute automatic deployments to System, not stale deploy-user (#47)
+
+- Skip gates and health checks on first deploy (#41)
+
+- Write status gate lists in a deterministic order (#50)
+
 ## [0.8.0] - 2026-05-26
 
 ### Added
@@ -11,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retry annotation value selects retry mode (retry|skip) (#42)
 
 - Add BakeFailureDisabled and DeploymentBlocked rollout conditions (#44)
+
+
+### Chore
+
+- Release version v0.8.0
 
 
 ### Fixed
