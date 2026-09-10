@@ -40,6 +40,19 @@ var _ = Describe("RolloutDependency helpers", func() {
 			Expect(triple.String()).To(Equal("1.110.0"))
 		})
 
+		// A producer may disambiguate two builds at the same ordinal by
+		// appending the short commit hash. That is still one build stamp, not a
+		// pre-release, so the triple it announces is unchanged.
+		DescribeTable("strips an ordinal carrying a short commit hash",
+			func(version string) {
+				triple, err := contractTriple(version)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(triple.String()).To(Equal("1.110.0"))
+			},
+			Entry("7-character hash", "1.110.0-7626.5109b32"),
+			Entry("40-character hash", "1.110.0-7626.5109b32e4117ca441df64a9116cd437a78c9e3e1"),
+		)
+
 		It("strips build metadata", func() {
 			triple, err := contractTriple("1.110.0+abc123")
 			Expect(err).NotTo(HaveOccurred())
@@ -67,11 +80,19 @@ var _ = Describe("RolloutDependency helpers", func() {
 
 		// Only the numeric release ordinal is a suffix to be ignored. A real
 		// pre-release announces that the triple has not shipped yet.
-		It("keeps a non-ordinal pre-release", func() {
-			triple, err := contractTriple("2.0.0-alpha.1")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(triple.String()).To(Equal("2.0.0-alpha.1"))
-		})
+		DescribeTable("keeps a non-ordinal pre-release",
+			func(version string) {
+				triple, err := contractTriple(version)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(triple.String()).To(Equal(version))
+			},
+			Entry("alpha", "2.0.0-alpha.1"),
+			Entry("rc", "2.0.0-rc.1"),
+			// Numeric first identifier, but the second is not a commit hash.
+			Entry("ordinal then word", "2.0.0-1.alpha"),
+			Entry("ordinal then short non-hex", "2.0.0-7626.zzzzzzz"),
+			Entry("ordinal then over-long hash", "2.0.0-7626.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		)
 	})
 
 	Describe("requirementConstraint", func() {
@@ -141,6 +162,22 @@ var _ = Describe("RolloutDependency helpers", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ok).To(BeTrue())
 		})
+
+		// Same, for a producer that appends the short commit hash to the
+		// ordinal. Before this was recognised the stamp read as a real
+		// pre-release and every consumer of such a provider gated forever.
+		DescribeTable("ignores an ordinal-with-hash on the provider version",
+			func(provided, requirement string, expected bool) {
+				ok, err := providerSatisfies(provided, requirement)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(Equal(expected))
+			},
+			Entry("exact floor", "1.247.0-7626.5109b32", "^1.247.0", true),
+			Entry("same triple, later build", "1.247.0-7628.ac9b80d", "^1.247.0", true),
+			Entry("newer minor", "1.248.0-7700.deadbee", "^1.247.0", true),
+			Entry("older minor still blocks", "1.246.0-7624.d861b57", "^1.247.0", false),
+			Entry("next major still blocks", "2.0.0-7700.deadbee", "^1.247.0", false),
+		)
 
 		It("admits a newer provider triple under a caret constraint", func() {
 			ok, err := providerSatisfies("1.111.0-1", "^1.110.0")
