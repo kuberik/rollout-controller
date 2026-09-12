@@ -211,6 +211,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Every kind a controller below watches. Missing CRDs would otherwise
+	// surface only after the cache-sync timeout, with the pod reporting ready.
+	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(),
+		&kuberikcomv1alpha1.Rollout{},
+		&kuberikcomv1alpha1.RolloutGate{},
+		&kuberikcomv1alpha1.HealthCheck{},
+		&kuberikcomv1alpha1.RolloutSchedule{},
+		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
+		&kuberikcomv1alpha1.RolloutDependency{},
+		&imagev1.ImagePolicy{},
+		&kustomizev1.Kustomization{},
+	); err != nil {
+		setupLog.Error(err, "install the CRDs before starting the controller "+
+			"(Kuberik CRDs ship with the chart, Flux CRDs with `flux install`)")
+		os.Exit(1)
+	}
+
 	if err = (&controller.RolloutReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
