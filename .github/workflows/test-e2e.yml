@@ -29,6 +29,13 @@ jobs:
       - name: Create kind cluster
         run: kind create cluster
 
+      - name: Install Flux (the controller watches ImagePolicy and Kustomization)
+        run: |
+          curl -s https://fluxcd.io/install.sh | sudo bash
+          flux install \
+            --components=source-controller,kustomize-controller,image-reflector-controller \
+            --network-policy=false
+
       - name: Running Test e2e
         run: |
           go mod tidy
