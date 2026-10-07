@@ -502,3 +502,65 @@ func TestClusterRolloutScheduleReconciler(t *testing.T) {
 	devGate := &devGateList.Items[0]
 	assert.False(t, *devGate.Spec.Passing, "Dev gate should block now")
 }
+
+func TestClusterRolloutScheduleNilNamespaceSelectorMatchesAllNamespaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, rolloutv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	prodRollout := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "app-prod", Namespace: "prod"}}
+	devRollout := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "app-dev", Namespace: "dev"}}
+	prodNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "prod"}}
+	devNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dev"}}
+
+	schedule := &rolloutv1alpha1.ClusterRolloutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "freeze"},
+		Spec: rolloutv1alpha1.ClusterRolloutScheduleSpec{
+			// NamespaceSelector omitted: must match every namespace.
+			RolloutSelector: &metav1.LabelSelector{},
+			Rules: []rolloutv1alpha1.ScheduleRule{{
+				Name:      "freeze",
+				DateRange: &rolloutv1alpha1.DateRange{Start: "2025-01-01", End: "2025-01-02"},
+			}},
+			Action: rolloutv1alpha1.RolloutScheduleActionDeny,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(prodRollout, devRollout, prodNs, devNs, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &ClusterRolloutScheduleReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(10),
+		Clock:    &MockClock{CurrentTime: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)},
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: schedule.Name}})
+	require.NoError(t, err)
+
+	for _, rollout := range []*rolloutv1alpha1.Rollout{prodRollout, devRollout} {
+		gates := &rolloutv1alpha1.RolloutGateList{}
+		require.NoError(t, fakeClient.List(context.Background(), gates,
+			clientpkg.InNamespace(rollout.Namespace),
+			clientpkg.MatchingLabels{
+				LabelScheduleName: schedule.Name,
+				LabelScheduleKind: "ClusterRolloutSchedule",
+				LabelRolloutName:  rollout.Name,
+			},
+		))
+		require.Len(t, gates.Items, 1, "rollout %s/%s should have a schedule gate", rollout.Namespace, rollout.Name)
+		assert.False(t, *gates.Items[0].Spec.Passing)
+	}
+
+	got := &rolloutv1alpha1.ClusterRolloutSchedule{}
+	require.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{Name: schedule.Name}, got))
+	assert.Equal(t, 2, got.Status.MatchingRollouts)
+
+	// Watch mappers must enqueue the schedule too.
+	assert.Len(t, r.findSchedulesForRollout(context.Background(), devRollout), 1)
+	assert.Len(t, r.findSchedulesForNamespace(context.Background(), devNs), 1)
+}

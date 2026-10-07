@@ -27,11 +27,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
+
+// namespaceSelectorAsSelector converts a ClusterRolloutSchedule namespace
+// selector into a labels.Selector. A nil selector matches all namespaces, as
+// documented on the field; metav1.LabelSelectorAsSelector would otherwise turn
+// nil into labels.Nothing() and the schedule would silently match no rollouts.
+func namespaceSelectorAsSelector(selector *metav1.LabelSelector) (labels.Selector, error) {
+	if selector == nil {
+		return labels.Everything(), nil
+	}
+	return metav1.LabelSelectorAsSelector(selector)
+}
 
 // evaluateScheduleRules determines if any rule in the schedule is currently active.
 // Returns whether we're active, which rules are active, and when the next transition will occur.
