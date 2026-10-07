@@ -73,7 +73,7 @@ func (r *ClusterRolloutScheduleReconciler) Reconcile(ctx context.Context, req ct
 	// 2. Find matching Rollouts (Cross Namespace)
 	// First list namespaces
 	namespaceList := &corev1.NamespaceList{}
-	nsSelector, err := metav1.LabelSelectorAsSelector(schedule.Spec.NamespaceSelector)
+	nsSelector, err := namespaceSelectorAsSelector(schedule.Spec.NamespaceSelector)
 	if err != nil {
 		logger.Error(err, "Invalid namespace selector")
 		return ctrl.Result{}, nil
@@ -230,7 +230,7 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForRollout(ctx context.C
 		match := false
 
 		// 1. Check Namespace Selector
-		nsSelector, err := metav1.LabelSelectorAsSelector(schedule.Spec.NamespaceSelector)
+		nsSelector, err := namespaceSelectorAsSelector(schedule.Spec.NamespaceSelector)
 		if err == nil && nsSelector.Matches(labels.Set(ns.Labels)) {
 			// 2. Check Rollout Selector
 			rolloutSelector, err := metav1.LabelSelectorAsSelector(schedule.Spec.RolloutSelector)
@@ -286,7 +286,7 @@ func (r *ClusterRolloutScheduleReconciler) findSchedulesForNamespace(ctx context
 	for _, schedule := range scheduleList.Items {
 
 		// Let's check if it matches NOW
-		nsSelector, err := metav1.LabelSelectorAsSelector(schedule.Spec.NamespaceSelector)
+		nsSelector, err := namespaceSelectorAsSelector(schedule.Spec.NamespaceSelector)
 		if err == nil && nsSelector.Matches(labels.Set(ns.Labels)) {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: schedule.Name}})
 			continue
