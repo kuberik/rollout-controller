@@ -45,16 +45,16 @@ type KustomizationHealthReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Clock  Clock
-	// Features reports kustomize-controller feature gates. When nil, the
-	// CancelHealthCheckOnNewRevision feature gate is assumed to be disabled.
-	Features *KustomizeControllerFeatureDetector
+	// CancelHealthCheckOnNewRevision declares that kustomize-controller runs with the
+	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+). Feature gates are process
+	// flags that leave no trace on Kustomization objects, so this must be configured.
+	CancelHealthCheckOnNewRevision bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=*,verbs=get;list;watch
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
 
@@ -100,7 +100,7 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
-	if kustomization.Spec.Wait && r.Features.CancelHealthCheckOnNewRevision(ctx) {
+	if kustomization.Spec.Wait && r.CancelHealthCheckOnNewRevision {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
 		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)

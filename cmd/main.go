@@ -72,7 +72,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
-	var cancelHealthCheckOnNewRevision string
+	var cancelHealthCheckOnNewRevision bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -91,12 +91,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&cancelHealthCheckOnNewRevision, "kustomize-controller-cancel-health-check-on-new-revision",
-		controller.KustomizeControllerFeatureModeAuto,
-		"Whether kustomize-controller runs with the CancelHealthCheckOnNewRevision feature gate. "+
-			"When enabled, kustomization health checks for Kustomizations with wait: true use the Kustomization's "+
-			"Ready condition instead of checking every managed resource. One of: auto (detect from the "+
-			"kustomize-controller Deployment args), enabled, disabled.")
+	flag.BoolVar(&cancelHealthCheckOnNewRevision, "kustomize-controller-cancel-health-check-on-new-revision", false,
+		"Set when kustomize-controller runs with --feature-gates=CancelHealthCheckOnNewRevision=true (Flux 2.7+). "+
+			"Kustomization health checks for Kustomizations with wait: true then use the Kustomization's Ready "+
+			"condition instead of checking every managed resource.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -104,12 +102,6 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	cancelHealthCheckMode, err := controller.ParseKustomizeControllerFeatureMode(cancelHealthCheckOnNewRevision)
-	if err != nil {
-		setupLog.Error(err, "invalid --kustomize-controller-cancel-health-check-on-new-revision")
-		os.Exit(1)
-	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -263,14 +255,10 @@ func main() {
 
 	// Create KustomizationHealth controller with reference to HealthCheck controller
 	if err := (&controller.KustomizationHealthReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Clock:  controller.RealClock{},
-		Features: &controller.KustomizeControllerFeatureDetector{
-			Reader: mgr.GetAPIReader(),
-			Mode:   cancelHealthCheckMode,
-			Clock:  controller.RealClock{},
-		},
+		Client:                         mgr.GetClient(),
+		Scheme:                         mgr.GetScheme(),
+		Clock:                          controller.RealClock{},
+		CancelHealthCheckOnNewRevision: cancelHealthCheckOnNewRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KustomizationHealth")
 		os.Exit(1)
