@@ -525,6 +525,26 @@ spec:
       IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
 ```
 
+### Kustomization Health Checks
+
+A `HealthCheck` with `class: kustomization` and the `healthcheck.kuberik.com/kustomization: [namespace/]name` annotation tracks the health of a Flux Kustomization.
+
+By default, the controller computes the health of every resource in the Kustomization's inventory itself. This lets you run Kustomizations with `wait: false`: with `wait: true`, kustomize-controller blocks on a failing revision until `spec.timeout` expires, so a fix cannot roll out until then.
+
+Flux 2.7+ adds the `CancelHealthCheckOnNewRevision` feature gate to kustomize-controller ([extended in Flux 2.8](https://fluxcd.io/blog/2026/02/flux-v2.8.0/)). It cancels in-flight health checks when a new revision arrives. When this gate is enabled **and** the Kustomization sets `wait: true`, the rollout controller relies on kustomize-controller's own health checking and only reads the Kustomization's `Ready` condition:
+
+| `Ready` condition | HealthCheck status |
+|---|---|
+| `True` (for the current generation) | Healthy |
+| `False`, reason `HealthCheckCanceled`, `DependencyNotReady`, `ArtifactFailed`, `Progressing` or `ProgressingWithRetry` | Pending |
+| `False`, any other reason (e.g. `HealthCheckFailed`, `BuildFailed`) | Unhealthy |
+| `Unknown` / missing | Pending |
+
+The `--kustomize-controller-cancel-health-check-on-new-revision` flag controls detection of the gate:
+
+- `auto` (default): reads `--feature-gates` from every Deployment labelled `app=kustomize-controller`. The gate counts as enabled only if all of them enable it. The result is cached for one minute.
+- `enabled` / `disabled`: skips detection. Use this if your kustomize-controller isn't labelled `app=kustomize-controller`, or if a future Flux release enables the gate by default.
+
 ### Benefits
 
 - **GitOps Integration**: Leverages Flux's image automation for consistent, auditable release management

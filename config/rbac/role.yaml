@@ -30,6 +30,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - image.toolkit.fluxcd.io
   resources:
   - imagepolicies
