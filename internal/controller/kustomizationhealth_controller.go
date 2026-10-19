@@ -93,20 +93,15 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	// wait: true is only usable with rollouts when kustomize-controller runs with the
 	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+); without it a failing revision
 	// blocks the next one until spec.timeout. So with wait: true we assume the gate is on and
-	// treat the Kustomization's Ready condition as authoritative. Otherwise check every
-	// managed resource.
+	// treat the Kustomization's Ready condition as authoritative. Otherwise check the
+	// Ready condition and then every managed resource.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
 	if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
-		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)
-	}
-	if err != nil {
-		log.Error(err, "failed to check kustomization health")
-		now := metav1.NewTime(r.Clock.Now())
-		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Health check failed: %v", err), &now)
+		healthStatus, message, errorTime = r.checkKustomizationHealth(ctx, kustomization)
 	}
 
 	// Update the health check status
@@ -154,28 +149,25 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 }
 
 // checkKustomizationHealth checks the health of the kustomization itself and all resources it manages.
-// Returns the health status, a human-readable message, the latest failure condition timestamp
+// Returns the health status, a human-readable message, and the latest failure condition timestamp
 // (used by the caller as LastErrorTime so the rollout controller can determine whether the failure
-// is pre- or post-retry), and any reconciliation error.
-func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
+// is pre- or post-retry).
+func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time) {
 	// First, check the kustomization resource itself
-	kustomizationHealth, kustomizationMessage, kustomizationErrorTime, err := r.checkKustomizationResourceHealth(ctx, kustomization)
-	if err != nil {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil, nil
-	}
+	kustomizationHealth, kustomizationMessage, kustomizationErrorTime := checkKustomizationReadyHealth(kustomization)
 
 	// If kustomization itself is unhealthy, return that status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusUnhealthy {
-		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), kustomizationErrorTime, nil
+		return kustomizationHealth, kustomizationMessage, kustomizationErrorTime
 	}
 
 	// Check if kustomization has inventory
 	if kustomization.Status.Inventory == nil || len(kustomization.Status.Inventory.Entries) == 0 {
 		// If kustomization is healthy but has no inventory, it might be pending
 		if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil, nil
+			return rolloutv1alpha1.HealthStatusPending, kustomizationMessage, nil
 		}
-		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil, nil
+		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil
 	}
 
 	var unhealthyResources []string
@@ -239,30 +231,35 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 
 	// Determine overall health status based on both kustomization and managed resources
 	if len(errorResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), latestErrorTime, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), latestErrorTime
 	}
 
 	if len(unhealthyResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime
 	}
 
 	if len(pendingResources) > 0 {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil, nil
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil
 	}
 
 	// All resources are healthy, but check if kustomization itself has any pending status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil, nil
+		return rolloutv1alpha1.HealthStatusPending, kustomizationMessage, nil
 	}
 
-	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil, nil
+	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil
 }
 
-// checkKustomizationReadyHealth derives health from the Kustomization's Ready condition alone.
-// It is only meaningful when kustomize-controller waits for the managed resources (wait: true).
-// kstatus cannot be used here: after a failed health check kustomize-controller keeps
-// Reconciling=True (ProgressingWithRetry), which kstatus reports as in progress forever.
+// checkKustomizationReadyHealth derives health from the Kustomization's Ready condition.
+// With wait: true this covers the managed resources too, since kustomize-controller health-checks
+// them before marking the Kustomization ready. kstatus cannot be used here: when a reconciliation
+// fails (build, apply or health check) kustomize-controller keeps Reconciling=True
+// (ProgressingWithRetry), and kstatus maps both that and Ready=False to InProgress, so a failed
+// Kustomization would be reported as pending forever.
 func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time) {
+	if !kustomization.DeletionTimestamp.IsZero() {
+		return rolloutv1alpha1.HealthStatusPending, "Kustomization pending: scheduled for deletion", nil
+	}
 	ready := meta.FindStatusCondition(kustomization.Status.Conditions, fluxmeta.ReadyCondition)
 	if ready == nil {
 		return rolloutv1alpha1.HealthStatusPending, "Kustomization pending: no Ready condition", nil
@@ -285,44 +282,6 @@ func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (ro
 		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization unhealthy (%s): %s", ready.Reason, ready.Message), &t
 	default:
 		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending (%s): %s", ready.Reason, ready.Message), nil
-	}
-}
-
-// checkKustomizationResourceHealth checks the health of the kustomization resource itself using kstatus.
-// Returns status, message, the failure condition timestamp (nil when not unhealthy), and any error.
-func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
-	// Convert the kustomization to unstructured for kstatus
-	obj := &unstructured.Unstructured{}
-	err := r.Scheme.Convert(kustomization, obj, nil)
-	if err != nil {
-		return rolloutv1alpha1.HealthStatusUnhealthy, "", nil, fmt.Errorf("failed to convert kustomization to unstructured: %v", err)
-	}
-
-	// Compute status using kstatus
-	result, err := status.Compute(obj)
-	if err != nil {
-		return rolloutv1alpha1.HealthStatusUnhealthy, "", nil, fmt.Errorf("failed to compute kustomization status: %v", err)
-	}
-
-	// Get the Ready condition message for additional context
-	buildMessage := func(kstatusMsg string) string {
-		if readyCondition := meta.FindStatusCondition(kustomization.GetConditions(), "Ready"); readyCondition != nil && readyCondition.Message != "" {
-			return fmt.Sprintf("%s: %s", kstatusMsg, readyCondition.Message)
-		}
-		return kstatusMsg
-	}
-
-	switch result.Status {
-	case status.CurrentStatus:
-		return rolloutv1alpha1.HealthStatusHealthy, buildMessage(result.Message), nil, nil
-	case status.InProgressStatus:
-		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil, nil
-	case status.FailedStatus:
-		return rolloutv1alpha1.HealthStatusUnhealthy, buildMessage(result.Message), getFailureConditionTime(obj), nil
-	case status.TerminatingStatus:
-		return rolloutv1alpha1.HealthStatusPending, buildMessage(result.Message), nil, nil
-	default:
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unknown status: %s - %s", result.Status, buildMessage(result.Message)), getFailureConditionTime(obj), nil
 	}
 }
 

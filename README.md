@@ -529,7 +529,7 @@ spec:
 
 A `HealthCheck` with `class: kustomization` and the `healthcheck.kuberik.com/kustomization: [namespace/]name` annotation tracks the health of a Flux Kustomization.
 
-By default, the controller computes the health of every resource in the Kustomization's inventory itself. This lets you run Kustomizations with `wait: false`: with `wait: true`, kustomize-controller blocks on a failing revision until `spec.timeout` expires, so a fix cannot roll out until then.
+The Kustomization's own health always comes from its `Ready` condition (see the table below). With `wait: false`, the controller then also computes the health of every resource in the Kustomization's inventory itself. This lets you run Kustomizations with `wait: false`: with `wait: true`, kustomize-controller blocks on a failing revision until `spec.timeout` expires, so a fix cannot roll out until then.
 
 Flux 2.7+ adds the `CancelHealthCheckOnNewRevision` feature gate to kustomize-controller ([extended in Flux 2.8](https://fluxcd.io/blog/2026/02/flux-v2.8.0/)). It cancels in-flight health checks when a new revision arrives, so `wait: true` no longer blocks fixes.
 
@@ -555,7 +555,7 @@ patches:
         value: --feature-gates=CancelHealthCheckOnNewRevision=true
 ```
 
-Without the gate, a Kustomization with `wait: true` stays stuck on a failing revision until `spec.timeout` expires, and the next release can't roll out until then. Kustomizations with `wait: false` keep the per-resource check.
+Without the gate, a Kustomization with `wait: true` stays stuck on a failing revision until `spec.timeout` expires, and the next release can't roll out until then. Kustomizations with `wait: false` use the same `Ready` mapping and then also check every resource in the inventory.
 
 ### Benefits
 
