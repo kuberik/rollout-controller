@@ -144,4 +144,26 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 		Expect(*hc.Status.Message).To(ContainSubstring("no managed resources"))
 	})
+
+	It("reports unhealthy when wait is false and the Kustomization failed to build", func() {
+		// kstatus reports this as in progress because Flux keeps Reconciling=True.
+		kustomization.Spec.Wait = false
+		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+		setConditions(
+			metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: fluxmeta.BuildFailedReason, Message: "kustomize build failed"},
+			metav1.Condition{Type: fluxmeta.ReconcilingCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ProgressingWithRetryReason, Message: "retrying"},
+		)
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(*hc.Status.Message).To(ContainSubstring(fluxmeta.BuildFailedReason))
+		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
+	})
+
+	It("reports pending when wait is false and health checks were canceled for a new revision", func() {
+		kustomization.Spec.Wait = false
+		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: fluxmeta.HealthCheckCanceledReason, Message: "New reconciliation triggered"})
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+	})
 })
