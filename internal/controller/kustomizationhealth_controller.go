@@ -45,10 +45,6 @@ type KustomizationHealthReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Clock  Clock
-	// CancelHealthCheckOnNewRevision declares that kustomize-controller runs with the
-	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+). Feature gates are process
-	// flags that leave no trace on Kustomization objects, so this must be configured.
-	CancelHealthCheckOnNewRevision bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths,verbs=get;list;watch;create;update;patch;delete
@@ -94,13 +90,15 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization not found: %v", err), &now)
 	}
 
-	// With wait: true and CancelHealthCheckOnNewRevision enabled, kustomize-controller
-	// health-checks the managed resources itself without blocking new revisions, so the
-	// Kustomization's Ready condition is authoritative. Otherwise check every managed resource.
+	// wait: true is only usable with rollouts when kustomize-controller runs with the
+	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+); without it a failing revision
+	// blocks the next one until spec.timeout. So with wait: true we assume the gate is on and
+	// treat the Kustomization's Ready condition as authoritative. Otherwise check every
+	// managed resource.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
-	if kustomization.Spec.Wait && r.CancelHealthCheckOnNewRevision {
+	if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
 		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)

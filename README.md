@@ -531,26 +531,9 @@ A `HealthCheck` with `class: kustomization` and the `healthcheck.kuberik.com/kus
 
 By default, the controller computes the health of every resource in the Kustomization's inventory itself. This lets you run Kustomizations with `wait: false`: with `wait: true`, kustomize-controller blocks on a failing revision until `spec.timeout` expires, so a fix cannot roll out until then.
 
-Flux 2.7+ adds the `CancelHealthCheckOnNewRevision` feature gate to kustomize-controller ([extended in Flux 2.8](https://fluxcd.io/blog/2026/02/flux-v2.8.0/)). It cancels in-flight health checks when a new revision arrives, so `wait: true` no longer blocks fixes. To use it:
+Flux 2.7+ adds the `CancelHealthCheckOnNewRevision` feature gate to kustomize-controller ([extended in Flux 2.8](https://fluxcd.io/blog/2026/02/flux-v2.8.0/)). It cancels in-flight health checks when a new revision arrives, so `wait: true` no longer blocks fixes.
 
-1. Enable the gate on kustomize-controller, for example with a patch in your `flux-system` kustomization:
-
-   ```yaml
-   patches:
-     - target:
-         kind: Deployment
-         name: kustomize-controller
-       patch: |
-         - op: add
-           path: /spec/template/spec/containers/0/args/-
-           value: --feature-gates=CancelHealthCheckOnNewRevision=true
-   ```
-
-2. Start the rollout controller with `--kustomize-controller-cancel-health-check-on-new-revision`. Feature gates are process flags and leave no trace on Kustomization objects, so the rollout controller cannot detect the gate and relies on this flag.
-
-3. Set `wait: true` on the Kustomizations you want kustomize-controller to health-check.
-
-For Kustomizations with `wait: true`, the rollout controller then relies on kustomize-controller's own health checking and only reads the Kustomization's `Ready` condition. Kustomizations with `wait: false` keep the per-resource check.
+**Setting `wait: true` on a Kustomization tells the rollout controller that this gate is enabled.** The rollout controller then relies on kustomize-controller's own health checking and only reads the Kustomization's `Ready` condition:
 
 | `Ready` condition | HealthCheck status |
 |---|---|
@@ -559,7 +542,20 @@ For Kustomizations with `wait: true`, the rollout controller then relies on kust
 | `False`, any other reason (e.g. `HealthCheckFailed`, `BuildFailed`) | Unhealthy |
 | `Unknown` / missing | Pending |
 
-Only set the flag when the gate is actually enabled. Without the gate, a Kustomization with `wait: true` stays stuck on a failing revision until `spec.timeout` expires.
+Enable the gate on kustomize-controller before using `wait: true`, for example with a patch in your `flux-system` kustomization:
+
+```yaml
+patches:
+  - target:
+      kind: Deployment
+      name: kustomize-controller
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --feature-gates=CancelHealthCheckOnNewRevision=true
+```
+
+Without the gate, a Kustomization with `wait: true` stays stuck on a failing revision until `spec.timeout` expires, and the next release can't roll out until then. Kustomizations with `wait: false` keep the per-resource check.
 
 ### Benefits
 

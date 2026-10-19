@@ -80,12 +80,11 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 	}
 
-	reconcileWith := func(cancelHealthCheckOnNewRevision bool) *rolloutv1alpha1.HealthCheck {
+	reconcileHealthCheck := func() *rolloutv1alpha1.HealthCheck {
 		r := &KustomizationHealthReconciler{
-			Client:                         k8sClient,
-			Scheme:                         k8sClient.Scheme(),
-			Clock:                          &RealClock{},
-			CancelHealthCheckOnNewRevision: cancelHealthCheckOnNewRevision,
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Clock:  &RealClock{},
 		}
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: healthCheckKey})
 		Expect(err).NotTo(HaveOccurred())
@@ -101,7 +100,7 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 			metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: fluxmeta.HealthCheckFailedReason, Message: "timeout waiting for: [Deployment/app/web status: 'Failed']"},
 			metav1.Condition{Type: fluxmeta.ReconcilingCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ProgressingWithRetryReason, Message: "retrying"},
 		)
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
 		Expect(*hc.Status.Message).To(ContainSubstring(fluxmeta.HealthCheckFailedReason))
 		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
@@ -110,13 +109,13 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 
 	It("reports healthy from the Ready condition without an inventory", func() {
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
 	})
 
 	It("reports pending when health checks were canceled for a new revision", func() {
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: fluxmeta.HealthCheckCanceledReason, Message: "New reconciliation triggered by OCIRepository/ns/src"})
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 	})
 
@@ -125,7 +124,7 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 			metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionUnknown, Reason: fluxmeta.ProgressingReason, Message: "Reconciliation in progress"},
 			metav1.Condition{Type: fluxmeta.ReconcilingCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ProgressingReason, Message: "Running health checks"},
 		)
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 	})
 
@@ -133,23 +132,15 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
 		kustomization.Spec.Path = "./other"
 		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-	})
-
-	It("keeps checking managed resources when the flag is not set", func() {
-		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
-		hc := reconcileWith(false)
-		// No inventory: the per-resource path can't consider it healthy.
-		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-		Expect(*hc.Status.Message).To(ContainSubstring("no managed resources"))
 	})
 
 	It("keeps checking managed resources when wait is false", func() {
 		kustomization.Spec.Wait = false
 		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
-		hc := reconcileWith(true)
+		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 		Expect(*hc.Status.Message).To(ContainSubstring("no managed resources"))
 	})
