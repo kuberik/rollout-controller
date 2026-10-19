@@ -525,6 +525,38 @@ spec:
       IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
 ```
 
+### Kustomization Health Checks
+
+A `HealthCheck` with `class: kustomization` and the `healthcheck.kuberik.com/kustomization: [namespace/]name` annotation tracks the health of a Flux Kustomization.
+
+By default, the controller computes the health of every resource in the Kustomization's inventory itself. This lets you run Kustomizations with `wait: false`: with `wait: true`, kustomize-controller blocks on a failing revision until `spec.timeout` expires, so a fix cannot roll out until then.
+
+Flux 2.7+ adds the `CancelHealthCheckOnNewRevision` feature gate to kustomize-controller ([extended in Flux 2.8](https://fluxcd.io/blog/2026/02/flux-v2.8.0/)). It cancels in-flight health checks when a new revision arrives, so `wait: true` no longer blocks fixes.
+
+**Setting `wait: true` on a Kustomization tells the rollout controller that this gate is enabled.** The rollout controller then relies on kustomize-controller's own health checking and only reads the Kustomization's `Ready` condition:
+
+| `Ready` condition | HealthCheck status |
+|---|---|
+| `True` (for the current generation) | Healthy |
+| `False`, reason `HealthCheckCanceled`, `DependencyNotReady`, `ArtifactFailed`, `Progressing` or `ProgressingWithRetry` | Pending |
+| `False`, any other reason (e.g. `HealthCheckFailed`, `BuildFailed`) | Unhealthy |
+| `Unknown` / missing | Pending |
+
+Enable the gate on kustomize-controller before using `wait: true`, for example with a patch in your `flux-system` kustomization:
+
+```yaml
+patches:
+  - target:
+      kind: Deployment
+      name: kustomize-controller
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --feature-gates=CancelHealthCheckOnNewRevision=true
+```
+
+Without the gate, a Kustomization with `wait: true` stays stuck on a failing revision until `spec.timeout` expires, and the next release can't roll out until then. Kustomizations with `wait: false` keep the per-resource check.
+
 ### Benefits
 
 - **GitOps Integration**: Leverages Flux's image automation for consistent, auditable release management

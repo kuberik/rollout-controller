@@ -23,6 +23,7 @@ import (
 	"time"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -89,8 +90,19 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization not found: %v", err), &now)
 	}
 
-	// Check the health of all managed resources
-	healthStatus, message, errorTime, err := r.checkKustomizationHealth(ctx, kustomization)
+	// wait: true is only usable with rollouts when kustomize-controller runs with the
+	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+); without it a failing revision
+	// blocks the next one until spec.timeout. So with wait: true we assume the gate is on and
+	// treat the Kustomization's Ready condition as authoritative. Otherwise check every
+	// managed resource.
+	var healthStatus rolloutv1alpha1.HealthStatus
+	var message string
+	var errorTime *metav1.Time
+	if kustomization.Spec.Wait {
+		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
+	} else {
+		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)
+	}
 	if err != nil {
 		log.Error(err, "failed to check kustomization health")
 		now := metav1.NewTime(r.Clock.Now())
@@ -244,6 +256,36 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 	}
 
 	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil, nil
+}
+
+// checkKustomizationReadyHealth derives health from the Kustomization's Ready condition alone.
+// It is only meaningful when kustomize-controller waits for the managed resources (wait: true).
+// kstatus cannot be used here: after a failed health check kustomize-controller keeps
+// Reconciling=True (ProgressingWithRetry), which kstatus reports as in progress forever.
+func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time) {
+	ready := meta.FindStatusCondition(kustomization.Status.Conditions, fluxmeta.ReadyCondition)
+	if ready == nil {
+		return rolloutv1alpha1.HealthStatusPending, "Kustomization pending: no Ready condition", nil
+	}
+	if ready.ObservedGeneration != 0 && ready.ObservedGeneration < kustomization.Generation {
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: generation %d not yet observed", kustomization.Generation), nil
+	}
+
+	switch ready.Status {
+	case metav1.ConditionTrue:
+		return rolloutv1alpha1.HealthStatusHealthy, fmt.Sprintf("Kustomization is ready: %s", ready.Message), nil
+	case metav1.ConditionFalse:
+		switch ready.Reason {
+		case fluxmeta.HealthCheckCanceledReason, fluxmeta.DependencyNotReadyReason, fluxmeta.ArtifactFailedReason,
+			fluxmeta.ProgressingReason, fluxmeta.ProgressingWithRetryReason:
+			// A newer reconciliation is under way, or kustomize-controller is waiting on inputs.
+			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending (%s): %s", ready.Reason, ready.Message), nil
+		}
+		t := ready.LastTransitionTime
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization unhealthy (%s): %s", ready.Reason, ready.Message), &t
+	default:
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending (%s): %s", ready.Reason, ready.Message), nil
+	}
 }
 
 // checkKustomizationResourceHealth checks the health of the kustomization resource itself using kstatus.
