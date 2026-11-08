@@ -1052,6 +1052,19 @@ func (r *RolloutReconciler) listHealthChecks(ctx context.Context, namespace stri
 	return allHealthChecks, nil
 }
 
+// snapshotObservations deep-copies a health check's observations so the record
+// keeps the values as they were at the moment of failure.
+func snapshotObservations(in []rolloutv1alpha1.HealthCheckObservation) []rolloutv1alpha1.HealthCheckObservation {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]rolloutv1alpha1.HealthCheckObservation, len(in))
+	for i := range in {
+		in[i].DeepCopyInto(&out[i])
+	}
+	return out
+}
+
 // collectFailedHealthChecks collects all health checks that have failed after the deployment time.
 // It returns health checks that have LastErrorTime after deployTime.
 func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
@@ -1060,8 +1073,9 @@ func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv
 	for _, hc := range allHealthChecks {
 		if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
 			failedHC := rolloutv1alpha1.FailedHealthCheck{
-				Name:      hc.Name,
-				Namespace: hc.Namespace,
+				Name:         hc.Name,
+				Namespace:    hc.Namespace,
+				Observations: snapshotObservations(hc.Status.Observations),
 			}
 			if hc.Status.Message != nil {
 				failedHC.Message = hc.Status.Message
@@ -1082,8 +1096,9 @@ func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rollo
 		// Check if health check is not healthy
 		if hc.Status.Status != rolloutv1alpha1.HealthStatusHealthy {
 			failedHC := rolloutv1alpha1.FailedHealthCheck{
-				Name:      hc.Name,
-				Namespace: hc.Namespace,
+				Name:         hc.Name,
+				Namespace:    hc.Namespace,
+				Observations: snapshotObservations(hc.Status.Observations),
 			}
 			if hc.Status.Message != nil {
 				failedHC.Message = hc.Status.Message
@@ -1099,9 +1114,10 @@ func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rollo
 		if hc.Status.LastChangeTime == nil {
 			msg := "LastChangeTime is not set"
 			failedHC := rolloutv1alpha1.FailedHealthCheck{
-				Name:      hc.Name,
-				Namespace: hc.Namespace,
-				Message:   &msg,
+				Name:         hc.Name,
+				Namespace:    hc.Namespace,
+				Message:      &msg,
+				Observations: snapshotObservations(hc.Status.Observations),
 			}
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 			continue
@@ -1110,9 +1126,10 @@ func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rollo
 		if !hc.Status.LastChangeTime.Time.After(deployTime) {
 			msg := fmt.Sprintf("LastChangeTime (%s) is not newer than deployment time", hc.Status.LastChangeTime.Time.Format(time.RFC3339))
 			failedHC := rolloutv1alpha1.FailedHealthCheck{
-				Name:      hc.Name,
-				Namespace: hc.Namespace,
-				Message:   &msg,
+				Name:         hc.Name,
+				Namespace:    hc.Namespace,
+				Message:      &msg,
+				Observations: snapshotObservations(hc.Status.Observations),
 			}
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 		}

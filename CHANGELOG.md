@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - HealthCheck `status.observations`: optional typed facts (Threshold, Ratio, Count, State) that providers can publish for dashboards to draw
+- `FailedHealthCheck.observations`: snapshot of a health check's observations at the moment its failure is recorded in rollout history
 
 ## [0.9.2] - 2026-09-12
 
