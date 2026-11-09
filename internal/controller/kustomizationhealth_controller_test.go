@@ -1012,7 +1012,7 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
-			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"}},
+			Spec:       rolloutv1alpha1.RolloutSpec{},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 

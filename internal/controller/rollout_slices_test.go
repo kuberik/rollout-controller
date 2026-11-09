@@ -185,7 +185,7 @@ var _ = Describe("Slices mode reader", func() {
 		if slices {
 			ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
 		} else {
-			ro.Spec.ReleasesImagePolicy = &corev1.LocalObjectReference{Name: name}
+			ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: name}
 			pol := &imagev1.ImagePolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: imagev1.ImagePolicySpec{
@@ -554,12 +554,39 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(err).To(HaveOccurred(), "the usual missing-ImagePolicy error path")
 	})
 
-	It("rejects a Rollout with neither releasesImagePolicy nor releaseSourceRef", func() {
-		err := k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
-			ObjectMeta: metav1.ObjectMeta{Name: "neither", Namespace: ns},
-		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"))
+	// The CEL rule on RolloutSpec: has(self.releasesImagePolicy.name) || has(self.releaseSourceRef).
+	DescribeTable("validates releasesImagePolicy / releaseSourceRef on the API server",
+		func(spec map[string]interface{}, wantErr bool) {
+			u := &unstructured.Unstructured{Object: map[string]interface{}{"spec": spec}}
+			u.SetAPIVersion("kuberik.com/v1alpha1")
+			u.SetKind("Rollout")
+			u.SetNamespace(ns)
+			u.SetName("cel")
+			err := k8sClient.Create(ctx, u)
+			if wantErr {
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"))
+				return
+			}
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("only releaseSourceRef is accepted", map[string]interface{}{
+			"releaseSourceRef": map[string]interface{}{"name": "src"}}, false),
+		Entry("existing style, releasesImagePolicy.name, is accepted", map[string]interface{}{
+			"releasesImagePolicy": map[string]interface{}{"name": "pol"}}, false),
+		Entry("neither key is rejected", map[string]interface{}{}, true),
+		Entry("an empty releasesImagePolicy object counts as set (name defaults to empty), as Go clients send it",
+			map[string]interface{}{"releasesImagePolicy": map[string]interface{}{}}, false),
+	)
+
+	It("serialises releasesImagePolicy as a value type, so a Go client leaving it zero still creates a Rollout", func() {
+		raw, err := json.Marshal(rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(raw)).To(ContainSubstring(`"releasesImagePolicy":{}`))
+		Expect(k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "goclient", Namespace: ns},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
+		})).To(Succeed())
 	})
 
 	// 5. Size.
@@ -636,7 +663,7 @@ var _ = Describe("Slices mode reader", func() {
 		})).To(Succeed())
 		Expect(k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: ns},
-			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "p"}},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: corev1.LocalObjectReference{Name: "p"}},
 		})).To(Succeed())
 
 		r := &RolloutReconciler{Client: mgr.GetClient()}
@@ -671,7 +698,7 @@ var _ = Describe("Slices mode reader", func() {
 				ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
 			} else {
 				// spec requires one of the two refs; releasesImagePolicy alone is "ref unset" in slices mode.
-				ro.Spec.ReleasesImagePolicy = &corev1.LocalObjectReference{Name: "unused"}
+				ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: "unused"}
 			}
 			Expect(k8sClient.Create(ctx, ro)).To(Succeed())
 			succeeded := rolloutv1alpha1.BakeStatusSucceeded

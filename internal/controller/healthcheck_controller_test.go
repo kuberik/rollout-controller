@@ -164,8 +164,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					// Minimal valid spec for testing
-					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"},
+					// Minimal spec for testing
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					// Initialize with empty history
@@ -475,8 +474,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					// Minimal valid spec for testing
-					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"},
+					// Minimal spec for testing
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					// Initialize with empty history
@@ -554,7 +552,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
@@ -614,7 +612,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 				},
@@ -655,7 +653,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
@@ -714,7 +712,7 @@ var _ = Describe("HealthCheck retry reset", func() {
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
-			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"}},
+			Spec:       rolloutv1alpha1.RolloutSpec{},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 

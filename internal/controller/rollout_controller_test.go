@@ -119,7 +119,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime:            bakeTime,
@@ -1344,7 +1344,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 				},
@@ -1357,7 +1357,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 				},
@@ -1370,7 +1370,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "other-image-policy",
 					},
 				},
@@ -3165,7 +3165,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -3233,7 +3233,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -3303,7 +3303,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -3371,7 +3371,7 @@ var _ = Describe("Rollout Controller", func() {
 						Namespace: namespace,
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -3525,7 +3525,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -3633,7 +3633,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -3705,7 +3705,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						WantedVersion: stringPtr(version1_0_0), // This should take priority
@@ -3779,7 +3779,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						WantedVersion: stringPtr(version1_0_0),
@@ -3850,7 +3850,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -3920,7 +3920,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						WantedVersion: stringPtr(version1_0_0),
@@ -3986,7 +3986,7 @@ var _ = Describe("Rollout Controller", func() {
 						Namespace: namespace,
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -4059,7 +4059,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -4133,7 +4133,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -4198,7 +4198,7 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 						WantedVersion: stringPtr(version1_0_0),
@@ -4260,7 +4260,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -4351,7 +4351,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 				},
@@ -4649,7 +4649,7 @@ var _ = Describe("Rollout Controller", func() {
 						Namespace: helperNamespace, // Use the helper test namespace
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: &corev1.LocalObjectReference{
+						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
 					},
@@ -4954,7 +4954,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime:      &metav1.Duration{Duration: 5 * time.Minute},
@@ -5181,7 +5181,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace1,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{
+					ReleasesImagePolicy: corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
@@ -5538,7 +5538,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace1,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
 					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
@@ -5558,7 +5558,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace2,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
 					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
@@ -6015,7 +6015,7 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		rollout := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: name},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: name},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())

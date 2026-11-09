@@ -110,7 +110,7 @@ func (hcsc *HealthCheckSelectorConfig) IsValid() bool {
 }
 
 // RolloutSpec defines the desired state of Rollout.
-// +kubebuilder:validation:XValidation:rule="has(self.releasesImagePolicy) || has(self.releaseSourceRef)",message="one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.releasesImagePolicy.name) || has(self.releaseSourceRef)",message="one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"
 type RolloutSpec struct {
 	// ReleaseSourceRef names a ReleaseSource (kuberik.com, served by release-controller)
 	// in the same namespace that provides this Rollout's releases. It is only read
@@ -121,8 +121,12 @@ type RolloutSpec struct {
 
 	// ReleasesImagePolicy specifies the ImagePolicy that provides available releases.
 	// Read only in list mode (without --release-slices). Optional when releaseSourceRef is set.
+	// A value type, so Go clients always send "releasesImagePolicy: {}"; the API
+	// server defaults name to "" and the RolloutSpec rule then counts it as set.
+	// The rule therefore rejects a manifest that omits both keys, not a Go client
+	// that leaves both zero.
 	// +optional
-	ReleasesImagePolicy *corev1.LocalObjectReference `json:"releasesImagePolicy,omitempty"`
+	ReleasesImagePolicy corev1.LocalObjectReference `json:"releasesImagePolicy,omitempty"`
 
 	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection
 	// +optional

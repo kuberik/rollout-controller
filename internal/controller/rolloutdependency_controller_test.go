@@ -352,7 +352,7 @@ var _ = Describe("RolloutDependency Controller", func() {
 		rollout := &kuberikcomv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: kuberikcomv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: name},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: name},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())

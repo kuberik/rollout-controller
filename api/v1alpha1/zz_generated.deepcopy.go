@@ -973,11 +973,7 @@ func (in *RolloutSpec) DeepCopyInto(out *RolloutSpec) {
 		*out = new(corev1.LocalObjectReference)
 		**out = **in
 	}
-	if in.ReleasesImagePolicy != nil {
-		in, out := &in.ReleasesImagePolicy, &out.ReleasesImagePolicy
-		*out = new(corev1.LocalObjectReference)
-		**out = **in
-	}
+	out.ReleasesImagePolicy = in.ReleasesImagePolicy
 	if in.WantedVersion != nil {
 		in, out := &in.WantedVersion, &out.WantedVersion
 		*out = new(string)

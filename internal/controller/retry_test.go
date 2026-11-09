@@ -61,7 +61,7 @@ var _ = Describe("Rollout retry annotation", func() {
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "retry-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "retry-ip"},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "retry-ip"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
@@ -329,7 +329,7 @@ var _ = Describe("Rollout errorCutoff with retry", func() {
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "ip"},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "ip"},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"suite": "errcutoff"},

@@ -118,7 +118,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "rec-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "rec-ip"},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "rec-ip"},
 				BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test-app"}},
@@ -363,7 +363,7 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "block-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "block-ip"},
+				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "block-ip"},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test-app"}},
 				},
