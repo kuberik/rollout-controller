@@ -385,6 +385,48 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(tagsOf(all)[0]).To(Equal("late"), "the last admitted is the newest candidate")
 	})
 
+	// B: reader fallback when the deployed tag has left the catalogue.
+	It("advances a lagging Rollout whose deployed tag expired from the catalogue, by history created", func() {
+		rels := trainRels(10, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, rolloutOpts{})
+		ro := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
+		succeeded := rolloutv1alpha1.BakeStatusSucceeded
+		created := metav1.NewTime(rels[3].created.Add(time.Minute)) // between r0004 and r0005
+		ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version: rolloutv1alpha1.VersionInfo{Tag: "expired", Created: &created}, Timestamp: metav1.Now(), BakeStatus: &succeeded}}
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		newGate("sl", nil, passing(false)) // observe candidates before any deploy
+		s := reconcileOnce(sliceR(true, 20), "sl")
+		Expect(tagsOfCandidates(s.Status.Candidates)).To(Equal(
+			[]string{"r0010", "r0009", "r0008", "r0007", "r0006", "r0005"}))
+
+		By("without a created on the history entry there are still no candidates")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
+		ro.Status.History[0].Version.Created = nil
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		s = reconcileOnce(sliceR(true, 20), "sl")
+		Expect(s.Status.Candidates).To(BeEmpty())
+	})
+
+	It("RolloutDependency uses the same lagging fallback for its pending set", func() {
+		rels := trainRels(10, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("cons", true, rels, rolloutOpts{})
+		ro := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, ro)).To(Succeed())
+		created := metav1.NewTime(rels[7].created.Add(time.Minute))
+		ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version: rolloutv1alpha1.VersionInfo{Tag: "expired", Created: &created}, Timestamp: metav1.Now()}}
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, ro)).To(Succeed())
+		d := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
+		got, err := d.consumerReleases(ctx, ro)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tagsOf(got)).To(Equal([]string{"r0009", "r0010"}), "oldest first")
+	})
+
 	// m3: createdObserved releases carry an observed time, not a build time.
 	It("leaves VersionInfo.Created nil for createdObserved releases but still orders by the catalogue time", func() {
 		t0 := time.Now().UTC().Truncate(time.Second)

@@ -44,6 +44,30 @@ type catalogue struct {
 	// created), deduplicated by tag.
 	releases  []rolloutv1alpha1.VersionInfo
 	firstSeen map[string]metav1.Time
+	// createdAt is the slice's created per tag, also for createdObserved
+	// releases whose VersionInfo.Created is nil.
+	createdAt map[string]metav1.Time
+}
+
+// candidatesAfter returns the releases a Rollout could move to, newest first:
+// those after the deployed tag (getNextReleaseCandidates). If the deployed tag
+// has left the catalogue (a slow environment behind the source's retention) and
+// the history entry has a created, they are the catalogue releases created after
+// it, in sequence order. Only when created is unknown is the answer none.
+func (c *catalogue) candidatesAfter(status *rolloutv1alpha1.RolloutStatus) ([]rolloutv1alpha1.VersionInfo, error) {
+	if len(c.releases) > 0 && len(status.History) > 0 {
+		cur := status.History[0].Version
+		if c.find(cur.Tag) == nil && cur.Created != nil {
+			out := []rolloutv1alpha1.VersionInfo{}
+			for i := len(c.releases) - 1; i >= 0; i-- {
+				if c.createdAt[c.releases[i].Tag].Time.After(cur.Created.Time) {
+					out = append(out, c.releases[i])
+				}
+			}
+			return out, nil
+		}
+	}
+	return getNextReleaseCandidates(c.releases, status)
 }
 
 func (c *catalogue) find(tag string) *rolloutv1alpha1.VersionInfo {
@@ -72,7 +96,7 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 	}
 	seen := map[string]bool{}
 	var entries []entry
-	c := &catalogue{firstSeen: map[string]metav1.Time{}}
+	c := &catalogue{firstSeen: map[string]metav1.Time{}, createdAt: map[string]metav1.Time{}}
 	for _, s := range sorted {
 		for _, rel := range s.Releases {
 			if seen[rel.Tag] {
@@ -101,6 +125,7 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 			}
 			entries = append(entries, entry{v: v, seq: rel.Sequence})
 			c.firstSeen[rel.Tag] = rel.FirstSeen
+			c.createdAt[rel.Tag] = rel.Created
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
@@ -270,7 +295,7 @@ func pinnedVersions(rollout *rolloutv1alpha1.Rollout) []string {
 // the first tags (the release about to be deployed and the pins), the k newest,
 // then the gate-named tags newest first. It is returned newest first.
 func buildWorkingSet(cat *catalogue, status *rolloutv1alpha1.RolloutStatus, k int, first []string, named map[string]bool) (all, working []rolloutv1alpha1.VersionInfo, err error) {
-	all, err = getNextReleaseCandidates(cat.releases, status)
+	all, err = cat.candidatesAfter(status)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -356,7 +381,7 @@ func blockedByGates(gates []rolloutv1alpha1.RolloutGate, rolloutName, tag string
 // three deprecated lists, all derived from the catalogue. With dual-write off
 // the deprecated lists are cleared. Pure with respect to the cluster.
 func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollout, cat *catalogue, gates []rolloutv1alpha1.RolloutGate) error {
-	all, err := getNextReleaseCandidates(cat.releases, &rollout.Status)
+	all, err := cat.candidatesAfter(&rollout.Status)
 	if err != nil {
 		return err
 	}

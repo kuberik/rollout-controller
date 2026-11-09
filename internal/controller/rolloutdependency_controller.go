@@ -521,7 +521,7 @@ func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, cons
 		return nil, err
 	}
 	cat := mergeSlices(sliceList.Items)
-	newer, err := getNextReleaseCandidates(cat.releases, &consumer.Status) // newest first
+	newer, err := cat.candidatesAfter(&consumer.Status) // newest first
 	if err != nil {
 		return nil, nil // empty catalogue: nothing to evaluate
 	}

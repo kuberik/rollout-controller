@@ -178,7 +178,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		sliceGates, err = r.listGatesFor(ctx, req.Namespace)
 		if err == nil {
 			// Every release newer than the deployed one, not the capped working set.
-			releaseCandidates, err = getNextReleaseCandidates(cat.releases, &rollout.Status)
+			releaseCandidates, err = cat.candidatesAfter(&rollout.Status)
 		}
 	} else {
 		releaseCandidates, err = getNextReleaseCandidates(releases, &rollout.Status)
