@@ -79,6 +79,10 @@ spec:
                   type: string
                 createdObserved:
                   type: boolean
+                sequence:
+                  description: Admission sequence; readers sort by it (hand-added, mirrors release-controller).
+                  format: int64
+                  type: integer
                 digest:
                   maxLength: 140
                   type: string
@@ -129,6 +133,7 @@ spec:
               required:
               - created
               - firstSeen
+              - sequence
               - tag
               type: object
             maxItems: 1000

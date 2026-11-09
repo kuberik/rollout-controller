@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -41,7 +40,8 @@ const (
 
 // catalogue is the merged, ordered view of a ReleaseSource's slices.
 type catalogue struct {
-	// releases is sorted oldest to newest by (created, tag), deduplicated by tag.
+	// releases is sorted oldest to newest by admission sequence (never by
+	// created), deduplicated by tag.
 	releases  []rolloutv1alpha1.VersionInfo
 	firstSeen map[string]metav1.Time
 }
@@ -67,8 +67,8 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 		return a.Name < b.Name
 	})
 	type entry struct {
-		v       rolloutv1alpha1.VersionInfo
-		created time.Time
+		v   rolloutv1alpha1.VersionInfo
+		seq int64
 	}
 	seen := map[string]bool{}
 	var entries []entry
@@ -84,8 +84,8 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 			// saw the tag, not a build time. List mode left VersionInfo.Created nil
 			// then, so it stays nil here: retention criterion 2 (which skips
 			// releases without created) and status.candidates[].created behave as
-			// before. Ordering still uses the catalogue time (entry.created), and
-			// the K newest and candidate order depend only on that order.
+			// before. Ordering uses the admission sequence, and the K newest and
+			// candidate order depend only on that order.
 			var createdPtr *metav1.Time
 			if !rel.CreatedObserved {
 				createdPtr = &created
@@ -99,13 +99,13 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 				Requires:           rel.Requires,
 				MetadataUnresolved: rel.MetadataUnresolved,
 			}
-			entries = append(entries, entry{v: v, created: created.Time})
+			entries = append(entries, entry{v: v, seq: rel.Sequence})
 			c.firstSeen[rel.Tag] = rel.FirstSeen
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
-		if !entries[i].created.Equal(entries[j].created) {
-			return entries[i].created.Before(entries[j].created)
+		if entries[i].seq != entries[j].seq {
+			return entries[i].seq < entries[j].seq
 		}
 		return entries[i].v.Tag < entries[j].v.Tag
 	})

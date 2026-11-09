@@ -131,9 +131,10 @@ var _ = Describe("Slices mode reader", func() {
 			},
 			Source: source,
 		}
-		for _, r := range rels {
+		for i, r := range rels {
 			rel := releasecatalogue.Release{
 				Tag:       r.tag,
+				Sequence:  int64(idx*100 + i + 1),
 				Created:   metav1.NewTime(r.created),
 				FirstSeen: metav1.NewTime(r.created),
 				Requires:  r.requires,
@@ -341,7 +342,7 @@ var _ = Describe("Slices mode reader", func() {
 	It("trims status.candidates to 64: the deployed pick and pins first, then the K newest, then named tags newest first", func() {
 		var rs []releasecatalogue.Release
 		for _, r := range trainRels(200, time.Minute) {
-			rs = append(rs, releasecatalogue.Release{Tag: r.tag, Created: metav1.NewTime(r.created)})
+			rs = append(rs, releasecatalogue.Release{Sequence: int64(len(rs) + 1), Tag: r.tag, Created: metav1.NewTime(r.created)})
 		}
 		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: rs}})
 		status := &rolloutv1alpha1.RolloutStatus{History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -362,13 +363,35 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(got).NotTo(ContainElement("r0138"))
 	})
 
+	// A: order is the admission sequence, not (created, tag).
+	It("orders the catalogue by sequence, not by created", func() {
+		t0 := time.Now().UTC().Truncate(time.Second)
+		cat := mergeSlices([]releasecatalogue.ReleaseSlice{
+			{ObjectMeta: metav1.ObjectMeta{Name: "s-1", CreationTimestamp: metav1.NewTime(t0.Add(time.Hour))},
+				Releases: []releasecatalogue.Release{
+					{Tag: "late", Sequence: 12, Created: metav1.NewTime(t0.Add(-48 * time.Hour))}, // old build admitted last
+					{Tag: "newest-built", Sequence: 11, Created: metav1.NewTime(t0)},
+				}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "s-0", CreationTimestamp: metav1.NewTime(t0)},
+				Releases: []releasecatalogue.Release{
+					{Tag: "first", Sequence: 10, Created: metav1.NewTime(t0.Add(-time.Hour))},
+					{Tag: "dup", Sequence: 9, Created: metav1.NewTime(t0.Add(-2 * time.Hour))},
+					{Tag: "dup", Sequence: 99, Created: metav1.NewTime(t0.Add(-2 * time.Hour))}, // same slice, ignored
+				}},
+		})
+		Expect(tagsOf(cat.releases)).To(Equal([]string{"dup", "first", "newest-built", "late"}))
+		all, err := getNextReleaseCandidates(cat.releases, &rolloutv1alpha1.RolloutStatus{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tagsOf(all)[0]).To(Equal("late"), "the last admitted is the newest candidate")
+	})
+
 	// m3: createdObserved releases carry an observed time, not a build time.
 	It("leaves VersionInfo.Created nil for createdObserved releases but still orders by the catalogue time", func() {
 		t0 := time.Now().UTC().Truncate(time.Second)
 		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: []releasecatalogue.Release{
-			{Tag: "c", Created: metav1.NewTime(t0.Add(2 * time.Hour))},
-			{Tag: "b", Created: metav1.NewTime(t0.Add(time.Hour)), CreatedObserved: true},
-			{Tag: "a", Created: metav1.NewTime(t0)},
+			{Tag: "c", Sequence: 3, Created: metav1.NewTime(t0.Add(2 * time.Hour))},
+			{Tag: "b", Sequence: 2, Created: metav1.NewTime(t0.Add(time.Hour)), CreatedObserved: true},
+			{Tag: "a", Sequence: 1, Created: metav1.NewTime(t0)},
 		}}})
 		Expect(tagsOf(cat.releases)).To(Equal([]string{"a", "b", "c"}))
 		Expect(cat.find("a").Created).NotTo(BeNil())
@@ -411,7 +434,7 @@ var _ = Describe("Slices mode reader", func() {
 		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: func() []releasecatalogue.Release {
 			var out []releasecatalogue.Release
 			for _, r := range rels {
-				out = append(out, releasecatalogue.Release{Tag: r.tag, Created: metav1.NewTime(r.created)})
+				out = append(out, releasecatalogue.Release{Sequence: int64(len(out) + 1), Tag: r.tag, Created: metav1.NewTime(r.created)})
 			}
 			return out
 		}()}})
@@ -759,7 +782,7 @@ var _ = Describe("Slices mode reader", func() {
 		}
 		for i, r := range cons {
 			unresolved.Releases = append(unresolved.Releases, releasecatalogue.Release{
-				Tag: r.tag, Created: metav1.NewTime(r.created), FirstSeen: metav1.NewTime(r.created),
+				Sequence: int64(i + 1), Tag: r.tag, Created: metav1.NewTime(r.created), FirstSeen: metav1.NewTime(r.created),
 				Requires: r.requires, MetadataUnresolved: i == 1})
 		}
 		Expect(k8sClient.Create(ctx, &unresolved)).To(Succeed())

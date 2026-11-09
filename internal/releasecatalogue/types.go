@@ -85,10 +85,12 @@ type ReleaseSlice struct {
 }
 
 type Release struct {
-	Tag                string            `json:"tag"`
-	Digest             *string           `json:"digest,omitempty"`
-	Version            *string           `json:"version,omitempty"`
-	Revision           *string           `json:"revision,omitempty"`
+	Tag      string  `json:"tag"`
+	Digest   *string `json:"digest,omitempty"`
+	Version  *string `json:"version,omitempty"`
+	Revision *string `json:"revision,omitempty"`
+	// Sequence is the admission sequence; readers order by it, never by created.
+	Sequence           int64             `json:"sequence"`
 	Created            metav1.Time       `json:"created"`
 	CreatedObserved    bool              `json:"createdObserved,omitempty"`
 	FirstSeen          metav1.Time       `json:"firstSeen"`
