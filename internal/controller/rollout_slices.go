@@ -443,15 +443,28 @@ func dualWriteAvailable(persisted []rolloutv1alpha1.VersionInfo, cat *catalogue)
 	}
 	start := 0 // first catalogue position eligible for appending
 	if n := len(out); n > 0 {
-		last := out[n-1]
-		if pos := slices.IndexFunc(cat.releases, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == last.Tag }); pos >= 0 {
-			start = pos + 1
-		} else {
-			start = len(cat.releases)
-			for i, v := range cat.releases {
-				if last.Created == nil || (v.Created != nil && v.Created.After(last.Created.Time)) {
-					start = i
-					break
+		// Anchor on the newest persisted entry the catalogue still holds, so
+		// a trailing entry that left the catalogue (or never entered it) does
+		// not re-open releases list mode already trimmed.
+		anchored := false
+		for j := n - 1; j >= 0 && !anchored; j-- {
+			tag := out[j].Tag
+			if pos := slices.IndexFunc(cat.releases, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == tag }); pos >= 0 {
+				start = pos + 1
+				anchored = true
+			}
+		}
+		if !anchored {
+			// Nothing persisted is in the catalogue: like list mode, which
+			// only ever appends the newest release, append just the newest.
+			start = max(len(cat.releases)-1, 0)
+			last := out[n-1]
+			if last.Created != nil {
+				for i, v := range cat.releases {
+					if v.Created != nil && v.Created.After(last.Created.Time) {
+						start = i
+						break
+					}
 				}
 			}
 		}
