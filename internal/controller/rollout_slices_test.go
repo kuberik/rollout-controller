@@ -274,9 +274,6 @@ var _ = Describe("Slices mode reader", func() {
 	DescribeTable("picks the same release as list mode",
 		func(sc scenario) {
 			rels := trainRels(30, time.Hour)
-			if sc.current == "custom" {
-				// deployed tag the catalogue never held
-			}
 			// list world
 			newRollout("list", false, rels, rolloutOpts{current: sc.current, force: sc.force, wanted: sc.wanted})
 			// slices world
@@ -557,7 +554,6 @@ var _ = Describe("Slices mode reader", func() {
 			{tag: "consumer-2", created: time.Now().Add(-1 * time.Hour), requires: map[string]string{"api": "^1.1.0"}},
 		}
 		ver := "1.0.0-1"
-		succeeded := rolloutv1alpha1.BakeStatusSucceeded
 		mk := func(name string, slices bool) {
 			newRollout(name, slices, cons, rolloutOpts{current: "consumer-1"})
 		}
@@ -567,7 +563,6 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
 		p.Status.History[0].Version.Version = &ver
 		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
-		_ = succeeded
 
 		mk("cons-list", false)
 		catalogueOf("src", cons)
@@ -1017,10 +1012,74 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(cond.Reason).To(Equal(reasonSourceNotFound))
 	})
 
+	// m7: the source gate recovers through the manager's watches, not a hand-called mapper.
+	It("a blocked Rollout recovers when its ReleaseSource appears and becomes Ready", func() {
+		Expect(k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "sl", Namespace: ns},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
+		})).To(Succeed())
+		startManager(func(mgr ctrl.Manager) {
+			Expect((&RolloutReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+				ReleaseSlices: true, DualWriteReleaseLists: false, ReleaseCandidates: 3}).SetupWithManager(mgr)).To(Succeed())
+		})
+		reason := func() string {
+			ro := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
+			if c := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady); c != nil {
+				return c.Reason
+			}
+			return ""
+		}
+		Eventually(reason, 10*time.Second, 100*time.Millisecond).Should(Equal(reasonSourceNotFound))
+
+		By("the ReleaseSource appears, not Ready")
+		rels := trainRels(3, time.Hour)
+		createSource("src", false, 3, "r0003")
+		Eventually(reason, 10*time.Second, 100*time.Millisecond).Should(Equal(reasonSourceNotReady))
+
+		By("it becomes Ready and its slice arrives")
+		createSlice("src", 0, rels)
+		src := &releasecatalogue.ReleaseSource{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "src", Namespace: ns}, src)).To(Succeed())
+		for i := range src.Status.Conditions {
+			src.Status.Conditions[i].Status = metav1.ConditionTrue
+		}
+		Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+		Eventually(reason, 10*time.Second, 100*time.Millisecond).Should(Equal("ReleaseSourceReady"))
+		Eventually(func() string {
+			ro := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
+			if len(ro.Status.History) == 0 {
+				return ""
+			}
+			return ro.Status.History[0].Version.Tag
+		}, 10*time.Second, 100*time.Millisecond).Should(Equal("r0003"))
+	})
+
+	// m7: versionInfoForDeploy resolves catalogue, then history, then the bare tag.
+	It("versionInfoForDeploy falls back to history before the bare unresolved tag", func() {
+		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: []releasecatalogue.Release{
+			{Tag: "new", Created: metav1.NewTime(time.Now()), Digest: ptrTo("sha256:cat")}}}})
+		ro := &rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: []rolloutv1alpha1.DeploymentHistoryEntry{
+			{Version: rolloutv1alpha1.VersionInfo{Tag: "aged-out", Digest: ptrTo("sha256:hist"), Revision: ptrTo("abc")}}}}}
+		rec := record.NewFakeRecorder(5)
+		r := &RolloutReconciler{Recorder: rec}
+
+		Expect(r.versionInfoForDeploy(ro, cat, "new").Digest).To(Equal(ptrTo("sha256:cat")))
+		got := r.versionInfoForDeploy(ro, cat, "aged-out")
+		Expect(got.Digest).To(Equal(ptrTo("sha256:hist")))
+		Expect(got.Revision).To(Equal(ptrTo("abc")))
+		Expect(got.MetadataUnresolved).To(BeFalse())
+		Expect(rec.Events).To(BeEmpty(), "no ReleaseNotInCatalogue Event when history has it")
+
+		bare := r.versionInfoForDeploy(ro, cat, "nowhere")
+		Expect(bare).To(Equal(rolloutv1alpha1.VersionInfo{Tag: "nowhere", MetadataUnresolved: true}))
+		Expect(<-rec.Events).To(ContainSubstring("ReleaseNotInCatalogue"))
+	})
+
 	// Source gating (owner decision: no fallback, no materialisation).
 	DescribeTable("does not proceed without a usable ReleaseSource",
 		func(reason string, setup func()) {
-			rels := trainRels(3, time.Hour)
 			setup()
 			ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "sl", Namespace: ns}}
 			if reason != reasonSourceNotSet {
@@ -1043,7 +1102,6 @@ var _ = Describe("Slices mode reader", func() {
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
 			Expect(k8sClient.Create(ctx, oci)).To(Succeed())
-			_ = rels
 
 			rec := record.NewFakeRecorder(20)
 			r := sliceR(true, 3)
