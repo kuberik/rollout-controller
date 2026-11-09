@@ -164,7 +164,8 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					// Minimal spec for testing
+					// Minimal valid spec for testing
+					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					// Initialize with empty history
@@ -474,7 +475,8 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					// Minimal spec for testing
+					// Minimal valid spec for testing
+					ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					// Initialize with empty history
@@ -712,7 +714,7 @@ var _ = Describe("HealthCheck retry reset", func() {
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
-			Spec:       rolloutv1alpha1.RolloutSpec{},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "placeholder"}},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 

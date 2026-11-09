@@ -65,6 +65,14 @@ func trainRels(n int, step time.Duration) []testRel {
 	return out
 }
 
+func tagsOfCandidates(cs []rolloutv1alpha1.ReleaseCandidate) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.Tag)
+	}
+	return out
+}
+
 func tagsOf(vs []rolloutv1alpha1.VersionInfo) []string {
 	out := make([]string, 0, len(vs))
 	for _, v := range vs {
@@ -469,6 +477,91 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(s.Status.History[0].Version.Tag).To(Equal("consumer-1"), "blocked consumer-2 must not deploy")
 	})
 
+	// 4b. Dependency parity beyond the K candidates: K newest blocked, 4th admitted.
+	It("RolloutDependency admits an older release when the K newest are all blocked, like list mode", func() {
+		now := time.Now()
+		provider := []testRel{{tag: "provider-1", created: now.Add(-10 * time.Hour)}}
+		blockedReq := map[string]string{"api": "^1.1.0"}
+		cons := []testRel{
+			{tag: "cons-0", created: now.Add(-9 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+			{tag: "cons-1-ok", created: now.Add(-8 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+			{tag: "cons-2", created: now.Add(-7 * time.Hour), requires: blockedReq},
+			{tag: "cons-3", created: now.Add(-6 * time.Hour), requires: blockedReq},
+			{tag: "cons-4", created: now.Add(-5 * time.Hour), requires: blockedReq},
+		}
+		ver := "1.0.0-1"
+		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
+		p := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
+		p.Status.History[0].Version.Version = &ver
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+
+		newRollout("cons-list", false, cons, rolloutOpts{current: "cons-0"})
+		catalogueOf("src", cons)
+		newRollout("cons-sl", true, cons, rolloutOpts{current: "cons-0"})
+		c := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons-sl", Namespace: ns}, c)).To(Succeed())
+		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
+		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
+
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		for _, n := range []string{"list", "sl"} {
+			dep := &rolloutv1alpha1.RolloutDependency{
+				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
+				Spec: rolloutv1alpha1.RolloutDependencySpec{
+					RolloutRef:  corev1.LocalObjectReference{Name: "cons-" + n},
+					ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
+					Contract:    ptrTo("api"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			_, err := depR.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dep)})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		blockedTagsOf := func(n string) []string {
+			d := &rolloutv1alpha1.RolloutDependency{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "dep-" + n, Namespace: ns}, d)).To(Succeed())
+			var out []string
+			for _, b := range d.Status.BlockedReleases {
+				out = append(out, b.Tag)
+			}
+			Expect(d.Status.AdmittedVersions).To(ContainElement("cons-1-ok"))
+			return out
+		}
+		Expect(blockedTagsOf("sl")).To(ConsistOf("cons-2", "cons-3", "cons-4"))
+		Expect(blockedTagsOf("sl")).To(ConsistOf(blockedTagsOf("list")))
+
+		l := reconcileOnce(listR(), "cons-list")
+		s := reconcileOnce(sliceR(false, 3), "cons-sl")
+		Expect(l.Status.History[0].Version.Tag).To(Equal("cons-1-ok"))
+		Expect(s.Status.History[0].Version.Tag).To(Equal("cons-1-ok"))
+		// cons-1-ok is outside the K=3 newest; it was deployed because the
+		// dependency gate's allowedVersions named it into the working set.
+		Expect(tagsOfCandidates(s.Status.Candidates)).To(ConsistOf("cons-4", "cons-3", "cons-2"))
+	})
+
+	// 4c. releasesImagePolicy is optional.
+	It("does not panic in list mode when only releaseSourceRef is set", func() {
+		ro := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "nopolicy", Namespace: ns},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
+		}
+		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
+		var err error
+		Expect(func() {
+			_, err = listR().Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "nopolicy", Namespace: ns}})
+		}).NotTo(Panic())
+		Expect(err).To(HaveOccurred(), "the usual missing-ImagePolicy error path")
+	})
+
+	It("rejects a Rollout with neither releasesImagePolicy nor releaseSourceRef", func() {
+		err := k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "neither", Namespace: ns},
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"))
+	})
+
 	// 5. Size.
 	DescribeTable("keeps the Rollout under 10 KB for a five-minute train over 7 days (dual-write off)",
 		func(realistic bool) {
@@ -576,6 +669,9 @@ var _ = Describe("Slices mode reader", func() {
 			ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "sl", Namespace: ns}}
 			if reason != reasonSourceNotSet {
 				ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
+			} else {
+				// spec requires one of the two refs; releasesImagePolicy alone is "ref unset" in slices mode.
+				ro.Spec.ReleasesImagePolicy = &corev1.LocalObjectReference{Name: "unused"}
 			}
 			Expect(k8sClient.Create(ctx, ro)).To(Succeed())
 			succeeded := rolloutv1alpha1.BakeStatusSucceeded
