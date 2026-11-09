@@ -78,7 +78,7 @@ type ReleaseSlice struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Source        string       `json:"source"`
-	Sealed        bool         `json:"sealed,omitempty"`
+	Sealed        bool         `json:"sealed"`
 	OldestCreated *metav1.Time `json:"oldestCreated,omitempty"`
 	NewestCreated *metav1.Time `json:"newestCreated,omitempty"`
 	Releases      []Release    `json:"releases"`
