@@ -80,12 +80,22 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 			}
 			seen[rel.Tag] = true
 			created := rel.Created
+			// createdObserved means the slice's created is when release-controller
+			// saw the tag, not a build time. List mode left VersionInfo.Created nil
+			// then, so it stays nil here: retention criterion 2 (which skips
+			// releases without created) and status.candidates[].created behave as
+			// before. Ordering still uses the catalogue time (entry.created), and
+			// the K newest and candidate order depend only on that order.
+			var createdPtr *metav1.Time
+			if !rel.CreatedObserved {
+				createdPtr = &created
+			}
 			v := rolloutv1alpha1.VersionInfo{
 				Tag:                rel.Tag,
 				Digest:             rel.Digest,
 				Version:            rel.Version,
 				Revision:           rel.Revision,
-				Created:            &created,
+				Created:            createdPtr,
 				Requires:           rel.Requires,
 				MetadataUnresolved: rel.MetadataUnresolved,
 			}

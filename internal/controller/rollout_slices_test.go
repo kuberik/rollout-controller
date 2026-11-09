@@ -363,6 +363,24 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(got).NotTo(ContainElement("r0138"))
 	})
 
+	// m3: createdObserved releases carry an observed time, not a build time.
+	It("leaves VersionInfo.Created nil for createdObserved releases but still orders by the catalogue time", func() {
+		t0 := time.Now().UTC().Truncate(time.Second)
+		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: []releasecatalogue.Release{
+			{Tag: "c", Created: metav1.NewTime(t0.Add(2 * time.Hour))},
+			{Tag: "b", Created: metav1.NewTime(t0.Add(time.Hour)), CreatedObserved: true},
+			{Tag: "a", Created: metav1.NewTime(t0)},
+		}}})
+		Expect(tagsOf(cat.releases)).To(Equal([]string{"a", "b", "c"}))
+		Expect(cat.find("a").Created).NotTo(BeNil())
+		Expect(cat.find("b").Created).To(BeNil(), "list mode had no created for a release without the annotation")
+		Expect(cat.find("c").Created).NotTo(BeNil())
+		// K selection and candidate order do not use Created: newest first by the catalogue order.
+		_, working, err := buildWorkingSet(cat, &rolloutv1alpha1.RolloutStatus{}, 2, nil, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tagsOf(working)).To(Equal([]string{"c", "b"}))
+	})
+
 	It("keeps allowedVersions outside K as candidates", func() {
 		rels := trainRels(30, time.Hour)
 		catalogueOf("src", rels)
