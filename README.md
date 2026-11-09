@@ -67,6 +67,34 @@ spec:
 
 Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
 
+## HealthCheck observations (for provider authors)
+
+A provider that writes a `HealthCheck` may also publish typed facts in `status.observations`, most important first. Consumers such as the dashboard choose how to draw a failure from the first observation's `kind`, so they do not need to know the provider. The field is optional; `status.message` stays the human sentence. The controller does not act on observations, but when a rollout records a failed health check in its history it copies the check's observations as they were at that moment (`FailedHealthCheck.observations`), so the figure survives the check recovering.
+
+| kind | uses | drawn as |
+|---|---|---|
+| `Threshold` | `value`, `limit`, `direction` (`Above` is bad when value > limit, `Below` when value < limit) | figure against a budget |
+| `Ratio` | `value`, `total` | "5 of 6" |
+| `Count` | `value` | "3" |
+| `State` | none (name and `healthy` only) | label |
+
+`value`, `limit` and `total` are decimal strings (`"0.082"`), validated by the CRD. Optional on every kind: `unit` (`Percent` for a 0..1 ratio, `Milliseconds`, `Seconds`, `Count`, or free text), `window` (`"5m"`), `healthy` (whether this observation alone is within bounds), `observedTime`. At most 16 observations.
+
+```yaml
+status:
+  status: Unhealthy
+  message: error rate above budget
+  observations:
+    # Threshold: error rate 8.2% against a 1% budget
+    - {name: error rate, kind: Threshold, value: "0.082", limit: "0.01", direction: Above, unit: Percent, window: 5m, healthy: false}
+    # Ratio: 5 of 6 prod regions healthy
+    - {name: prod regions, kind: Ratio, value: "5", total: "6", healthy: false}
+    # Count: open incidents
+    - {name: open incidents, kind: Count, value: "3", unit: Count, healthy: false}
+    # State: no number
+    - {name: monitor, kind: State, healthy: false}
+```
+
 ## Time-Based Scheduling
 
 RolloutSchedule and ClusterRolloutSchedule resources enable time-based control over when rollouts can be deployed. Schedules automatically manage RolloutGate resources based on time windows, days of the week, and date ranges.

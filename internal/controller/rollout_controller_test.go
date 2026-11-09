@@ -2296,6 +2296,48 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].FailedHealthChecks[0].Message).To(Equal(errorMessage))
 			})
 
+			It("snapshots health check observations into the failed record and keeps them after recovery", func() {
+				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
+				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("failing the health check with an observation")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				healthCheck.Status.LastChangeTime = &metav1.Time{Time: fakeClock.Now().Add(30 * time.Second)}
+				healthCheck.Status.Observations = []rolloutv1alpha1.HealthCheckObservation{{
+					Name: "error rate", Kind: rolloutv1alpha1.ObservationKindThreshold, Value: "0.082", Limit: "0.01",
+					Direction: rolloutv1alpha1.ObservationDirectionAbove, Unit: "Percent",
+				}}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+				failedObs := append([]rolloutv1alpha1.HealthCheckObservation(nil), healthCheck.Status.Observations...)
+
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				rollout := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Observations).To(Equal(failedObs))
+
+				By("recovering the health check with a healthy observation")
+				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
+				healthCheck.Status.Observations = []rolloutv1alpha1.HealthCheckObservation{{
+					Name: "error rate", Kind: rolloutv1alpha1.ObservationKindThreshold, Value: "0.002", Limit: "0.01",
+					Direction: rolloutv1alpha1.ObservationDirectionAbove, Unit: "Percent",
+				}}
+				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				Expect(rollout.Status.History[0].FailedHealthChecks).To(HaveLen(1))
+				Expect(rollout.Status.History[0].FailedHealthChecks[0].Observations).To(Equal(failedObs))
+			})
+
 			It("should record failed health checks when health check errors occur after bake starts", func() {
 				By("Pushing and deploying an initial image")
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{

@@ -280,6 +280,13 @@ type FailedHealthCheck struct {
 	// Message is the error message from the health check.
 	// +optional
 	Message *string `json:"message,omitempty"`
+
+	// Observations is a snapshot of the health check's status.observations taken
+	// when the failure was recorded. It is not updated afterwards, so the figure
+	// survives the health check recovering.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	Observations []HealthCheckObservation `json:"observations,omitempty"`
 }
 
 // TriggeredByInfo indicates what triggered a deployment.
