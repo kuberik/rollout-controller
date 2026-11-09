@@ -304,6 +304,65 @@ var _ = Describe("Slices mode reader", func() {
 		Entry("current tag not in catalogue yields no candidates", scenario{current: "custom"}),
 	)
 
+	// M1: gates, bypass and selection run over the whole catalogue; K and the 64
+	// cap only shape status.candidates.
+	DescribeTable("matches list mode when many gate-named releases exceed the 64 cap",
+		func(manual []string, bypass, expect string) {
+			rels := trainRels(200, time.Minute)
+			var wide []string
+			for _, r := range rels[1:] {
+				wide = append(wide, r.tag)
+			}
+			newRollout("list", false, rels, rolloutOpts{current: "r0001"})
+			catalogueOf("src", rels)
+			newRollout("sl", true, rels, rolloutOpts{current: "r0001"})
+			for _, n := range []string{"list", "sl"} {
+				newGateNamed("a-dependency-"+n, n, wide, nil)
+				if manual != nil {
+					newGateNamed("b-manual-"+n, n, manual, nil)
+				}
+				if bypass != "" {
+					newGateNamed("c-freeze-"+n, n, nil, passing(false))
+					ro := &rolloutv1alpha1.Rollout{}
+					Expect(k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: ns}, ro)).To(Succeed())
+					ro.Annotations = map[string]string{"rollout.kuberik.com/bypass-gates": bypass}
+					Expect(k8sClient.Update(ctx, ro)).To(Succeed())
+				}
+			}
+			l := reconcileOnce(listR(), "list")
+			s := reconcileOnce(sliceR(true, 3), "sl")
+			Expect(l.Status.History[0].Version.Tag).To(Equal(expect), "list mode")
+			Expect(s.Status.History[0].Version.Tag).To(Equal(expect), "slices mode")
+			Expect(len(s.Status.Candidates)).To(BeNumerically("<=", 64))
+		},
+		Entry("a manual gate allows one release older than the 64 newest", []string{"r0005"}, "", "r0005"),
+		Entry("bypass-gates names a release older than the 64 newest", nil, "r0010", "r0010"),
+	)
+
+	It("trims status.candidates to 64: the deployed pick and pins first, then the K newest, then named tags newest first", func() {
+		var rs []releasecatalogue.Release
+		for _, r := range trainRels(200, time.Minute) {
+			rs = append(rs, releasecatalogue.Release{Tag: r.tag, Created: metav1.NewTime(r.created)})
+		}
+		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: rs}})
+		status := &rolloutv1alpha1.RolloutStatus{History: []rolloutv1alpha1.DeploymentHistoryEntry{
+			{Version: rolloutv1alpha1.VersionInfo{Tag: "r0001"}}}}
+		named := map[string]bool{}
+		for _, r := range rs[1:] {
+			named[r.Tag] = true
+		}
+		all, working, err := buildWorkingSet(cat, status, 3, []string{"r0005", "r0010"}, named)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all).To(HaveLen(199))
+		Expect(working).To(HaveLen(64))
+		got := tagsOf(working)
+		Expect(got[:3]).To(Equal([]string{"r0200", "r0199", "r0198"}))
+		Expect(got).To(ContainElements("r0005", "r0010"))
+		Expect(got[len(got)-2:]).To(Equal([]string{"r0010", "r0005"}))
+		Expect(got).To(ContainElement("r0139"), "the newest named tags fill the rest")
+		Expect(got).NotTo(ContainElement("r0138"))
+	})
+
 	It("keeps allowedVersions outside K as candidates", func() {
 		rels := trainRels(30, time.Hour)
 		catalogueOf("src", rels)
@@ -345,13 +404,13 @@ var _ = Describe("Slices mode reader", func() {
 			Spec: rolloutv1alpha1.RolloutSpec{WantedVersion: ptrTo("r0016")},
 		}
 		ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{Version: rolloutv1alpha1.VersionInfo{Tag: "r0010"}}}
-		all, working, err := buildWorkingSet(cat, &ro.Status, 3, namedVersions(ro, nil))
+		all, working, err := buildWorkingSet(cat, &ro.Status, 3, pinnedVersions(ro), namedVersions(ro, nil))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(all).To(HaveLen(20))
 		Expect(tagsOf(working)).To(Equal([]string{"r0030", "r0029", "r0028", "r0016", "r0015", "r0014"}))
 		// Anything at or before the deployed tag is never a candidate.
 		ro.Spec.WantedVersion = ptrTo("r0005")
-		_, working, _ = buildWorkingSet(cat, &ro.Status, 3, namedVersions(ro, nil))
+		_, working, _ = buildWorkingSet(cat, &ro.Status, 3, pinnedVersions(ro), namedVersions(ro, nil))
 		Expect(tagsOf(working)).NotTo(ContainElement("r0005"))
 	})
 

@@ -29,8 +29,10 @@ const (
 	// DefaultReleaseCandidates is K, the number of newest candidates kept in status.
 	DefaultReleaseCandidates = 20
 
-	maxStatusCandidates = 64
-	maxBlockedBy        = 16
+	// MaxReleaseCandidates is the MaxItems of status.candidates.
+	MaxReleaseCandidates = 64
+	maxStatusCandidates  = MaxReleaseCandidates
+	maxBlockedBy         = 16
 
 	reasonSourceNotSet   = "ReleaseSourceNotSet"
 	reasonSourceNotFound = "ReleaseSourceNotFound"
@@ -190,10 +192,13 @@ func (r *RolloutReconciler) blockOnSource(ctx context.Context, rollout *rolloutv
 }
 
 func (r *RolloutReconciler) candidateLimit() int {
-	if r.ReleaseCandidates > 0 {
-		return r.ReleaseCandidates
+	switch {
+	case r.ReleaseCandidates <= 0:
+		return DefaultReleaseCandidates
+	case r.ReleaseCandidates > maxStatusCandidates:
+		return maxStatusCandidates
 	}
-	return DefaultReleaseCandidates
+	return r.ReleaseCandidates
 }
 
 // namedVersions are the tags the working set must contain even when they are
@@ -220,21 +225,64 @@ func namedVersions(rollout *rolloutv1alpha1.Rollout, gates []rolloutv1alpha1.Rol
 	return named
 }
 
+// pinnedVersions are the tags a user asked for explicitly: spec.wantedVersion
+// and the force-deploy and bypass-gates annotations.
+func pinnedVersions(rollout *rolloutv1alpha1.Rollout) []string {
+	var out []string
+	if rollout.Spec.WantedVersion != nil {
+		out = append(out, *rollout.Spec.WantedVersion)
+	}
+	for _, a := range []string{"rollout.kuberik.com/force-deploy", "rollout.kuberik.com/bypass-gates"} {
+		if v := rollout.Annotations[a]; v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // buildWorkingSet returns every release after the deployed one (newest first,
-// the list-mode candidate rule) and the working set: the k newest of those plus
-// the named ones, capped at maxStatusCandidates.
-func buildWorkingSet(cat *catalogue, status *rolloutv1alpha1.RolloutStatus, k int, named map[string]bool) (all, working []rolloutv1alpha1.VersionInfo, err error) {
+// the list-mode candidate rule) and the working set that goes into
+// status.candidates. Only the working set is capped; gates, bypass detection and
+// selection always see all.
+//
+// The working set keeps, in this order of priority, until maxStatusCandidates:
+// the first tags (the release about to be deployed and the pins), the k newest,
+// then the gate-named tags newest first. It is returned newest first.
+func buildWorkingSet(cat *catalogue, status *rolloutv1alpha1.RolloutStatus, k int, first []string, named map[string]bool) (all, working []rolloutv1alpha1.VersionInfo, err error) {
 	all, err = getNextReleaseCandidates(cat.releases, status)
 	if err != nil {
 		return nil, nil, err
 	}
-	for i, v := range all {
-		if i < k || named[v.Tag] {
-			working = append(working, v)
+	keep := map[string]bool{}
+	add := func(tag string) {
+		if len(keep) < maxStatusCandidates {
+			keep[tag] = true
 		}
 	}
-	if len(working) > maxStatusCandidates {
-		working = working[:maxStatusCandidates]
+	inAll := map[string]bool{}
+	for _, v := range all {
+		inAll[v.Tag] = true
+	}
+	for _, t := range first {
+		if inAll[t] {
+			add(t)
+		}
+	}
+	for i, v := range all {
+		if i >= k {
+			break
+		}
+		add(v.Tag)
+	}
+	for _, v := range all {
+		if named[v.Tag] {
+			add(v.Tag)
+		}
+	}
+	for _, v := range all {
+		if keep[v.Tag] {
+			working = append(working, v)
+		}
 	}
 	return all, working, nil
 }
@@ -287,13 +335,23 @@ func blockedByGates(gates []rolloutv1alpha1.RolloutGate, rolloutName, tag string
 // three deprecated lists, all derived from the catalogue. With dual-write off
 // the deprecated lists are cleared. Pure with respect to the cluster.
 func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollout, cat *catalogue, gates []rolloutv1alpha1.RolloutGate) error {
-	named := namedVersions(rollout, gates)
-	all, working, err := buildWorkingSet(cat, &rollout.Status, r.candidateLimit(), named)
+	all, err := getNextReleaseCandidates(cat.releases, &rollout.Status)
 	if err != nil {
 		return err
 	}
 	bypassVersion := bypassVersionOf(rollout)
-	_, _, bypass := gateOutcome(gates, rollout.Name, bypassVersion, working)
+	// Gates, bypass and the release about to be deployed are decided over every
+	// release newer than the deployed one, as list mode does; K and the cap only
+	// shape what is written to status.
+	gatedAll, _, bypass := gateOutcome(gates, rollout.Name, bypassVersion, all)
+	first := pinnedVersions(rollout)
+	if len(gatedAll) > 0 {
+		first = append(first, gatedAll[0].Tag)
+	}
+	_, working, err := buildWorkingSet(cat, &rollout.Status, r.candidateLimit(), first, namedVersions(rollout, gates))
+	if err != nil {
+		return err
+	}
 
 	cands := make([]rolloutv1alpha1.ReleaseCandidate, 0, len(working))
 	for _, v := range working {
@@ -316,7 +374,6 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 	}
 	rollout.Status.AvailableReleases = r.dualWriteAvailable(rollout, cat)
 	rollout.Status.ReleaseCandidates = all
-	gatedAll, _, _ := gateOutcome(gates, rollout.Name, bypassVersion, all)
 	rollout.Status.GatedReleaseCandidates = gatedAll
 	return nil
 }

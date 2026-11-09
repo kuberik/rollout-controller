@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -109,6 +110,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if releaseCandidates < 1 || releaseCandidates > controller.MaxReleaseCandidates {
+		setupLog.Error(fmt.Errorf("--release-candidates=%d", releaseCandidates),
+			fmt.Sprintf("must be between 1 and %d (the status.candidates MaxItems)", controller.MaxReleaseCandidates))
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
