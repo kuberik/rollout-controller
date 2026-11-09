@@ -146,6 +146,18 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if r.ReleaseSlices {
 		releases = cat.releases
 	} else {
+		if rollout.Spec.ReleasesImagePolicy.Name == "" && rollout.Spec.ReleaseSourceRef != nil {
+			// Valid since releasesImagePolicy became optional, but list mode has
+			// nothing to read: say why instead of looping on an ImagePolicy Get error.
+			msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but release-controller slices mode "+
+				"(--release-slices) is off, so no releases are read; set spec.releasesImagePolicy or start the controller with --release-slices",
+				rollout.Spec.ReleaseSourceRef.Name)
+			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+				Type: rolloutv1alpha1.RolloutReleasesUpdated, Status: metav1.ConditionFalse,
+				Reason: "ReleaseSlicesDisabled", Message: msg,
+			})
+			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "ReleaseSlicesDisabled", msg)
+		}
 		err := r.updateAvailableReleases(ctx, &rollout, log)
 		if err != nil {
 			return ctrl.Result{}, err

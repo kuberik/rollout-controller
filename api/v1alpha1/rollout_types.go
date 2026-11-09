@@ -282,8 +282,9 @@ type RolloutStatus struct {
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
 
 	// Deprecated: read status.candidates and the ReleaseSlice catalogue instead.
-	// Written only with --release-slices and --dual-write-release-lists (default on
-	// in that mode), removed in a later minor.
+	// Written in list mode (without --release-slices), and in slices mode while
+	// --dual-write-release-lists is on (its default); cleared otherwise. Removed in
+	// a later minor.
 	// AvailableReleases is a list of all releases available in the releases repository.
 	// +optional
 	AvailableReleases []VersionInfo `json:"availableReleases,omitempty"`

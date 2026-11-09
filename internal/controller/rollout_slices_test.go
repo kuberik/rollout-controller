@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"strings"
@@ -807,7 +808,8 @@ var _ = Describe("Slices mode reader", func() {
 	})
 
 	// 4c. releasesImagePolicy is optional.
-	It("does not panic in list mode when only releaseSourceRef is set", func() {
+	// m6: list mode with only releaseSourceRef says that slices mode is off.
+	It("says release-controller slices mode is off in list mode when only releaseSourceRef is set", func() {
 		ro := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "nopolicy", Namespace: ns},
 			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
@@ -817,7 +819,22 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(func() {
 			_, err = listR().Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "nopolicy", Namespace: ns}})
 		}).NotTo(Panic())
-		Expect(err).To(HaveOccurred(), "the usual missing-ImagePolicy error path")
+		Expect(err).NotTo(HaveOccurred(), "no ImagePolicy Get error loop")
+		got := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "nopolicy", Namespace: ns}, got)).To(Succeed())
+		cond := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Message).To(ContainSubstring("--release-slices"))
+		Expect(cond.Message).To(ContainSubstring("spec.releasesImagePolicy"))
+	})
+
+	// m5: the generated CRD says list mode writes availableReleases too.
+	It("documents availableReleases as written in list mode as well", func() {
+		raw, err := os.ReadFile("../../config/crd/bases/kuberik.com_rollouts.yaml")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(raw)).To(ContainSubstring("Written in list mode (without --release-slices)"))
+		Expect(string(raw)).NotTo(ContainSubstring("Written only with --release-slices"))
 	})
 
 	// The CEL rule on RolloutSpec: has(self.releasesImagePolicy.name) || has(self.releaseSourceRef).
