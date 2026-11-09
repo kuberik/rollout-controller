@@ -445,6 +445,61 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(tagsOf(s.Status.ReleaseCandidates)).To(Equal(tagsOf(l.Status.ReleaseCandidates)))
 	})
 
+	// M3: list mode trims availableReleases only inside deployRelease, when the history overflows.
+	It("keeps all 30 availableReleases in both modes when a full history does not deploy (QA probe)", func() {
+		rels := trainRels(30, time.Hour)
+		opts := rolloutOpts{current: "r0020", limit: ptrTo(int32(3)), days: ptrTo(int32(1)), minCnt: ptrTo(int32(5))}
+		newRollout("list", false, rels, opts)
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, opts)
+		for _, n := range []string{"list", "sl"} {
+			ro := &rolloutv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: ns}, ro)).To(Succeed())
+			succeeded := rolloutv1alpha1.BakeStatusSucceeded
+			ro.Status.History = nil
+			for _, t := range []string{"r0020", "r0019", "r0018"} { // history is full (limit 3)
+				ro.Status.History = append(ro.Status.History, rolloutv1alpha1.DeploymentHistoryEntry{
+					Version: rolloutv1alpha1.VersionInfo{Tag: t}, Timestamp: metav1.Now(), BakeStatus: &succeeded})
+			}
+			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+			newGate(n, nil, passing(false)) // no deploy
+		}
+		l := reconcileOnce(listR(), "list")
+		s := reconcileOnce(sliceR(true, 3), "sl")
+		Expect(l.Status.AvailableReleases).To(HaveLen(30))
+		Expect(s.Status.AvailableReleases).To(HaveLen(30))
+		s = reconcileOnce(sliceR(true, 3), "sl")
+		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal(tagsOf(l.Status.AvailableReleases)), "stable across reconciles")
+	})
+
+	It("does not re-add releases list mode trimmed when the catalogue still holds them", func() {
+		rels := trainRels(30, time.Hour)
+		opts := rolloutOpts{current: "r0020", limit: ptrTo(int32(3)), days: ptrTo(int32(1)), minCnt: ptrTo(int32(5))}
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, opts)
+		s := reconcileOnce(sliceR(true, 3), "sl") // deploys r0030, history overflows, cleanup trims
+		trimmed := len(s.Status.AvailableReleases)
+		Expect(trimmed).To(BeNumerically("<", 30))
+		s = reconcileOnce(sliceR(true, 3), "sl")
+		Expect(s.Status.AvailableReleases).To(HaveLen(trimmed))
+	})
+
+	It("refreshes an unresolved availableRelease once the catalogue resolves it, as list mode does", func() {
+		rels := trainRels(3, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, rolloutOpts{})
+		ro := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
+		ro.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			{Tag: "r0001", MetadataUnresolved: true}, {Tag: "r0002"}}
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		newGate("sl", nil, passing(false))
+		s := reconcileOnce(sliceR(true, 3), "sl")
+		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal([]string{"r0001", "r0002", "r0003"}))
+		Expect(s.Status.AvailableReleases[0].MetadataUnresolved).To(BeFalse())
+		Expect(s.Status.AvailableReleases[0].Created).NotTo(BeNil())
+	})
+
 	It("clears the deprecated lists with dual-write off", func() {
 		rels := trainRels(30, time.Hour)
 		catalogueOf("src", rels)

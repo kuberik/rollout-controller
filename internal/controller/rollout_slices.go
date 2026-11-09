@@ -372,34 +372,60 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 		rollout.Status.GatedReleaseCandidates = nil
 		return nil
 	}
-	rollout.Status.AvailableReleases = r.dualWriteAvailable(rollout, cat)
+	rollout.Status.AvailableReleases = dualWriteAvailable(rollout.Status.AvailableReleases, cat)
 	rollout.Status.ReleaseCandidates = all
 	rollout.Status.GatedReleaseCandidates = gatedAll
 	return nil
 }
 
-// dualWriteAvailable is the catalogue with list mode's per-release retention:
-// trimmed by CalculateAvailableReleasesToKeep (history criterion included) once
-// the history is full, which is when list mode runs its cleanup.
-func (r *RolloutReconciler) dualWriteAvailable(rollout *rolloutv1alpha1.Rollout, cat *catalogue) []rolloutv1alpha1.VersionInfo {
-	limit := int32(10)
-	if rollout.Spec.VersionHistoryLimit != nil {
-		limit = *rollout.Spec.VersionHistoryLimit
+// dualWriteAvailable runs list mode's own algorithm with the catalogue as the
+// input: the persisted status.availableReleases, plus catalogue releases not yet
+// in it appended in catalogue order, and an unresolved entry refreshed once the
+// catalogue has it resolved (updateAvailableReleases). It never trims. List mode
+// trims only inside deployRelease, when the history overflows
+// (cleanupOldAvailableReleases), and so does slices mode.
+//
+// List mode only ever appends what is newer than what it has, so releases it
+// trimmed never come back. The catalogue still holds them, so a release is
+// appended only when it sorts after the last persisted one (or, with nothing
+// persisted yet, always).
+func dualWriteAvailable(persisted []rolloutv1alpha1.VersionInfo, cat *catalogue) []rolloutv1alpha1.VersionInfo {
+	out := slices.Clone(persisted)
+	index := make(map[string]int, len(out))
+	for i, v := range out {
+		index[v.Tag] = i
 	}
-	out := slices.Clone(cat.releases)
-	if int32(len(rollout.Status.History)) < limit || len(rollout.Status.History) == 0 {
-		return out
+	start := 0 // first catalogue position eligible for appending
+	if n := len(out); n > 0 {
+		last := out[n-1]
+		if pos := slices.IndexFunc(cat.releases, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == last.Tag }); pos >= 0 {
+			start = pos + 1
+		} else {
+			start = len(cat.releases)
+			for i, v := range cat.releases {
+				if last.Created == nil || (v.Created != nil && v.Created.After(last.Created.Time)) {
+					start = i
+					break
+				}
+			}
+		}
 	}
-	days := int32(7)
-	if rollout.Spec.AvailableReleasesRetentionDays != nil {
-		days = *rollout.Spec.AvailableReleasesRetentionDays
+	for pos, rel := range cat.releases {
+		if i, ok := index[rel.Tag]; ok {
+			if out[i].MetadataUnresolved && !rel.MetadataUnresolved {
+				if rel.Digest == nil {
+					rel.Digest = out[i].Digest
+				}
+				out[i] = rel
+			}
+			continue
+		}
+		if pos >= start {
+			out = append(out, rel)
+			index[rel.Tag] = len(out) - 1
+		}
 	}
-	minCount := int32(30)
-	if rollout.Spec.AvailableReleasesMinCount != nil {
-		minCount = *rollout.Spec.AvailableReleasesMinCount
-	}
-	cutoff := r.now().Add(-time.Duration(days) * 24 * time.Hour)
-	return CalculateAvailableReleasesToKeep(out, rollout.Status.History, cutoff, int(minCount))
+	return out
 }
 
 func (r *RolloutReconciler) listGatesFor(ctx context.Context, namespace string) ([]rolloutv1alpha1.RolloutGate, error) {

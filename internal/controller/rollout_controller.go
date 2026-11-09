@@ -1498,7 +1498,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if int32(len(rollout.Status.History)) > versionHistoryLimit {
 		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
 		// If history is full, remove available versions based on retention criteria
-		if len(rollout.Status.History) > 0 && cat == nil {
+		if len(rollout.Status.History) > 0 {
 			r.cleanupOldAvailableReleases(rollout, log)
 		}
 	}
