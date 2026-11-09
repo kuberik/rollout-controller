@@ -61,7 +61,7 @@ spec:
             format: date-time
             type: string
           releases:
-            description: Releases sorted by (created, tag).
+            description: Releases sorted by sequence ascending.
             items:
               description: |-
                 Release is one catalogue entry. It is a superset of rollout-controller's
@@ -79,10 +79,6 @@ spec:
                   type: string
                 createdObserved:
                   type: boolean
-                sequence:
-                  description: Admission sequence; readers sort by it (hand-added, mirrors release-controller).
-                  format: int64
-                  type: integer
                 digest:
                   maxLength: 140
                   type: string
@@ -118,6 +114,13 @@ spec:
                   description: Revision is a git SHA by contract.
                   maxLength: 128
                   type: string
+                sequence:
+                  description: |-
+                    Sequence is the admission order. Readers sort by it (not by created).
+                    Sequence order equals policy order: incremental releases get max+1..,
+                    backfilled releases get min-1.. going down. Never renumbered.
+                  format: int64
+                  type: integer
                 tag:
                   description: Tag is the deployable reference. Unique per source.
                   maxLength: 128

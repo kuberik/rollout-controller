@@ -103,6 +103,7 @@ var _ = Describe("Slices mode reader", func() {
 		u.SetNamespace(ns)
 		u.SetName(name)
 		Expect(unstructured.SetNestedField(u.Object, "ghcr.io/org/app", "spec", "oci", "image")).To(Succeed())
+		Expect(unstructured.SetNestedField(u.Object, "asc", "spec", "oci", "policy", "alphabetical", "order")).To(Succeed())
 		Expect(k8sClient.Create(ctx, u)).To(Succeed())
 		status := "False"
 		if ready {
