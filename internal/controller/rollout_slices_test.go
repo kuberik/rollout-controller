@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"strings"
 	"time"
 
@@ -721,6 +722,88 @@ var _ = Describe("Slices mode reader", func() {
 			blocked = append(blocked, b.Tag)
 		}
 		Expect(blocked).To(ConsistOf("cons-1"), "evaluated against availableReleases, not the catalogue")
+	})
+
+	// startManager runs a manager scoped to the test namespace with the given
+	// controllers, so tests are driven by the real watches.
+	startManager := func(setup func(mgr ctrl.Manager)) {
+		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+			Scheme: k8sClient.Scheme(), Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
+			Cache:      cacheOptionsFor(ns),
+			Controller: ctrlconfig.Controller{SkipNameValidation: ptrTo(true)},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		setup(mgr)
+		mctx, mcancel := context.WithCancel(ctx)
+		DeferCleanup(mcancel)
+		go func() { defer GinkgoRecover(); _ = mgr.Start(mctx) }()
+		Expect(mgr.GetCache().WaitForCacheSync(mctx)).To(BeTrue())
+	}
+
+	// 4d. m4: a slice repair re-evaluates the dependency gate.
+	It("re-evaluates a RolloutDependency when its consumer's ReleaseSlice changes (unresolved to resolved)", func() {
+		now := time.Now()
+		provider := []testRel{{tag: "provider-1", created: now.Add(-3 * time.Hour)}}
+		cons := []testRel{
+			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+		}
+		ver := "1.0.0-1"
+		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
+		p := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
+		p.Status.History[0].Version.Version = &ver
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+
+		createSource("src", true, 2, "cons-1")
+		unresolved := releasecatalogue.ReleaseSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: "src-00000", Namespace: ns,
+				Labels: map[string]string{releasecatalogue.SourceLabel: "src"}},
+			Source: "src",
+		}
+		for i, r := range cons {
+			unresolved.Releases = append(unresolved.Releases, releasecatalogue.Release{
+				Tag: r.tag, Created: metav1.NewTime(r.created), FirstSeen: metav1.NewTime(r.created),
+				Requires: r.requires, MetadataUnresolved: i == 1})
+		}
+		Expect(k8sClient.Create(ctx, &unresolved)).To(Succeed())
+		newRollout("cons", true, cons, rolloutOpts{current: "cons-0"})
+
+		dep := &rolloutv1alpha1.RolloutDependency{
+			ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: ns},
+			Spec: rolloutv1alpha1.RolloutDependencySpec{
+				RolloutRef:  corev1.LocalObjectReference{Name: "cons"},
+				ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
+				Contract:    ptrTo("api"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+		startManager(func(mgr ctrl.Manager) {
+			Expect((&RolloutDependencyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), ReleaseSlices: true}).SetupWithManager(mgr)).To(Succeed())
+		})
+		admitted := func() []string {
+			d := &rolloutv1alpha1.RolloutDependency{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), d)).To(Succeed())
+			return d.Status.AdmittedVersions
+		}
+		blockedNow := func() []string {
+			d := &rolloutv1alpha1.RolloutDependency{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), d)).To(Succeed())
+			var out []string
+			for _, b := range d.Status.BlockedReleases {
+				out = append(out, b.Tag)
+			}
+			return out
+		}
+		Eventually(blockedNow, 10*time.Second, 100*time.Millisecond).Should(ConsistOf("cons-1"))
+		Expect(admitted()).To(BeEmpty())
+
+		By("release-controller repairs the slice; nothing else changes")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&unresolved), &unresolved)).To(Succeed())
+		unresolved.Releases[1].MetadataUnresolved = false
+		Expect(k8sClient.Update(ctx, &unresolved)).To(Succeed())
+		Eventually(admitted, 10*time.Second, 100*time.Millisecond).Should(ConsistOf("cons-1"))
+		Expect(blockedNow()).To(BeEmpty())
 	})
 
 	// 4c. releasesImagePolicy is optional.

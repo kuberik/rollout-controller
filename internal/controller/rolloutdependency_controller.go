@@ -63,6 +63,7 @@ type RolloutDependencyReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
 
 // Reconcile evaluates a RolloutDependency and syncs the RolloutGate it manages.
 func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -403,15 +404,68 @@ func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("rolloutdependency-controller") //nolint:staticcheck // SA1019
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&kuberikcomv1alpha1.RolloutDependency{}).
 		Owns(&kuberikcomv1alpha1.RolloutGate{}).
 		Watches(
 			&kuberikcomv1alpha1.Rollout{},
 			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForRollout),
-		).
+		)
+	if r.ReleaseSlices {
+		// In slices mode the gate is evaluated over the consumer's catalogue, which
+		// can change (a repair, a new release) without the Rollout changing.
+		b = b.Watches(
+			&releasecatalogue.ReleaseSlice{},
+			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice),
+		)
+	}
+	return b.
 		Named("rolloutdependency").
 		Complete(r)
+}
+
+// findDependenciesForReleaseSlice maps a ReleaseSlice to the RolloutDependencies
+// whose consumer Rollout references the slice's ReleaseSource.
+func (r *RolloutDependencyReconciler) findDependenciesForReleaseSlice(ctx context.Context, obj client.Object) []reconcile.Request {
+	slice, ok := obj.(*releasecatalogue.ReleaseSlice)
+	if !ok {
+		return nil
+	}
+	source := slice.Labels[releasecatalogue.SourceLabel]
+	if source == "" {
+		source = slice.Source
+	}
+	if source == "" {
+		return nil
+	}
+	rollouts := &kuberikcomv1alpha1.RolloutList{}
+	if err := r.List(ctx, rollouts, client.InNamespace(slice.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list Rollouts")
+		return nil
+	}
+	consumers := map[string]bool{}
+	for _, ro := range rollouts.Items {
+		if ro.Spec.ReleaseSourceRef != nil && ro.Spec.ReleaseSourceRef.Name == source {
+			consumers[ro.Name] = true
+		}
+	}
+	if len(consumers) == 0 {
+		return nil
+	}
+	dependencies := &kuberikcomv1alpha1.RolloutDependencyList{}
+	if err := r.List(ctx, dependencies, client.InNamespace(slice.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list RolloutDependencies")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, dependency := range dependencies.Items {
+		if consumers[dependency.Spec.RolloutRef.Name] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: dependency.Namespace, Name: dependency.Name},
+			})
+		}
+	}
+	return requests
 }
 
 // findDependenciesForRollout maps a Rollout to every RolloutDependency that
