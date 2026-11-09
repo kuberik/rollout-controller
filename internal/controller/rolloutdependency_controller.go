@@ -136,7 +136,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	admitted, blocked := evaluateDependency(consumer.Status.AvailableReleases, contract, providedVersion)
+	admitted, blocked := evaluateDependency(consumerReleases(consumer), contract, providedVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -208,6 +208,13 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // read as "this dependency is holding nothing back": the Rollout has no
 // candidate to deploy regardless of what any gate says.
 func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) []string {
+	if usesCatalogue(consumer) {
+		tags := make([]string, 0, len(consumer.Status.Candidates))
+		for _, c := range consumer.Status.Candidates {
+			tags = append(tags, c.Tag)
+		}
+		return tags
+	}
 	candidates, err := getNextReleaseCandidates(consumer.Status.AvailableReleases, &consumer.Status)
 	if err != nil {
 		return nil
@@ -423,4 +430,25 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 		}
 	}
 	return requests
+}
+
+// usesCatalogue reports whether the consumer is read through a ReleaseSource
+// (slices mode): its working set lives in status.candidates, not in
+// availableReleases, which is cleared when dual-write is off.
+func usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
+	return consumer.Spec.ReleaseSourceRef != nil && consumer.Status.ReleaseSource != nil
+}
+
+// consumerReleases returns the releases to evaluate, oldest first. In slices
+// mode that is the working set (candidates), since selection only ever picks a
+// candidate; otherwise availableReleases.
+func consumerReleases(consumer *kuberikcomv1alpha1.Rollout) []kuberikcomv1alpha1.VersionInfo {
+	if !usesCatalogue(consumer) {
+		return consumer.Status.AvailableReleases
+	}
+	out := make([]kuberikcomv1alpha1.VersionInfo, 0, len(consumer.Status.Candidates))
+	for i := len(consumer.Status.Candidates) - 1; i >= 0; i-- {
+		out = append(out, consumer.Status.Candidates[i].VersionInfo)
+	}
+	return out
 }

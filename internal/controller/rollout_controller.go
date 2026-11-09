@@ -50,6 +50,7 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -87,6 +88,15 @@ type RolloutReconciler struct {
 	Scheme   *runtime.Scheme
 	Clock    Clock
 	Recorder record.EventRecorder
+
+	// ReleaseSlices enables slices mode: releases come from a ReleaseSource
+	// catalogue (--release-slices). Off = today's ImagePolicy path.
+	ReleaseSlices bool
+	// DualWriteReleaseLists keeps the deprecated availableReleases,
+	// releaseCandidates and gatedReleaseCandidates written in slices mode.
+	DualWriteReleaseLists bool
+	// ReleaseCandidates is K, the newest candidates kept in status.candidates.
+	ReleaseCandidates int
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
@@ -94,6 +104,8 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=releasesources,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagepolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagerepositories,verbs=get;list;watch
@@ -118,11 +130,23 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	err := r.updateAvailableReleases(ctx, &rollout, log)
-	if err != nil {
-		return ctrl.Result{}, err
+	var cat *catalogue
+	var releases []rolloutv1alpha1.VersionInfo
+	if r.ReleaseSlices {
+		var proceed bool
+		var err error
+		cat, proceed, err = r.prepareSlices(ctx, &rollout, log)
+		if err != nil || !proceed {
+			return ctrl.Result{}, err
+		}
+		releases = cat.releases
+	} else {
+		err := r.updateAvailableReleases(ctx, &rollout, log)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		releases = rollout.Status.AvailableReleases
 	}
-	releases := rollout.Status.AvailableReleases
 
 	if len(releases) == 0 {
 		log.Info("No releases available, skipping deployment")
@@ -130,12 +154,24 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
-	releaseCandidates, err := getNextReleaseCandidates(releases, &rollout.Status)
+	var releaseCandidates []rolloutv1alpha1.VersionInfo
+	var sliceGates []rolloutv1alpha1.RolloutGate
+	var err error
+	if r.ReleaseSlices {
+		sliceGates, err = r.listGatesFor(ctx, req.Namespace)
+		if err == nil {
+			_, releaseCandidates, err = buildWorkingSet(cat, &rollout.Status, r.candidateLimit(), namedVersions(&rollout, sliceGates))
+		}
+	} else {
+		releaseCandidates, err = getNextReleaseCandidates(releases, &rollout.Status)
+	}
 	if err != nil {
 		log.Error(err, "Failed to get next release candidates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
-	rollout.Status.ReleaseCandidates = releaseCandidates
+	if !r.ReleaseSlices {
+		rollout.Status.ReleaseCandidates = releaseCandidates
+	}
 
 	// Evaluate gates early (without updating status yet)
 	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
@@ -145,7 +181,13 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "Failed to evaluate gates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
-	rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
+	if r.ReleaseSlices {
+		if err := r.applyCandidateStatus(&rollout, cat, sliceGates); err != nil {
+			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
+		}
+	} else {
+		rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
+	}
 
 	// Evaluate health checks once and set DeploymentBlocked. Done before the gate
 	// early-return so the condition surfaces even when gates also block.
@@ -303,7 +345,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 		}
 
-		if err := r.deployRelease(ctx, &rollout, *wantedRelease); err != nil {
+		if err := r.deployRelease(ctx, &rollout, *wantedRelease, cat); err != nil {
 			log.Error(err, "Failed to deploy release")
 			return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
 		}
@@ -365,8 +407,17 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize the EventRecorder
 	r.Recorder = mgr.GetEventRecorderFor("rollout-controller") //nolint:staticcheck // SA1019
 
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&rolloutv1alpha1.Rollout{}).
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(&rolloutv1alpha1.Rollout{})
+	if r.ReleaseSlices {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &rolloutv1alpha1.Rollout{},
+			releaseSourceIndexField, releaseSourceRefIndexer); err != nil {
+			return err
+		}
+		b = b.Watches(&releasecatalogue.ReleaseSlice{}, handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource)).
+			Watches(&releasecatalogue.ReleaseSource{}, handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource))
+	}
+	return b.
 		Watches(
 			&imagev1.ImagePolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
@@ -1288,7 +1339,7 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 }
 
 // deployRelease finds and patches Flux resources with the wanted version.
-func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
+func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, cat *catalogue) error {
 	log := logf.FromContext(ctx)
 
 	// Check if this deployment was done with gate bypass
@@ -1393,7 +1444,15 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// Try to find additional version information from available releases
 	foundInReleases := false
+	if cat != nil {
+		// Slices mode: catalogue, then history, then the bare tag.
+		versionInfo = r.versionInfoForDeploy(rollout, cat, wantedRelease)
+		foundInReleases = true
+	}
 	for _, release := range rollout.Status.AvailableReleases {
+		if cat != nil {
+			break
+		}
 		if release.Tag == wantedRelease {
 			versionInfo = release
 			foundInReleases = true
@@ -1438,7 +1497,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if int32(len(rollout.Status.History)) > versionHistoryLimit {
 		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
 		// If history is full, remove available versions based on retention criteria
-		if len(rollout.Status.History) > 0 {
+		if len(rollout.Status.History) > 0 && cat == nil {
 			r.cleanupOldAvailableReleases(rollout, log)
 		}
 	}
@@ -1478,12 +1537,23 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		r.Recorder.Event(rollout, eventType, eventReason, eventMessage)
 	}
 
-	releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
-	if err != nil {
-		log.Error(err, "Failed to get next release candidates")
-		return err
+	if cat != nil {
+		gates, err := r.listGatesFor(ctx, rollout.Namespace)
+		if err != nil {
+			return err
+		}
+		if err := r.applyCandidateStatus(rollout, cat, gates); err != nil {
+			log.Error(err, "Failed to refresh candidates")
+			return err
+		}
+	} else {
+		releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
+		if err != nil {
+			log.Error(err, "Failed to get next release candidates")
+			return err
+		}
+		rollout.Status.ReleaseCandidates = releaseCandidates
 	}
-	rollout.Status.ReleaseCandidates = releaseCandidates
 
 	// Update the status first
 	if err := r.Status().Update(ctx, rollout); err != nil {

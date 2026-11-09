@@ -31,6 +31,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -44,6 +45,7 @@ import (
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/controller"
+	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -56,6 +58,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(kuberikcomv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(releasecatalogue.AddToScheme(scheme))
 	utilruntime.Must(sourcev1.AddToScheme(scheme))
 	utilruntime.Must(imagev1.AddToScheme(scheme))
 	utilruntime.Must(kustomizev1.AddToScheme(scheme))
@@ -73,6 +76,15 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var releaseSlices, dualWriteReleaseLists bool
+	var releaseCandidates int
+	flag.BoolVar(&releaseSlices, "release-slices", false,
+		"Read releases from ReleaseSource/ReleaseSlice (release-controller) instead of the Flux ImagePolicy. "+
+			"Requires the release-controller CRDs.")
+	flag.BoolVar(&dualWriteReleaseLists, "dual-write-release-lists", true,
+		"With --release-slices, keep writing the deprecated status.availableReleases, releaseCandidates and gatedReleaseCandidates.")
+	flag.IntVar(&releaseCandidates, "release-candidates", 20,
+		"With --release-slices, the number of newest releases kept in status.candidates (K).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -213,7 +225,7 @@ func main() {
 
 	// Every kind a controller below watches. Missing CRDs would otherwise
 	// surface only after the cache-sync timeout, with the pod reporting ready.
-	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(),
+	required := []client.Object{
 		&kuberikcomv1alpha1.Rollout{},
 		&kuberikcomv1alpha1.RolloutGate{},
 		&kuberikcomv1alpha1.HealthCheck{},
@@ -222,7 +234,11 @@ func main() {
 		&kuberikcomv1alpha1.RolloutDependency{},
 		&imagev1.ImagePolicy{},
 		&kustomizev1.Kustomization{},
-	); err != nil {
+	}
+	if releaseSlices {
+		required = append(required, &releasecatalogue.ReleaseSource{}, &releasecatalogue.ReleaseSlice{})
+	}
+	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), required...); err != nil {
 		setupLog.Error(err, "install the CRDs before starting the controller "+
 			"(Kuberik CRDs ship with the chart, Flux CRDs with `flux install`)")
 		os.Exit(1)
@@ -232,6 +248,10 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Clock:  &controller.RealClock{},
+
+		ReleaseSlices:         releaseSlices,
+		DualWriteReleaseLists: dualWriteReleaseLists,
+		ReleaseCandidates:     releaseCandidates,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
