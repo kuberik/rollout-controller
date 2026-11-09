@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -38,6 +39,53 @@ func FormatDecimal(v float64) (string, bool) {
 		s = "0"
 	}
 	return s, true
+}
+
+// Count is a plain number, healthy while it is zero (open incidents, firing alerts).
+func Count(name string, n int, now metav1.Time) Observation {
+	healthy := n == 0
+	return Observation{
+		Name:         name,
+		Kind:         kuberikv1alpha1.ObservationKindCount,
+		Value:        strconv.Itoa(n),
+		Healthy:      &healthy,
+		ObservedTime: &now,
+	}
+}
+
+// State carries only the verdict, for a fact with no number to draw. Callers
+// that have no verdict yet can set Healthy to nil on the result.
+func State(name string, healthy bool, now metav1.Time) Observation {
+	return Observation{
+		Name:         name,
+		Kind:         kuberikv1alpha1.ObservationKindState,
+		Healthy:      &healthy,
+		ObservedTime: &now,
+	}
+}
+
+// Threshold is a value measured against a limit. The verdict is the
+// provider's own (a monitor status, an alert firing), not derived from
+// direction, because the provider's warning levels and hold times decide it.
+// ok is false if value or limit cannot be rendered as a decimal.
+func Threshold(name string, value, limit float64, direction kuberikv1alpha1.HealthCheckObservationDirection,
+	unit, window string, healthy *bool, now metav1.Time) (Observation, bool) {
+	v, ok1 := FormatDecimal(value)
+	l, ok2 := FormatDecimal(limit)
+	if !ok1 || !ok2 {
+		return Observation{}, false
+	}
+	return Observation{
+		Name:         name,
+		Kind:         kuberikv1alpha1.ObservationKindThreshold,
+		Value:        v,
+		Limit:        l,
+		Direction:    direction,
+		Unit:         unit,
+		Window:       window,
+		Healthy:      healthy,
+		ObservedTime: &now,
+	}, true
 }
 
 // ParseDirection reads "Above"/"Below" (case-insensitive, trimmed).
