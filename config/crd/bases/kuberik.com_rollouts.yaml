@@ -221,8 +221,9 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               releasesImagePolicy:
-                description: ReleasesImagePolicy specifies the ImagePolicy that provides
-                  available releases
+                description: |-
+                  ReleasesImagePolicy specifies the ImagePolicy that provides available releases.
+                  Read only in list mode (without --release-slices). Optional when releaseSourceRef is set.
                 properties:
                   name:
                     default: ""
@@ -246,9 +247,11 @@ spec:
                 description: WantedVersion specifies a specific version to deploy,
                   overriding the automatic version selection
                 type: string
-            required:
-            - releasesImagePolicy
             type: object
+            x-kubernetes-validations:
+            - message: one of spec.releasesImagePolicy or spec.releaseSourceRef must
+                be set
+              rule: has(self.releasesImagePolicy) || has(self.releaseSourceRef)
           status:
             description: RolloutStatus defines the observed state of Rollout.
             properties:
@@ -324,8 +327,10 @@ spec:
                   gate's allowedVersions, the force-deploy or bypass-gates annotation, or
                   spec.wantedVersion names. Newest first.
                 items:
-                  description: ReleaseCandidate is a release the Rollout could deploy
-                    next.
+                  description: |-
+                    ReleaseCandidate is a release the Rollout could deploy next. It is
+                    deliberately lean: full release metadata (digest, revision, version,
+                    requires) lives in the ReleaseSlice catalogue and in history entries.
                   properties:
                     blockedBy:
                       description: BlockedBy lists the gates that do not let this
@@ -335,13 +340,8 @@ spec:
                       maxItems: 16
                       type: array
                     created:
-                      description: Created is the creation timestamp extracted from
-                        OCI annotations if available.
+                      description: Created is the release creation time.
                       format: date-time
-                      type: string
-                    digest:
-                      description: Digest is the image digest if available from the
-                        ImagePolicy.
                       type: string
                     firstSeen:
                       description: FirstSeen is when the catalogue first admitted
@@ -351,41 +351,9 @@ spec:
                     gated:
                       description: Gated is true when the release passes every gate.
                       type: boolean
-                    metadataUnresolved:
-                      description: |-
-                        MetadataUnresolved is true when this release's OCI manifest could not be
-                        read, so Requires and the version fields say nothing about the image.
-                        A RolloutDependency blocks such a release rather than reading the absent
-                        annotations as "declares no requirement", which would open the gate
-                        whenever the registry is unreachable.
-                      type: boolean
-                    requires:
-                      additionalProperties:
-                        type: string
-                      description: |-
-                        Requires maps a contract name to what this release requires of that
-                        contract, extracted from "com.kuberik.rollout.requires.<contract>" OCI
-                        annotations. Values are version constraints as defined by
-                        github.com/Masterminds/semver, applied verbatim — note that a bare version
-                        is an exact match there, not a floor.
-                        RolloutDependency uses these to gate this release on the deployed version of
-                        the Rollout providing each contract.
-
-                        Bounded because it is populated from image annotations, which are outside
-                        this controller's trust boundary, and is stored on every release and every
-                        history entry.
-                      maxProperties: 32
-                      type: object
-                    revision:
-                      description: Revision is the revision information extracted
-                        from OCI annotations if available.
-                      type: string
                     tag:
-                      description: Tag is the image tag (e.g., "v1.2.3", "latest").
-                      type: string
-                    version:
-                      description: Version is the semantic version extracted from
-                        OCI annotations if available.
+                      description: Tag is the release tag.
+                      maxLength: 128
                       type: string
                   required:
                   - gated

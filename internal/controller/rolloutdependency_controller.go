@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 )
 
 // RolloutDependencyReconciler reconciles a RolloutDependency object.
@@ -136,7 +137,11 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	admitted, blocked := evaluateDependency(consumerReleases(consumer), contract, providedVersion)
+	consumerRels, err := r.consumerReleases(ctx, consumer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	admitted, blocked := evaluateDependency(consumerRels, contract, providedVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -147,7 +152,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	blocking := blockedTags(blocked, pendingReleases(consumer))
+	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -199,23 +204,25 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// pendingReleases returns the tags the consumer Rollout could still move to,
+// pendingTags returns the tags the consumer Rollout could still move to,
 // i.e. releases newer than the one currently deployed.
 //
-// An empty result means the consumer has nothing to advance to — either there
-// are no releases at all, or its deployed tag is no longer in availableReleases
+// An empty result means the consumer has nothing to advance to: either there
+// are no releases at all, or its deployed tag is no longer in the release list
 // (retention pruned it), so no upgrade path can be computed. Both are correctly
-// read as "this dependency is holding nothing back": the Rollout has no
-// candidate to deploy regardless of what any gate says.
-func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) []string {
+// read as "this dependency is holding nothing back".
+//
+// rels is what consumerReleases returned (oldest first). In slices mode that is
+// already only the releases newer than the deployed one.
+func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout) []string {
 	if usesCatalogue(consumer) {
-		tags := make([]string, 0, len(consumer.Status.Candidates))
-		for _, c := range consumer.Status.Candidates {
-			tags = append(tags, c.Tag)
+		tags := make([]string, 0, len(rels))
+		for _, v := range rels {
+			tags = append(tags, v.Tag)
 		}
 		return tags
 	}
-	candidates, err := getNextReleaseCandidates(consumer.Status.AvailableReleases, &consumer.Status)
+	candidates, err := getNextReleaseCandidates(rels, &consumer.Status)
 	if err != nil {
 		return nil
 	}
@@ -440,15 +447,25 @@ func usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
 }
 
 // consumerReleases returns the releases to evaluate, oldest first. In slices
-// mode that is the working set (candidates), since selection only ever picks a
-// candidate; otherwise availableReleases.
-func consumerReleases(consumer *kuberikcomv1alpha1.Rollout) []kuberikcomv1alpha1.VersionInfo {
+// mode that is the consumer's whole catalogue (merged and sorted from the
+// informer cache) restricted to releases newer than the deployed one, not just
+// the K candidates in status: a dependency that blocks the K newest must still
+// admit an older one, as it does in list mode. Otherwise availableReleases.
+func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, consumer *kuberikcomv1alpha1.Rollout) ([]kuberikcomv1alpha1.VersionInfo, error) {
 	if !usesCatalogue(consumer) {
-		return consumer.Status.AvailableReleases
+		return consumer.Status.AvailableReleases, nil
 	}
-	out := make([]kuberikcomv1alpha1.VersionInfo, 0, len(consumer.Status.Candidates))
-	for i := len(consumer.Status.Candidates) - 1; i >= 0; i-- {
-		out = append(out, consumer.Status.Candidates[i].VersionInfo)
+	sliceList := &releasecatalogue.ReleaseSliceList{}
+	if err := r.List(ctx, sliceList, client.InNamespace(consumer.Namespace),
+		client.MatchingLabels{releasecatalogue.SourceLabel: consumer.Spec.ReleaseSourceRef.Name}); err != nil {
+		return nil, err
 	}
-	return out
+	cat := mergeSlices(sliceList.Items)
+	newer, err := getNextReleaseCandidates(cat.releases, &consumer.Status) // newest first
+	if err != nil {
+		return nil, nil // empty catalogue: nothing to evaluate
+	}
+	out := slices.Clone(newer)
+	slices.Reverse(out)
+	return out, nil
 }

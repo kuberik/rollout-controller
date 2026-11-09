@@ -512,7 +512,7 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 	imagePolicy := &imagev1.ImagePolicy{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imagePolicyNamespace,
-		Name:      rollout.Spec.ReleasesImagePolicy.Name,
+		Name:      imagePolicyName(rollout),
 	}, imagePolicy); err != nil {
 		return versionInfo, fmt.Errorf("failed to get ImagePolicy: %w", err)
 	}
@@ -771,7 +771,7 @@ func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout
 	imagePolicy := &imagev1.ImagePolicy{}
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Namespace: imagePolicyNamespace,
-		Name:      rollout.Spec.ReleasesImagePolicy.Name,
+		Name:      imagePolicyName(rollout),
 	}, imagePolicy); err != nil {
 		log.Error(err, "Failed to get ImagePolicy")
 		return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
@@ -2407,7 +2407,7 @@ func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj 
 	var requests []reconcile.Request
 	for _, rollout := range rolloutList.Items {
 		// Check if this rollout references the ImagePolicy
-		if rollout.Spec.ReleasesImagePolicy.Name == imagePolicy.Name {
+		if imagePolicyName(&rollout) == imagePolicy.Name {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: rollout.Namespace,
@@ -2500,4 +2500,14 @@ func (r *RolloutReconciler) findRolloutsForHealthCheck(ctx context.Context, obj 
 	}
 
 	return requests
+}
+
+// imagePolicyName is spec.releasesImagePolicy.name, or "" when it is unset
+// (only valid with releaseSourceRef; in list mode the ImagePolicy Get then
+// fails on the empty name and takes the usual error path).
+func imagePolicyName(rollout *rolloutv1alpha1.Rollout) string {
+	if rollout.Spec.ReleasesImagePolicy == nil {
+		return ""
+	}
+	return rollout.Spec.ReleasesImagePolicy.Name
 }

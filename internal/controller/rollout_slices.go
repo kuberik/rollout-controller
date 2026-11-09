@@ -297,7 +297,7 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 
 	cands := make([]rolloutv1alpha1.ReleaseCandidate, 0, len(working))
 	for _, v := range working {
-		c := rolloutv1alpha1.ReleaseCandidate{VersionInfo: v}
+		c := rolloutv1alpha1.ReleaseCandidate{Tag: v.Tag, Created: v.Created}
 		if fs, ok := cat.firstSeen[v.Tag]; ok {
 			fs := fs
 			c.FirstSeen = &fs

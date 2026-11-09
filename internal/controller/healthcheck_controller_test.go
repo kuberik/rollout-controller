@@ -552,7 +552,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
+					ReleasesImagePolicy: &corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
@@ -612,7 +612,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
+					ReleasesImagePolicy: &corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 				},
@@ -653,7 +653,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
+					ReleasesImagePolicy: &corev1.LocalObjectReference{
 						Name: "test-image-policy",
 					},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{

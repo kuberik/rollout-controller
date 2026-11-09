@@ -177,7 +177,7 @@ var _ = Describe("Slices mode reader", func() {
 		if slices {
 			ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
 		} else {
-			ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: name}
+			ro.Spec.ReleasesImagePolicy = &corev1.LocalObjectReference{Name: name}
 			pol := &imagev1.ImagePolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 				Spec: imagev1.ImagePolicySpec{
@@ -434,8 +434,6 @@ var _ = Describe("Slices mode reader", func() {
 		c := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons-sl", Namespace: ns}, c)).To(Succeed())
 		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
-		c.Status.Candidates = []rolloutv1alpha1.ReleaseCandidate{{VersionInfo: rolloutv1alpha1.VersionInfo{
-			Tag: "consumer-2", Requires: cons[1].requires}, Gated: true}}
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 
 		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -545,7 +543,7 @@ var _ = Describe("Slices mode reader", func() {
 		})).To(Succeed())
 		Expect(k8sClient.Create(ctx, &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: ns},
-			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: corev1.LocalObjectReference{Name: "p"}},
+			Spec:       rolloutv1alpha1.RolloutSpec{ReleasesImagePolicy: &corev1.LocalObjectReference{Name: "p"}},
 		})).To(Succeed())
 
 		r := &RolloutReconciler{Client: mgr.GetClient()}
