@@ -126,10 +126,8 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.handleRetryAnnotation(ctx, &rollout, log); err != nil {
-		return ctrl.Result{}, err
-	}
-
+	// In slices mode a Rollout without a usable ReleaseSource does nothing else,
+	// so the source gate runs before the retry annotation is consumed.
 	var cat *catalogue
 	var releases []rolloutv1alpha1.VersionInfo
 	if r.ReleaseSlices {
@@ -139,6 +137,13 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err != nil || !proceed {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if err := r.handleRetryAnnotation(ctx, &rollout, log); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if r.ReleaseSlices {
 		releases = cat.releases
 	} else {
 		err := r.updateAvailableReleases(ctx, &rollout, log)

@@ -177,6 +177,17 @@ func (r *RolloutReconciler) prepareSlices(ctx context.Context, rollout *rolloutv
 // transition into that reason, writes status and stops the reconcile. Other
 // status fields are left as they are.
 func (r *RolloutReconciler) blockOnSource(ctx context.Context, rollout *rolloutv1alpha1.Rollout, reason, message string) error {
+	if ref := rollout.Spec.ReleaseSourceRef; ref != nil && ref.Name != "" {
+		// status.releaseSource.ready mirrors the condition.
+		if rollout.Status.ReleaseSource == nil || rollout.Status.ReleaseSource.Name != ref.Name {
+			rollout.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: ref.Name}
+		}
+		if rollout.Status.ReleaseSource.Ready {
+			now := metav1.Now()
+			rollout.Status.ReleaseSource.Ready = false
+			rollout.Status.ReleaseSource.ObservedAt = &now
+		}
+	}
 	existing := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
 	transition := existing == nil || existing.Status != metav1.ConditionFalse || existing.Reason != reason
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{

@@ -853,6 +853,52 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(r.findRolloutsForReleaseSource(ctx, other)).To(BeEmpty())
 	})
 
+	// m1: status.releaseSource.ready follows the condition.
+	It("sets status.releaseSource.ready=false when the source stops being Ready", func() {
+		rels := trainRels(3, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, rolloutOpts{current: "r0003"})
+		r := sliceR(true, 3)
+		s := reconcileOnce(r, "sl")
+		Expect(s.Status.ReleaseSource).NotTo(BeNil())
+		Expect(s.Status.ReleaseSource.Ready).To(BeTrue())
+
+		src := &releasecatalogue.ReleaseSource{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "src", Namespace: ns}, src)).To(Succeed())
+		for i := range src.Status.Conditions {
+			src.Status.Conditions[i].Status = metav1.ConditionFalse
+		}
+		Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+		s = reconcileOnce(r, "sl")
+		cond := meta.FindStatusCondition(s.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(s.Status.ReleaseSource).NotTo(BeNil())
+		Expect(s.Status.ReleaseSource.Ready).To(BeFalse())
+		Expect(s.Status.ReleaseSource.Name).To(Equal("src"))
+	})
+
+	// m2: a blocked Rollout does nothing else, not even consume the retry annotation.
+	It("leaves the retry annotation and a failed bake alone while the source is blocked", func() {
+		ro := &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "sl", Namespace: ns,
+				Annotations: map[string]string{rolloutv1alpha1.RetryAnnotation: "true"}},
+			Spec: rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "missing"}},
+		}
+		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
+		failed := rolloutv1alpha1.BakeStatusFailed
+		ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version: rolloutv1alpha1.VersionInfo{Tag: "current"}, Timestamp: metav1.Now(), BakeStatus: &failed}}
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+
+		got := reconcileOnce(sliceR(true, 3), "sl")
+		Expect(got.Annotations).To(HaveKey(rolloutv1alpha1.RetryAnnotation))
+		Expect(*got.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(got.Status.History[0].LastRetryTimestamp).To(BeNil())
+		cond := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal(reasonSourceNotFound))
+	})
+
 	// Source gating (owner decision: no fallback, no materialisation).
 	DescribeTable("does not proceed without a usable ReleaseSource",
 		func(reason string, setup func()) {
