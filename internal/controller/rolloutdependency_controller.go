@@ -51,6 +51,11 @@ type RolloutDependencyReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// ReleaseSlices mirrors the Rollout controller's --release-slices. The mode
+	// is decided by this flag and the consumer's spec.releaseSourceRef alone,
+	// never by leftover status.
+	ReleaseSlices bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies,verbs=get;list;watch;create;update;patch;delete
@@ -152,7 +157,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer))
+	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer, r.usesCatalogue(consumer)))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -214,8 +219,8 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 //
 // rels is what consumerReleases returned (oldest first). In slices mode that is
 // already only the releases newer than the deployed one.
-func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout) []string {
-	if usesCatalogue(consumer) {
+func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout, fromCatalogue bool) []string {
+	if fromCatalogue {
 		tags := make([]string, 0, len(rels))
 		for _, v := range rels {
 			tags = append(tags, v.Tag)
@@ -439,11 +444,12 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 	return requests
 }
 
-// usesCatalogue reports whether the consumer is read through a ReleaseSource
-// (slices mode): its working set lives in status.candidates, not in
-// availableReleases, which is cleared when dual-write is off.
-func usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
-	return consumer.Spec.ReleaseSourceRef != nil && consumer.Status.ReleaseSource != nil
+// usesCatalogue reports whether the consumer's releases come from its
+// ReleaseSource catalogue: the --release-slices flag and spec.releaseSourceRef,
+// nothing from status. With the flag off the code path is the list-mode one and
+// ReleaseSlices are never listed.
+func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
+	return r.ReleaseSlices && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
 }
 
 // consumerReleases returns the releases to evaluate, oldest first. In slices
@@ -452,7 +458,7 @@ func usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
 // the K candidates in status: a dependency that blocks the K newest must still
 // admit an older one, as it does in list mode. Otherwise availableReleases.
 func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, consumer *kuberikcomv1alpha1.Rollout) ([]kuberikcomv1alpha1.VersionInfo, error) {
-	if !usesCatalogue(consumer) {
+	if !r.usesCatalogue(consumer) {
 		return consumer.Status.AvailableReleases, nil
 	}
 	sliceList := &releasecatalogue.ReleaseSliceList{}

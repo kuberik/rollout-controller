@@ -308,6 +308,8 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("rolloutdependency-controller"), //nolint:staticcheck // SA1019
+
+		ReleaseSlices: releaseSlices,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RolloutDependency")
 		os.Exit(1)

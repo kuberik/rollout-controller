@@ -503,7 +503,7 @@ var _ = Describe("Slices mode reader", func() {
 		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
 		for _, n := range []string{"list", "sl"} {
 			dep := &rolloutv1alpha1.RolloutDependency{
 				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
@@ -563,7 +563,7 @@ var _ = Describe("Slices mode reader", func() {
 		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
 		for _, n := range []string{"list", "sl"} {
 			dep := &rolloutv1alpha1.RolloutDependency{
 				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
@@ -597,6 +597,57 @@ var _ = Describe("Slices mode reader", func() {
 		// cons-1-ok is outside the K=3 newest; it was deployed because the
 		// dependency gate's allowedVersions named it into the working set.
 		Expect(tagsOfCandidates(s.Status.Candidates)).To(ConsistOf("cons-4", "cons-3", "cons-2"))
+	})
+
+	// 4a. M2: the mode is the flag plus spec.releaseSourceRef, never leftover status.
+	It("RolloutDependency with the flag off ignores releaseSourceRef and a leftover status.releaseSource", func() {
+		now := time.Now()
+		provider := []testRel{{tag: "provider-1", created: now.Add(-3 * time.Hour)}}
+		// What the Rollout's own list holds: cons-1 needs api ^1.1.0 and is blocked.
+		listRels := []testRel{
+			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.1.0"}},
+		}
+		// A catalogue the flag-off controller must not look at: nothing is blocked there.
+		catRels := []testRel{
+			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
+		}
+		ver := "1.0.0-1"
+		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
+		p := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
+		p.Status.History[0].Version.Version = &ver
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+
+		catalogueOf("src", catRels)
+		newRollout("cons", false, listRels, rolloutOpts{current: "cons-0"})
+		c := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, c)).To(Succeed())
+		c.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
+		Expect(k8sClient.Update(ctx, c)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, c)).To(Succeed())
+		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true} // leftover
+		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
+
+		dep := &rolloutv1alpha1.RolloutDependency{
+			ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: ns},
+			Spec: rolloutv1alpha1.RolloutDependencySpec{
+				RolloutRef:  corev1.LocalObjectReference{Name: "cons"},
+				ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
+				Contract:    ptrTo("api"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := depR.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dep)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), dep)).To(Succeed())
+		var blocked []string
+		for _, b := range dep.Status.BlockedReleases {
+			blocked = append(blocked, b.Tag)
+		}
+		Expect(blocked).To(ConsistOf("cons-1"), "evaluated against availableReleases, not the catalogue")
 	})
 
 	// 4c. releasesImagePolicy is optional.
