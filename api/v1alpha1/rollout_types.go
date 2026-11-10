@@ -120,6 +120,7 @@ type RolloutSpec struct {
 	ReleaseSourceRef *corev1.LocalObjectReference `json:"releaseSourceRef,omitempty"`
 
 	// ReleasesImagePolicy specifies the ImagePolicy that provides available releases.
+	// Deprecated in favour of releaseSourceRef; will be removed in a later release.
 	// Read only in list mode (without --release-slices). Optional when releaseSourceRef is set.
 	// A value type, so Go clients always send "releasesImagePolicy: {}"; the API
 	// server defaults name to "" and the RolloutSpec rule then counts it as set.
@@ -139,6 +140,7 @@ type RolloutSpec struct {
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 
 	// Deprecated: retention moves to ReleaseSource.spec.retention. No behaviour change.
+	// Will be removed in a later release.
 	// AvailableReleasesRetentionDays defines how many days of available releases to keep based on creation timestamp
 	// When history is full, releases older than this retention period may be removed.
 	// Defaults to 7 days if not specified.
@@ -148,6 +150,7 @@ type RolloutSpec struct {
 	AvailableReleasesRetentionDays *int32 `json:"availableReleasesRetentionDays,omitempty"`
 
 	// Deprecated: retention moves to ReleaseSource.spec.retention. No behaviour change.
+	// Will be removed in a later release.
 	// AvailableReleasesMinCount defines the minimum number of available releases to always keep
 	// When history is full, at least this many releases will be retained regardless of other criteria.
 	// Defaults to 30 if not specified.
@@ -283,19 +286,20 @@ type RolloutStatus struct {
 
 	// Deprecated: read status.candidates and the ReleaseSlice catalogue instead.
 	// Written in list mode (without --release-slices), and in slices mode while
-	// --dual-write-release-lists is on (its default); cleared otherwise. Removed in
-	// a later minor.
+	// --dual-write-release-lists is on (its default); cleared otherwise. Will be
+	// removed in a later release.
 	// AvailableReleases is a list of all releases available in the releases repository.
 	// +optional
 	AvailableReleases []VersionInfo `json:"availableReleases,omitempty"`
 
-	// Deprecated: read status.candidates instead.
+	// Deprecated: read status.candidates instead. Will be removed in a later release.
 	// ReleaseCandidates is a list of releases that are candidates for the next deployment.
 	// These are filtered from AvailableReleases based on deployment history and version ordering.
 	// +optional
 	ReleaseCandidates []VersionInfo `json:"releaseCandidates,omitempty"`
 
-	// Deprecated: read status.candidates (gated field) instead.
+	// Deprecated: read status.candidates (gated field) instead. Will be removed in a
+	// later release.
 	// GatedReleaseCandidates is a list of release candidates that have passed through all gates.
 	// This shows which versions are actually available for deployment after gate evaluation.
 	// +optional

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [Unreleased]
+
+### Added
+
+- Release catalogue reader: with `--release-slices`, the Rollout controller reads releases from a release-controller `ReleaseSource` (`spec.releaseSourceRef`) and its `ReleaseSlice` catalogue instead of an ImagePolicy, and publishes `status.candidates` and `status.releaseSource`.
+- `--dual-write-release-lists` (default on): in slices mode, keep writing `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` so existing readers keep working.
+
+### Deprecated
+
+- `spec.releasesImagePolicy`, `spec.availableReleasesRetentionDays`, `spec.availableReleasesMinCount`, `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are deprecated in favour of `spec.releaseSourceRef`, `ReleaseSource.spec.retention` and `status.candidates`. They keep working and will be removed in a later release.
+
 ## [0.11.0] - 2026-11-09
 
 ### Added
