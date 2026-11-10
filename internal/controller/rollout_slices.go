@@ -19,7 +19,8 @@ import (
 
 // Slices mode (--release-slices): the Rollout reads its releases from the
 // ReleaseSlice catalogue of the ReleaseSource named by spec.releaseSourceRef.
-// See internal/design/release-controller.md §8.
+// The contract follows the release-controller design: slices are read from the
+// informer cache, merged and ordered by sequence; nothing else is copied to status.
 
 const (
 	// releaseSourceIndexField indexes Rollouts by spec.releaseSourceRef.name.

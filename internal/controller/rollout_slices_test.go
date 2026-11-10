@@ -1145,7 +1145,7 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(<-rec.Events).To(ContainSubstring("ReleaseNotInCatalogue"))
 	})
 
-	// Source gating (owner decision: no fallback, no materialisation).
+	// Source gating: no fallback to releasesImagePolicy, nothing materialised.
 	DescribeTable("does not proceed without a usable ReleaseSource",
 		func(reason string, setup func()) {
 			setup()

@@ -22,7 +22,7 @@ func vis(ts ...string) []rolloutv1alpha1.VersionInfo {
 	return out
 }
 
-// QA round 2, minor 2: a trailing persisted entry that is not in the catalogue
+// Regression: a trailing persisted entry that is not in the catalogue
 // and has no created must not re-append releases list mode already trimmed.
 func TestDualWriteAnchorsOnNewestPersistedInCatalogue(t *testing.T) {
 	cat := &catalogue{releases: vis("old1", "old2", "a", "b", "c")}
