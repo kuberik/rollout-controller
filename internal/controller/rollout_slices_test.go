@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"strings"
 	"time"
 
@@ -19,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -30,6 +30,8 @@ import (
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 )
+
+const sliceVer1 = "1.0.0-1"
 
 type testRel struct {
 	tag      string
@@ -287,7 +289,7 @@ var _ = Describe("Slices mode reader", func() {
 			}
 			l := reconcileOnce(listR(), "list")
 			s := reconcileOnce(sliceR(false, 3), "sl")
-			Expect(len(s.Status.History)).To(Equal(len(l.Status.History)))
+			Expect(s.Status.History).To(HaveLen(len(l.Status.History)))
 			if len(l.Status.History) > 0 {
 				Expect(s.Status.History[0].Version.Tag).To(Equal(l.Status.History[0].Version.Tag))
 			}
@@ -619,7 +621,7 @@ var _ = Describe("Slices mode reader", func() {
 			{tag: "consumer-1", created: time.Now().Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
 			{tag: "consumer-2", created: time.Now().Add(-1 * time.Hour), requires: map[string]string{"api": "^1.1.0"}},
 		}
-		ver := "1.0.0-1"
+		ver := sliceVer1
 		mk := func(name string, slices bool) {
 			newRollout(name, slices, cons, rolloutOpts{current: "consumer-1"})
 		}
@@ -684,7 +686,7 @@ var _ = Describe("Slices mode reader", func() {
 			{tag: "cons-3", created: now.Add(-6 * time.Hour), requires: blockedReq},
 			{tag: "cons-4", created: now.Add(-5 * time.Hour), requires: blockedReq},
 		}
-		ver := "1.0.0-1"
+		ver := sliceVer1
 		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
 		p := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
@@ -749,7 +751,7 @@ var _ = Describe("Slices mode reader", func() {
 			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
 			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
 		}
-		ver := "1.0.0-1"
+		ver := sliceVer1
 		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
 		p := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
@@ -810,7 +812,7 @@ var _ = Describe("Slices mode reader", func() {
 			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
 			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
 		}
-		ver := "1.0.0-1"
+		ver := sliceVer1
 		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
 		p := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
@@ -945,7 +947,7 @@ var _ = Describe("Slices mode reader", func() {
 			catalogueOf("src", rels)
 			list := &releasecatalogue.ReleaseSliceList{}
 			Expect(k8sClient.List(ctx, list, client.InNamespace(ns))).To(Succeed())
-			Expect(len(list.Items)).To(Equal(21))
+			Expect(list.Items).To(HaveLen(21))
 
 			cur := rels[1989]
 			newRollout("sl", true, rels, rolloutOpts{current: cur.tag})
@@ -1172,8 +1174,8 @@ var _ = Describe("Slices mode reader", func() {
 			rec := record.NewFakeRecorder(20)
 			r := sliceR(true, 3)
 			r.Recorder = rec
+			reconcileOnce(r, "sl")
 			got := reconcileOnce(r, "sl")
-			got = reconcileOnce(r, "sl")
 
 			cond := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
 			Expect(cond).NotTo(BeNil())

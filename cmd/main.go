@@ -83,7 +83,8 @@ func main() {
 		"Read releases from ReleaseSource/ReleaseSlice (release-controller) instead of the Flux ImagePolicy. "+
 			"Requires the release-controller CRDs.")
 	flag.BoolVar(&dualWriteReleaseLists, "dual-write-release-lists", true,
-		"With --release-slices, keep writing the deprecated status.availableReleases, releaseCandidates and gatedReleaseCandidates.")
+		"With --release-slices, keep writing the deprecated status.availableReleases, "+
+			"releaseCandidates and gatedReleaseCandidates.")
 	flag.IntVar(&releaseCandidates, "release-candidates", 20,
 		"With --release-slices, the number of newest releases kept in status.candidates (K).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
