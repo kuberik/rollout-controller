@@ -496,6 +496,7 @@ spec:
 |---|---|---|
 | No `spec.releaseSourceRef` | `ReleasesUpdated=False` and `Ready=False` | `ReleaseSourceRequired` |
 | `spec.releasesImagePolicy` set | `ReleasesImagePolicyIgnored=True` | `ReleasesImagePolicyIgnored` |
+| catalogue is empty | `Ready=False` | `NoReleases` (derived from the deployment history again once releases return) |
 | release-controller CRDs not installed | `ReleasesUpdated=False` and `Ready=False` | `ReleaseCatalogueUnavailable` |
 | ReleaseSource missing / not Ready | `ReleaseSourceReady=False` | `ReleaseSourceNotFound` / `ReleaseSourceNotReady` |
 
