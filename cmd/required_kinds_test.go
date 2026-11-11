@@ -50,3 +50,20 @@ func TestCheckRequiredKinds(t *testing.T) {
 		t.Errorf("error %q names Rollout, which is served", err)
 	}
 }
+
+func TestRequiredKindsNeedNoImageReflector(t *testing.T) {
+	for _, o := range requiredKinds() {
+		gvks, _, err := scheme.ObjectKinds(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, gvk := range gvks {
+			if gvk.Group == "image.toolkit.fluxcd.io" {
+				t.Errorf("%s requires the Flux image-reflector API; the controller must start without it", gvk)
+			}
+			if gvk.Group == "kuberik.com" && (gvk.Kind == "ReleaseSource" || gvk.Kind == "ReleaseSlice") {
+				t.Errorf("%s must stay optional at startup (lazy watches)", gvk)
+			}
+		}
+	}
+}

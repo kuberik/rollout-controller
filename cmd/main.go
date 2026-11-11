@@ -224,16 +224,7 @@ func main() {
 
 	// Every kind a controller below watches. Missing CRDs would otherwise
 	// surface only after the cache-sync timeout, with the pod reporting ready.
-	required := []client.Object{
-		&kuberikcomv1alpha1.Rollout{},
-		&kuberikcomv1alpha1.RolloutGate{},
-		&kuberikcomv1alpha1.HealthCheck{},
-		&kuberikcomv1alpha1.RolloutSchedule{},
-		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
-		&kuberikcomv1alpha1.RolloutDependency{},
-		&kustomizev1.Kustomization{},
-	}
-	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), required...); err != nil {
+	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), requiredKinds()...); err != nil {
 		setupLog.Error(err, "install the CRDs before starting the controller "+
 			"(Kuberik CRDs ship with the chart, Flux CRDs with `flux install`)")
 		os.Exit(1)
@@ -329,5 +320,21 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// requiredKinds are the kinds the controllers watch or patch and that must be
+// served for the manager to start. The release path needs no Flux image-reflector
+// kinds: Rollouts read the release-controller catalogue, and that is optional at
+// startup (Rollouts report ReleaseCatalogueUnavailable until it is served).
+func requiredKinds() []client.Object {
+	return []client.Object{
+		&kuberikcomv1alpha1.Rollout{},
+		&kuberikcomv1alpha1.RolloutGate{},
+		&kuberikcomv1alpha1.HealthCheck{},
+		&kuberikcomv1alpha1.RolloutSchedule{},
+		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
+		&kuberikcomv1alpha1.RolloutDependency{},
+		&kustomizev1.Kustomization{},
 	}
 }

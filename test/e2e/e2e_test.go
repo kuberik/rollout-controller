@@ -65,6 +65,14 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
+		// The controller requires the Flux Kustomization kind. It does not need the
+		// Flux image-reflector kinds (ImagePolicy, ImageRepository), so those are
+		// deliberately NOT installed: the controller must start without them.
+		By("installing the Flux Kustomization CRD only (no image-reflector CRDs)")
+		cmd = exec.Command("kubectl", "apply", "-f", "vendir/kustomizations")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install the Kustomization CRD")
+
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
