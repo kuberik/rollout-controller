@@ -103,12 +103,6 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		healthStatus, message, errorTime = r.checkKustomizationHealth(ctx, kustomization)
 	}
-	if err != nil {
-		log.Error(err, "failed to check kustomization health")
-		now := metav1.NewTime(r.Clock.Now())
-		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Health check failed: %v", err), &now)
-	}
-
 	// Update the health check status
 	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime)
 }

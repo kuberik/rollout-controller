@@ -46,14 +46,14 @@ type HealthCheckReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch
 
+// healthCheckClassKustomization is the HealthCheck class handled by KustomizationHealthReconciler.
+const healthCheckClassKustomization = "kustomization"
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // This controller handles generic HealthCheck logic and delegates specific
 // health checking to specialized controllers based on the class.
 // It also watches Rollout resources to reset health checks when deployments happen.
-// healthCheckClassKustomization is the HealthCheck class handled by KustomizationHealthReconciler.
-const healthCheckClassKustomization = "kustomization"
-
 func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
