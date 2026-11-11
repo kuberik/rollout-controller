@@ -31,7 +31,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "rollout-controller-system"
+const namespace = "kuberik-system"
 
 // serviceAccountName created for the project
 const serviceAccountName = "rollout-controller-controller-manager"
