@@ -994,6 +994,49 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(c.Reason).To(Equal("NoReleases"))
 	})
 
+	// A Rollout already on the newest release takes the no-candidates early
+	// return in Reconcile, which never rewrites Ready itself: the restore in
+	// resolveReleases must be persisted by the status update before that return.
+	staleReady := func(name, reason, message string, status metav1.ConditionStatus) *rolloutv1alpha1.Rollout {
+		createSource("src", true, 3, "r0003")
+		createSlice("src", 0, trainRels(3, time.Hour))
+		newRollout(name, true, trainRels(3, time.Hour), rolloutOpts{current: "r0003"})
+		newGate(name, nil, passing(false))
+		ro := get(name)
+		ro.Status.History[0].BakeStatusMessage = k8sptr.To("Bake completed (no bake time configured).")
+		meta.SetStatusCondition(&ro.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutReady, Status: status, Reason: reason, Message: message})
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		r, _ := newRecorderR(true)
+		return reconcileOnce(r, name)
+	}
+
+	DescribeTable("restores Ready left by 'No releases available' on a Rollout at the newest release",
+		func(reason, message string) {
+			got := staleReady("stale", reason, message, metav1.ConditionFalse)
+			c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReady)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionTrue))
+			Expect(c.Reason).To(Equal("BakeTimePassed"))
+			By("and the restored condition is persisted, not just set in memory")
+			c = meta.FindStatusCondition(get("stale").Status.Conditions, rolloutv1alpha1.RolloutReady)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionTrue))
+			Expect(c.Reason).To(Equal("BakeTimePassed"))
+		},
+		Entry("written by controllers before the rename (RolloutSucceeded)", "RolloutSucceeded", "No releases available"),
+		Entry("written with the NoReleases reason", "NoReleases", "No releases available"),
+	)
+
+	It("leaves a Ready=False/RolloutSucceeded condition with a different message alone", func() {
+		got := staleReady("other", "RolloutSucceeded", "something else went wrong", metav1.ConditionFalse)
+		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReady)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("RolloutSucceeded"))
+		Expect(c.Message).To(Equal("something else went wrong"))
+	})
+
 	It("a status-only change on a ReleaseSource enqueues its Rollouts and updates ReleaseSourceReady", func() {
 		createSource("src", true, 1, "r0001")
 		createSlice("src", 0, trainRels(1, time.Hour))
