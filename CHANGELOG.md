@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `ReleaseSource` catalogue is the only release path. A Rollout without `spec.releaseSourceRef` gets no releases.
 - The controller no longer requires the Flux image-reflector CRDs, and its RBAC for `imagepolicies`, `imagerepositories` and `secrets` is gone.
 - `Ready` is `False` with reason `NoReleases` while the catalogue is empty, and is derived from the deployment history again when releases return.
+- When the deployed tag has expired from the catalogue, candidates start after the newest release created before it, in catalogue order.
 - `spec.releaseSourceRef` no longer has to be accompanied by `spec.releasesImagePolicy`; the rule requiring one of them is removed.
 
 ### Deprecated
