@@ -490,6 +490,10 @@ spec:
       name: my-app-policy
 ```
 
+**Upgrading:** create a ReleaseSource per app and set `spec.releaseSourceRef` on its Rollouts. Keep
+the ImagePolicy objects until the new path is verified: downgrading the controller restores the old
+release path only while they exist.
+
 ### Conditions
 
 | Situation | Condition | Reason |
@@ -510,6 +514,10 @@ Each Warning Event is emitted once per change, not on every reconcile.
    - Current deployed version
    - Releases in the ReleaseSource catalogue
    - Gates and constraints
+
+   The candidates are the catalogue releases after the deployed one, newest first. When the
+   deployed tag has expired from the catalogue, candidates start after the newest release created
+   before it, in catalogue order, so an older release is never offered as an upgrade.
 
 3. **Resource Patching**: The controller finds and patches Flux resources with specific annotations:
    - **OCIRepositories**: Updates `spec.ref.tag` for resources with `rollout.kuberik.com/rollout: <rollout-name>`

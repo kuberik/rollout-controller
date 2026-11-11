@@ -4,36 +4,6 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-**Upgrade note:** Create a ReleaseSource per app; an existing Flux ImagePolicy can be referenced via `oci.imagePolicyRef`. `spec.releasesImagePolicy` and the status release lists are ignored and will be removed in the next release.
-
-### Added
-
-- `spec.releaseSourceRef`: a Rollout reads its releases from the release-controller `ReleaseSource` it names and that source's `ReleaseSlice` catalogue.
-- `status.candidates` (the releases a Rollout can move to, with their gate state) and `status.releaseSource` (the source the Rollout reads and whether it is ready).
-- `--release-candidates`: how many of the newest candidates are kept in `status.candidates` (default 20).
-- Conditions: `ReleaseSourceReady` (False with reason `ReleaseSourceNotFound` or `ReleaseSourceNotReady`), `ReleasesUpdated` and `Ready` False with reason `ReleaseSourceRequired` (no `spec.releaseSourceRef`) or `ReleaseCatalogueUnavailable` (release-controller CRDs not installed), and `ReleasesImagePolicyIgnored` (`spec.releasesImagePolicy` is set). Each Warning Event is emitted once per change.
-- Lazy CRD discovery: the controller starts without the release-controller CRDs, and registers the `ReleaseSource` and `ReleaseSlice` watches within 30 seconds of them being installed, with no restart.
-
-### Changed
-
-- The `ReleaseSource` catalogue is the only release path. A Rollout without `spec.releaseSourceRef` gets no releases.
-- The controller no longer requires the Flux image-reflector CRDs, and its RBAC for `imagepolicies`, `imagerepositories` and `secrets` is gone.
-- `Ready` is `False` with reason `NoReleases` while the catalogue is empty, and is derived from the deployment history again when releases return.
-- When the deployed tag has expired from the catalogue, candidates start after the newest release created before it, in catalogue order.
-- `spec.releaseSourceRef` no longer has to be accompanied by `spec.releasesImagePolicy`; the rule requiring one of them is removed.
-
-### Deprecated
-
-- `spec.releasesImagePolicy`, `spec.availableReleasesRetentionDays`, `spec.availableReleasesMinCount`, `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are ignored and will be removed in the next release. The three status lists are never written and are cleared on reconcile.
-
-### Removed
-
-- The ImagePolicy release path, its watch and its RBAC.
-- The `--release-slices` and `--dual-write-release-lists` flags.
-
 ## [0.11.0] - 2026-11-09
 
 ### Added
