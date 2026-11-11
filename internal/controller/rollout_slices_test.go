@@ -249,15 +249,6 @@ var _ = Describe("Slices mode reader", func() {
 	}
 	passing := func(b bool) *bool { return &b }
 
-	// 1. Same release picked as list mode.
-	type scenario struct {
-		current string
-		force   string
-		wanted  string
-		allowed []string // gate allowedVersions, nil = no gate
-		expect  string   // expected deployed tag ("" = unchanged)
-	}
-
 	It("trims status.candidates to 64: the deployed pick and pins first, then the K newest, then named tags newest first", func() {
 		var rs []releasecatalogue.Release
 		for _, r := range trainRels(200, time.Minute) {
