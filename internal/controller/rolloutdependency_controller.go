@@ -525,20 +525,20 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 
 // usesCatalogue reports whether the consumer's releases come from its
 // ReleaseSource catalogue: spec.releaseSourceRef with the
-// release-controller CRDs installed, nothing from status. Without a ref the code
-// path is the list-mode one and ReleaseSlices are never listed.
+// release-controller CRDs installed, nothing from status. Without one the
+// consumer has no releases and ReleaseSlices are never listed.
 func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
 	return (r.CatalogueAvailable || r.lateCatalogue.Load()) && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
 }
 
-// consumerReleases returns the releases to evaluate, oldest first. In slices
-// mode that is the consumer's whole catalogue (merged and sorted from the
-// informer cache) restricted to releases newer than the deployed one, not just
-// the K candidates in status: a dependency that blocks the K newest must still
-// admit an older one, as it does in list mode. Otherwise availableReleases.
+// consumerReleases returns the releases to evaluate, oldest first: the
+// consumer's whole catalogue (merged and sorted from the informer cache)
+// restricted to releases newer than the deployed one, not just the K candidates
+// in status, so a dependency that blocks the K newest still admits an older
+// one. A consumer without a catalogue has none.
 func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, consumer *kuberikcomv1alpha1.Rollout) ([]kuberikcomv1alpha1.VersionInfo, error) {
 	if !r.usesCatalogue(consumer) {
-		return consumer.Status.AvailableReleases, nil
+		return nil, nil
 	}
 	sliceList := &releasecatalogue.ReleaseSliceList{}
 	if err := r.List(ctx, sliceList, client.InNamespace(consumer.Namespace),

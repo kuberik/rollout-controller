@@ -339,6 +339,17 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(tagsOf(got)).To(Equal([]string{"r0009", "r0010"}), "oldest first")
 	})
 
+	It("RolloutDependency evaluates no releases for a consumer without a releaseSourceRef, whatever status.availableReleases holds", func() {
+		consumer := &rolloutv1alpha1.Rollout{}
+		consumer.Namespace = ns
+		consumer.Name = "no-ref"
+		consumer.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: "stale1"}, {Tag: "stale2"}}
+		d := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
+		got, err := d.consumerReleases(ctx, consumer)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeEmpty(), "the deprecated status list is not a release source")
+	})
+
 	// m3: createdObserved releases carry an observed time, not a build time.
 	It("leaves VersionInfo.Created nil for createdObserved releases but still orders by the catalogue time", func() {
 		t0 := time.Now().UTC().Truncate(time.Second)
