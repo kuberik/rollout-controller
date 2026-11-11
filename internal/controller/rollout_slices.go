@@ -60,17 +60,27 @@ type catalogue struct {
 // candidatesAfter returns the releases a Rollout could move to, newest first:
 // those after the deployed tag (getNextReleaseCandidates). If the deployed tag
 // has left the catalogue (a slow environment behind the source's retention) and
-// the history entry has a created, they are the catalogue releases created after
-// it, in sequence order. Only when created is unknown is the answer none.
+// the history entry has a created, they are the catalogue releases admitted after
+// the last one not newer than it (created locates the anchor, sequence orders the
+// rest). Only when created is unknown is the answer none.
 func (c *catalogue) candidatesAfter(status *rolloutv1alpha1.RolloutStatus) ([]rolloutv1alpha1.VersionInfo, error) {
 	if len(c.releases) > 0 && len(status.History) > 0 {
 		cur := status.History[0].Version
 		if c.find(cur.Tag) == nil && cur.Created != nil {
-			out := []rolloutv1alpha1.VersionInfo{}
-			for i := len(c.releases) - 1; i >= 0; i-- {
-				if c.createdAt[c.releases[i].Tag].Time.After(cur.Created.Time) {
-					out = append(out, c.releases[i])
+			// The deployed tag has no sequence here, so created only locates an
+			// anchor: the last release, in sequence order, not newer than the
+			// deployed one. Candidates are the suffix after it, newest first, so
+			// out-of-order created times never pull an earlier-admitted release
+			// (or a downgrade) into the set.
+			anchor := -1
+			for i, v := range c.releases {
+				if !c.createdAt[v.Tag].Time.After(cur.Created.Time) {
+					anchor = i
 				}
+			}
+			out := []rolloutv1alpha1.VersionInfo{}
+			for i := len(c.releases) - 1; i > anchor; i-- {
+				out = append(out, c.releases[i])
 			}
 			return out, nil
 		}
