@@ -51,6 +51,9 @@ type HealthCheckReconciler struct {
 // This controller handles generic HealthCheck logic and delegates specific
 // health checking to specialized controllers based on the class.
 // It also watches Rollout resources to reset health checks when deployments happen.
+// healthCheckClassKustomization is the HealthCheck class handled by KustomizationHealthReconciler.
+const healthCheckClassKustomization = "kustomization"
+
 func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -70,7 +73,7 @@ func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Delegate to specialized controllers based on class
 	if healthCheck.Spec.Class != nil {
 		switch *healthCheck.Spec.Class {
-		case "kustomization":
+		case healthCheckClassKustomization:
 			// KustomizationHealth controller will handle this
 			// This controller just ensures the resource exists and is properly structured
 			return ctrl.Result{}, nil

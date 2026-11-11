@@ -48,6 +48,9 @@ const (
 	version0_2_0 = "0.2.0"
 	version0_3_0 = "0.3.0"
 	version0_4_0 = "0.4.0"
+	version1_0_0 = "1.0.0"
+	version2_0_0 = "2.0.0"
+	version3_0_0 = "3.0.0"
 )
 
 var _ = Describe("Rollout Controller", func() {
@@ -212,7 +215,7 @@ var _ = Describe("Rollout Controller", func() {
 		It("should assign auto-incrementing IDs to history entries", func() {
 			By("Setting up ImagePolicy with initial release")
 			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "1.0.0",
+				Tag: version1_0_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
@@ -234,10 +237,10 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(1)))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 
 			By("Deploying second version")
-			imagePolicy.Status.LatestRef.Tag = "2.0.0"
+			imagePolicy.Status.LatestRef.Tag = version2_0_0
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -251,13 +254,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(2))
 			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(2)))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version2_0_0))
 			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(1)))
-			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("1.0.0"))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version1_0_0))
 
 			By("Deploying third version")
-			imagePolicy.Status.LatestRef.Tag = "3.0.0"
+			imagePolicy.Status.LatestRef.Tag = version3_0_0
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -271,7 +274,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History).To(HaveLen(3))
 			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(3)))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version3_0_0))
 			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(2)))
 			Expect(updatedRollout.Status.History[2].ID).NotTo(BeNil())
@@ -281,7 +284,7 @@ var _ = Describe("Rollout Controller", func() {
 		It("should continue incrementing IDs when history limit is reached", func() {
 			By("Setting up ImagePolicy with initial release")
 			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "1.0.0",
+				Tag: version1_0_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
@@ -306,7 +309,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 2.0.0
-			imagePolicy.Status.LatestRef.Tag = "2.0.0"
+			imagePolicy.Status.LatestRef.Tag = version2_0_0
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -314,7 +317,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 3.0.0 (should cause 1.0.0 to be removed due to limit)
-			imagePolicy.Status.LatestRef.Tag = "3.0.0"
+			imagePolicy.Status.LatestRef.Tag = version3_0_0
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -330,11 +333,11 @@ var _ = Describe("Rollout Controller", func() {
 			// Newest entry should have ID 3 (continuing from previous max)
 			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(3)))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version3_0_0))
 			// Second entry should have ID 2
 			Expect(updatedRollout.Status.History[1].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[1].ID).To(Equal(int64(2)))
-			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("2.0.0"))
+			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version2_0_0))
 		})
 
 		It("should handle backward compatibility with entries without IDs", func() {
@@ -346,23 +349,23 @@ var _ = Describe("Rollout Controller", func() {
 			// Manually set history with entries that don't have IDs (simulating old data)
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{
-					Version:   rolloutv1alpha1.VersionInfo{Tag: "2.0.0"},
+					Version:   rolloutv1alpha1.VersionInfo{Tag: version2_0_0},
 					Timestamp: metav1.Now(),
 				},
 				{
-					Version:   rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+					Version:   rolloutv1alpha1.VersionInfo{Tag: version1_0_0},
 					Timestamp: metav1.Now(),
 				},
 			}
 			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-				{Tag: "2.0.0"},
-				{Tag: "1.0.0"},
+				{Tag: version2_0_0},
+				{Tag: version1_0_0},
 			}
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting up ImagePolicy with new release")
 			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "3.0.0",
+				Tag: version3_0_0,
 			}
 			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
 
@@ -385,7 +388,7 @@ var _ = Describe("Rollout Controller", func() {
 			// New entry should get ID 1 (max of nil IDs is 0, so next is 1)
 			Expect(updatedRollout.Status.History[0].ID).NotTo(BeNil())
 			Expect(*updatedRollout.Status.History[0].ID).To(Equal(int64(1)))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("3.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version3_0_0))
 			// Old entries should still not have IDs
 			Expect(updatedRollout.Status.History[1].ID).To(BeNil())
 			Expect(updatedRollout.Status.History[2].ID).To(BeNil())
@@ -3238,7 +3241,7 @@ var _ = Describe("Rollout Controller", func() {
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
 						{
-							Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+							Version:       rolloutv1alpha1.VersionInfo{Tag: version1_0_0},
 							Timestamp:     metav1.Now(),
 							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -3308,7 +3311,7 @@ var _ = Describe("Rollout Controller", func() {
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
 						{
-							Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+							Version:       rolloutv1alpha1.VersionInfo{Tag: version1_0_0},
 							Timestamp:     metav1.Now(),
 							BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 							BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -3375,9 +3378,9 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "3.0.0"},
-							{Tag: "2.0.0"},
-							{Tag: "1.0.0"},
+							{Tag: version3_0_0},
+							{Tag: version2_0_0},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3395,18 +3398,18 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Set up ImagePolicy status with multiple releases
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "3.0.0",
+					Tag: version3_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
 				// Update to add more releases
-				imagePolicy.Status.LatestRef.Tag = "2.0.0"
+				imagePolicy.Status.LatestRef.Tag = version2_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				imagePolicy.Status.LatestRef.Tag = version1_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "3.0.0"
+				imagePolicy.Status.LatestRef.Tag = version3_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
 				By("Updating rollout status with all available releases")
@@ -3419,9 +3422,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-					{Tag: "3.0.0"},
-					{Tag: "2.0.0"},
-					{Tag: "1.0.0"},
+					{Tag: version3_0_0},
+					{Tag: version2_0_0},
+					{Tag: version1_0_0},
 				}
 				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
 
@@ -3451,7 +3454,7 @@ var _ = Describe("Rollout Controller", func() {
 				if rollout.Annotations == nil {
 					rollout.Annotations = make(map[string]string)
 				}
-				rollout.Annotations["rollout.kuberik.com/force-deploy"] = "2.0.0"
+				rollout.Annotations["rollout.kuberik.com/force-deploy"] = version2_0_0
 				Expect(k8sClient.Update(ctx, &rollout)).To(Succeed())
 
 				By("Creating a blocking gate")
@@ -3475,7 +3478,7 @@ var _ = Describe("Rollout Controller", func() {
 				}, &initialRollout)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(initialRollout.Status.History).To(HaveLen(1))
-				Expect(initialRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(initialRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(initialRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusDeploying)))
 
 				By("Reconciling with force-deploy annotation")
@@ -3499,11 +3502,11 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(updatedRollout.Status.History).To(HaveLen(2))
 
 				// Previous deployment should be cancelled
-				Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version1_0_0))
 				Expect(updatedRollout.Status.History[1].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusCancelled)))
 
 				// New deployment should be the force deploy version
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version2_0_0))
 				Expect(*updatedRollout.Status.History[0].Message).To(ContainSubstring("with force deploy"))
 
 				// Force deploy annotation should be cleared
@@ -3517,7 +3520,7 @@ var _ = Describe("Rollout Controller", func() {
 						Name:      "custom-message-rollout",
 						Namespace: namespace,
 						Annotations: map[string]string{
-							"rollout.kuberik.com/force-deploy":   "2.0.0",
+							"rollout.kuberik.com/force-deploy":   version2_0_0,
 							"rollout.kuberik.com/deploy-message": "emergency hotfix deployment",
 						},
 					},
@@ -3529,9 +3532,9 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "3.0.0"},
-							{Tag: "2.0.0"},
-							{Tag: "1.0.0"},
+							{Tag: version3_0_0},
+							{Tag: version2_0_0},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3548,17 +3551,17 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Set up ImagePolicy status with multiple releases
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "3.0.0",
+					Tag: version3_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "2.0.0"
+				imagePolicy.Status.LatestRef.Tag = version2_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				imagePolicy.Status.LatestRef.Tag = version1_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "3.0.0"
+				imagePolicy.Status.LatestRef.Tag = version3_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
 				By("Updating rollout status with all available releases")
@@ -3570,9 +3573,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-					{Tag: "3.0.0"},
-					{Tag: "2.0.0"},
-					{Tag: "1.0.0"},
+					{Tag: version3_0_0},
+					{Tag: version2_0_0},
+					{Tag: version1_0_0},
 				}
 				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
 
@@ -3611,7 +3614,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
 
 				// New deployment should use the custom message
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version2_0_0))
 				Expect(*updatedRollout.Status.History[0].Message).To(Equal("emergency hotfix deployment"))
 
 				// Both annotations should be cleared
@@ -3626,7 +3629,7 @@ var _ = Describe("Rollout Controller", func() {
 						Name:      "force-deploy-unavailable-rollout",
 						Namespace: namespace,
 						Annotations: map[string]string{
-							"rollout.kuberik.com/force-deploy": "3.0.0", // This version is not available
+							"rollout.kuberik.com/force-deploy": version3_0_0, // This version is not available
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
@@ -3636,8 +3639,8 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "2.0.0"},
-							{Tag: "1.0.0"},
+							{Tag: version2_0_0},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3655,11 +3658,11 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Set up ImagePolicy status with releases (but not 3.0.0)
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "2.0.0",
+					Tag: version2_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				imagePolicy.Status.LatestRef.Tag = version1_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
 				By("Reconciling with force-deploy annotation")
@@ -3698,19 +3701,19 @@ var _ = Describe("Rollout Controller", func() {
 						Name:      "priority-test-rollout",
 						Namespace: namespace,
 						Annotations: map[string]string{
-							"rollout.kuberik.com/force-deploy": "2.0.0", // This should be ignored
+							"rollout.kuberik.com/force-deploy": version2_0_0, // This should be ignored
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						WantedVersion: stringPtr("1.0.0"), // This should take priority
+						WantedVersion: stringPtr(version1_0_0), // This should take priority
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "2.0.0"},
-							{Tag: "1.0.0"},
+							{Tag: version2_0_0},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3728,11 +3731,11 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Set up ImagePolicy status with releases
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "2.0.0",
+					Tag: version2_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
-				imagePolicy.Status.LatestRef.Tag = "1.0.0"
+				imagePolicy.Status.LatestRef.Tag = version1_0_0
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
 				By("Reconciling with both WantedVersion and force-deploy annotation")
@@ -3758,7 +3761,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Should deploy version 1.0.0 (from WantedVersion), not 2.0.0 (from force-deploy)
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(*updatedRollout.Status.History[0].Message).To(Equal("Manual deployment"))
 
 				// Force-deploy annotation should still be present (not cleared since it wasn't used)
@@ -3779,11 +3782,11 @@ var _ = Describe("Rollout Controller", func() {
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						WantedVersion: stringPtr("1.0.0"),
+						WantedVersion: stringPtr(version1_0_0),
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3801,7 +3804,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Set up ImagePolicy status with releases
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "1.0.0",
+					Tag: version1_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -3828,7 +3831,7 @@ var _ = Describe("Rollout Controller", func() {
 
 				// Should deploy version 1.0.0 with custom message
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(*updatedRollout.Status.History[0].Message).To(Equal("planned maintenance deployment"))
 
 				// Deploy-message annotation should be cleared
@@ -3842,7 +3845,7 @@ var _ = Describe("Rollout Controller", func() {
 						Name:      "user-triggered-force-deploy-rollout",
 						Namespace: namespace,
 						Annotations: map[string]string{
-							"rollout.kuberik.com/force-deploy": "2.0.0",
+							"rollout.kuberik.com/force-deploy": version2_0_0,
 							"rollout.kuberik.com/deploy-user":  "alice@example.com",
 						},
 					},
@@ -3853,9 +3856,9 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "3.0.0"},
-							{Tag: "2.0.0"},
-							{Tag: "1.0.0"},
+							{Tag: version3_0_0},
+							{Tag: version2_0_0},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3871,7 +3874,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "2.0.0",
+					Tag: version2_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -3897,7 +3900,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("2.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version2_0_0))
 				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("User"))
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("alice@example.com"))
@@ -3920,11 +3923,11 @@ var _ = Describe("Rollout Controller", func() {
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						WantedVersion: stringPtr("1.0.0"),
+						WantedVersion: stringPtr(version1_0_0),
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -3940,7 +3943,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "1.0.0",
+					Tag: version1_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -3966,7 +3969,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("User"))
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("bob@example.com"))
@@ -3989,10 +3992,10 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -4008,7 +4011,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "1.0.0",
+					Tag: version1_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -4034,7 +4037,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("System"))
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("rollout-controller"))
@@ -4062,10 +4065,10 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -4081,7 +4084,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "1.0.0",
+					Tag: version1_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -4107,7 +4110,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(updatedRollout.Status.History).To(HaveLen(1))
-				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+				Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 				Expect(updatedRollout.Status.History[0].TriggeredBy).NotTo(BeNil())
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Kind).To(Equal("System"))
 				Expect(updatedRollout.Status.History[0].TriggeredBy.Name).To(Equal("rollout-controller"))
@@ -4124,7 +4127,7 @@ var _ = Describe("Rollout Controller", func() {
 						Name:      "clear-deploy-user-force-rollout",
 						Namespace: namespace,
 						Annotations: map[string]string{
-							"rollout.kuberik.com/force-deploy":   "2.0.0",
+							"rollout.kuberik.com/force-deploy":   version2_0_0,
 							"rollout.kuberik.com/deploy-user":    "charlie@example.com",
 							"rollout.kuberik.com/deploy-message": "test message",
 						},
@@ -4136,7 +4139,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "2.0.0"},
+							{Tag: version2_0_0},
 						},
 					},
 				}
@@ -4152,7 +4155,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "2.0.0",
+					Tag: version2_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -4198,11 +4201,11 @@ var _ = Describe("Rollout Controller", func() {
 						ReleasesImagePolicy: corev1.LocalObjectReference{
 							Name: "test-image-policy",
 						},
-						WantedVersion: stringPtr("1.0.0"),
+						WantedVersion: stringPtr(version1_0_0),
 					},
 					Status: rolloutv1alpha1.RolloutStatus{
 						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: "1.0.0"},
+							{Tag: version1_0_0},
 						},
 					},
 				}
@@ -4218,7 +4221,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: "1.0.0",
+					Tag: version1_0_0,
 				}
 				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
 
@@ -4268,11 +4271,11 @@ var _ = Describe("Rollout Controller", func() {
 			// Update the status separately since status is ignored during creation
 			freshRollout.Status = rolloutv1alpha1.RolloutStatus{
 				AvailableReleases: []rolloutv1alpha1.VersionInfo{
-					{Tag: "1.0.0"},
+					{Tag: version1_0_0},
 				},
 				History: []rolloutv1alpha1.DeploymentHistoryEntry{
 					{
-						Version:       rolloutv1alpha1.VersionInfo{Tag: "1.0.0"},
+						Version:       rolloutv1alpha1.VersionInfo{Tag: version1_0_0},
 						Timestamp:     metav1.Now(),
 						BakeStatus:    k8sptr.To(rolloutv1alpha1.BakeStatusFailed),
 						BakeStartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
@@ -4329,7 +4332,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Should still have the failed deployment history (no new deployment)
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
-			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal("1.0.0"))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusFailed)))
 
 			// But status should be updated with release candidates and gates
