@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `status.candidates` and `status.releaseSource` are the only release status. `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are never written and are cleared on reconcile.
 - `spec.releaseSourceRef` is no longer required to be accompanied by `spec.releasesImagePolicy`; the CRD rule requiring one of them is removed (a Rollout without a ref reports `ReleaseSourceRequired` instead of being rejected).
 
+- The controller starts without the Flux image-reflector CRDs (ImagePolicy is no longer a required kind) and without the release-controller CRDs; when those appear later, discovery (every 30s) registers the ReleaseSource and ReleaseSlice watches with no restart.
+
 ### Deprecated
 
 - `spec.releasesImagePolicy`, `spec.availableReleasesRetentionDays`, `spec.availableReleasesMinCount`, `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are ignored and will be removed in the next release. A Rollout that sets `spec.releasesImagePolicy` reports condition `ReleasesImagePolicyIgnored=True`.
