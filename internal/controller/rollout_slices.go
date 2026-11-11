@@ -536,7 +536,7 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 	if !r.catalogueOn() {
 		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonCatalogueUnavailable, fmt.Sprintf(
 			"spec.releaseSourceRef is %q, but the release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed, "+
-				"so no releases are read; install release-controller and restart the controller",
+				"so no releases are read; install release-controller and this Rollout will pick it up",
 			rollout.Spec.ReleaseSourceRef.Name))
 	}
 	// The reasons set above no longer hold: drop them (Ready is rewritten by the
