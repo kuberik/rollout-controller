@@ -9,7 +9,6 @@ rules:
   resources:
   - '*'
   - namespaces
-  - secrets
   verbs:
   - get
   - list
@@ -25,15 +24,6 @@ rules:
   - '*'
   resources:
   - '*'
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - image.toolkit.fluxcd.io
-  resources:
-  - imagepolicies
-  - imagerepositories
   verbs:
   - get
   - list
@@ -80,6 +70,15 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - kuberik.com
+  resources:
+  - releaseslices
+  - releasesources
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - kustomize.toolkit.fluxcd.io
   resources:

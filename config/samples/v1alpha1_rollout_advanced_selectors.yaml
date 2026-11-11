@@ -6,8 +6,8 @@ metadata:
     app: my-application
     environment: production
 spec:
-  releasesImagePolicy:
-    name: production-image-policy
+  releaseSourceRef:
+    name: production-source
   
   # Optional: specify a specific version to deploy
   # wantedVersion: "2.1.0"

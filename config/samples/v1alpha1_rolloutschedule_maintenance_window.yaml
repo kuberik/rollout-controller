@@ -32,7 +32,7 @@ metadata:
   labels:
     maintenance: "true"  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: database-policy
+  releaseSourceRef:
+    name: database-source
   versionHistoryLimit: 10
   releaseUpdateInterval: "5m"

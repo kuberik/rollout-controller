@@ -111,9 +111,21 @@ func (hcsc *HealthCheckSelectorConfig) IsValid() bool {
 
 // RolloutSpec defines the desired state of Rollout.
 type RolloutSpec struct {
-	// ReleasesImagePolicy specifies the ImagePolicy that provides available releases
-	// +kubebuilder:validation:Required
-	// +required
+	// ReleaseSourceRef names a ReleaseSource (kuberik.com, served by release-controller)
+	// in the same namespace that provides this Rollout's releases. When set (and the
+	// release-controller CRDs are installed) the Rollout reads its releases from the
+	// source's ReleaseSlice catalogue. This is the only release path: a Rollout
+	// without it gets no releases and reports ReleasesUpdated=False and Ready=False
+	// with reason ReleaseSourceRequired.
+	// +optional
+	ReleaseSourceRef *corev1.LocalObjectReference `json:"releaseSourceRef,omitempty"`
+
+	// Deprecated: ignored; removed in the next release. Releases come from
+	// releaseSourceRef; to migrate an existing Flux ImagePolicy, create a
+	// ReleaseSource with spec.oci.imagePolicyRef. A Rollout that sets it reports
+	// ReleasesImagePolicyIgnored=True.
+	// A value type, so Go clients always send "releasesImagePolicy: {}".
+	// +optional
 	ReleasesImagePolicy corev1.LocalObjectReference `json:"releasesImagePolicy,omitempty"`
 
 	// WantedVersion specifies a specific version to deploy, overriding the automatic version selection
@@ -126,6 +138,7 @@ type RolloutSpec struct {
 	// +optional
 	VersionHistoryLimit *int32 `json:"versionHistoryLimit,omitempty"`
 
+	// Deprecated: ignored; retention is ReleaseSource.spec.retention. Removed in the next release.
 	// AvailableReleasesRetentionDays defines how many days of available releases to keep based on creation timestamp
 	// When history is full, releases older than this retention period may be removed.
 	// Defaults to 7 days if not specified.
@@ -134,6 +147,7 @@ type RolloutSpec struct {
 	// +optional
 	AvailableReleasesRetentionDays *int32 `json:"availableReleasesRetentionDays,omitempty"`
 
+	// Deprecated: ignored; retention is ReleaseSource.spec.retention. Removed in the next release.
 	// AvailableReleasesMinCount defines the minimum number of available releases to always keep
 	// When history is full, at least this many releases will be retained regardless of other criteria.
 	// Defaults to 30 if not specified.
@@ -209,6 +223,49 @@ type RolloutGateStatusSummary struct {
 	BypassGates bool `json:"bypassGates,omitempty"`
 }
 
+// ReleaseSourceStatusRef is a Rollout's view of its ReleaseSource.
+type ReleaseSourceStatusRef struct {
+	// Name of the ReleaseSource.
+	Name string `json:"name"`
+	// Ready mirrors the ReleaseSource Ready condition.
+	Ready bool `json:"ready"`
+	// Count is the number of releases in the catalogue.
+	// +optional
+	Count int32 `json:"count,omitempty"`
+	// Newest is the tag of the newest release in the catalogue.
+	// +optional
+	Newest string `json:"newest,omitempty"`
+	// ObservedAt is when name, ready, count or newest last changed.
+	// +optional
+	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+}
+
+// ReleaseCandidate is a release the Rollout could deploy next. It is
+// deliberately lean: full release metadata (digest, revision, version,
+// requires) lives in the ReleaseSlice catalogue and in history entries.
+type ReleaseCandidate struct {
+	// Tag is the release tag.
+	// +kubebuilder:validation:MaxLength=128
+	// +required
+	Tag string `json:"tag"`
+
+	// Created is the release creation time.
+	// +optional
+	Created *metav1.Time `json:"created,omitempty"`
+
+	// FirstSeen is when the catalogue first admitted this release.
+	// +optional
+	FirstSeen *metav1.Time `json:"firstSeen,omitempty"`
+
+	// Gated is true when the release passes every gate.
+	Gated bool `json:"gated"`
+
+	// BlockedBy lists the gates that do not let this release through.
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	BlockedBy []string `json:"blockedBy,omitempty"`
+}
+
 // RolloutStatus defines the observed state of Rollout.
 type RolloutStatus struct {
 	// Conditions represents the current state of the rollout process.
@@ -224,19 +281,37 @@ type RolloutStatus struct {
 	// +optional
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
 
+	// Deprecated: ignored; no longer written (cleared on reconcile). Read
+	// status.candidates and the ReleaseSlice catalogue instead. Removed in the next release.
 	// AvailableReleases is a list of all releases available in the releases repository.
 	// +optional
 	AvailableReleases []VersionInfo `json:"availableReleases,omitempty"`
 
+	// Deprecated: ignored; no longer written (cleared on reconcile). Read status.candidates instead.
+	// Removed in the next release.
 	// ReleaseCandidates is a list of releases that are candidates for the next deployment.
 	// These are filtered from AvailableReleases based on deployment history and version ordering.
 	// +optional
 	ReleaseCandidates []VersionInfo `json:"releaseCandidates,omitempty"`
 
+	// Deprecated: ignored; no longer written (cleared on reconcile). Read status.candidates
+	// (gated field) instead. Removed in the next release.
 	// GatedReleaseCandidates is a list of release candidates that have passed through all gates.
 	// This shows which versions are actually available for deployment after gate evaluation.
 	// +optional
 	GatedReleaseCandidates []VersionInfo `json:"gatedReleaseCandidates,omitempty"`
+
+	// ReleaseSource summarises the ReleaseSource this Rollout reads (slices mode only).
+	// +optional
+	ReleaseSource *ReleaseSourceStatusRef `json:"releaseSource,omitempty"`
+
+	// Candidates is the working set in slices mode: the K newest releases newer
+	// than the deployed one, plus any release newer than the deployed one that a
+	// gate's allowedVersions, the force-deploy or bypass-gates annotation, or
+	// spec.wantedVersion names. Newest first.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	Candidates []ReleaseCandidate `json:"candidates,omitempty"`
 
 	// Gates summarizes the status of each gate relevant to this rollout.
 	// +optional
@@ -406,6 +481,15 @@ const (
 	RolloutReady = "Ready"
 	// RolloutReleasesUpdated means the available releases were updated.
 	RolloutReleasesUpdated = "ReleasesUpdated"
+
+	// RolloutReleasesImagePolicyIgnored is True when spec.releasesImagePolicy is
+	// set: it is deprecated and ignored.
+	RolloutReleasesImagePolicyIgnored = "ReleasesImagePolicyIgnored"
+
+	// RolloutReleaseSourceReady is False in slices mode when the Rollout has no
+	// usable ReleaseSource. Reasons: ReleaseSourceNotSet, ReleaseSourceNotFound,
+	// ReleaseSourceNotReady.
+	RolloutReleaseSourceReady = "ReleaseSourceReady"
 	// RolloutGatesPassing means all gates are passing.
 	RolloutGatesPassing = "GatesPassing"
 	// RolloutBakeTimeRetrying means the bake time is being retried after a failure.

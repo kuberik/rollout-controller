@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -28,11 +28,11 @@ import (
 )
 
 func TestCheckRequiredKinds(t *testing.T) {
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{kuberikcomv1alpha1.GroupVersion, imagev1.GroupVersion})
+	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{kuberikcomv1alpha1.GroupVersion, kustomizev1.GroupVersion})
 	mapper.Add(kuberikcomv1alpha1.GroupVersion.WithKind("Rollout"), meta.RESTScopeNamespace)
-	mapper.Add(imagev1.GroupVersion.WithKind("ImagePolicy"), meta.RESTScopeNamespace)
+	mapper.Add(kustomizev1.GroupVersion.WithKind("Kustomization"), meta.RESTScopeNamespace)
 
-	if err := checkRequiredKinds(mapper, scheme, &kuberikcomv1alpha1.Rollout{}, &imagev1.ImagePolicy{}); err != nil {
+	if err := checkRequiredKinds(mapper, scheme, &kuberikcomv1alpha1.Rollout{}, &kustomizev1.Kustomization{}); err != nil {
 		t.Fatalf("all kinds served, expected nil, got %v", err)
 	}
 
@@ -48,5 +48,22 @@ func TestCheckRequiredKinds(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "Rollout.kuberik") {
 		t.Errorf("error %q names Rollout, which is served", err)
+	}
+}
+
+func TestRequiredKindsNeedNoImageReflector(t *testing.T) {
+	for _, o := range requiredKinds() {
+		gvks, _, err := scheme.ObjectKinds(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, gvk := range gvks {
+			if gvk.Group == "image.toolkit.fluxcd.io" {
+				t.Errorf("%s requires the Flux image-reflector API; the controller must start without it", gvk)
+			}
+			if gvk.Group == "kuberik.com" && (gvk.Kind == "ReleaseSource" || gvk.Kind == "ReleaseSlice") {
+				t.Errorf("%s must stay optional at startup (lazy watches)", gvk)
+			}
+		}
 	}
 }

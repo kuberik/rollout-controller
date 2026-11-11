@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -31,19 +32,20 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/controller"
+	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -56,8 +58,8 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(kuberikcomv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(releasecatalogue.AddToScheme(scheme))
 	utilruntime.Must(sourcev1.AddToScheme(scheme))
-	utilruntime.Must(imagev1.AddToScheme(scheme))
 	utilruntime.Must(kustomizev1.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -73,6 +75,9 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var releaseCandidates int
+	flag.IntVar(&releaseCandidates, "release-candidates", 20,
+		"For Rollouts with spec.releaseSourceRef, the number of newest releases kept in status.candidates (K).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -97,6 +102,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if releaseCandidates < 1 || releaseCandidates > controller.MaxReleaseCandidates {
+		setupLog.Error(fmt.Errorf("--release-candidates=%d", releaseCandidates),
+			fmt.Sprintf("must be between 1 and %d (the status.candidates MaxItems)", controller.MaxReleaseCandidates))
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -213,16 +224,7 @@ func main() {
 
 	// Every kind a controller below watches. Missing CRDs would otherwise
 	// surface only after the cache-sync timeout, with the pod reporting ready.
-	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(),
-		&kuberikcomv1alpha1.Rollout{},
-		&kuberikcomv1alpha1.RolloutGate{},
-		&kuberikcomv1alpha1.HealthCheck{},
-		&kuberikcomv1alpha1.RolloutSchedule{},
-		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
-		&kuberikcomv1alpha1.RolloutDependency{},
-		&imagev1.ImagePolicy{},
-		&kustomizev1.Kustomization{},
-	); err != nil {
+	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), requiredKinds()...); err != nil {
 		setupLog.Error(err, "install the CRDs before starting the controller "+
 			"(Kuberik CRDs ship with the chart, Flux CRDs with `flux install`)")
 		os.Exit(1)
@@ -232,6 +234,8 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Clock:  &controller.RealClock{},
+
+		ReleaseCandidates: releaseCandidates,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)
@@ -316,5 +320,21 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// requiredKinds are the kinds the controllers watch or patch and that must be
+// served for the manager to start. The release path needs no Flux image-reflector
+// kinds: Rollouts read the release-controller catalogue, and that is optional at
+// startup (Rollouts report ReleaseCatalogueUnavailable until it is served).
+func requiredKinds() []client.Object {
+	return []client.Object{
+		&kuberikcomv1alpha1.Rollout{},
+		&kuberikcomv1alpha1.RolloutGate{},
+		&kuberikcomv1alpha1.HealthCheck{},
+		&kuberikcomv1alpha1.RolloutSchedule{},
+		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
+		&kuberikcomv1alpha1.RolloutDependency{},
+		&kustomizev1.Kustomization{},
 	}
 }

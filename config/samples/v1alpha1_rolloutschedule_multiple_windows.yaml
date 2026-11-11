@@ -52,8 +52,8 @@ metadata:
   labels:
     schedule: flexible  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: api-policy
+  releaseSourceRef:
+    name: api-source
   versionHistoryLimit: 10
   bakeTime: "15m"
   healthCheckSelector:

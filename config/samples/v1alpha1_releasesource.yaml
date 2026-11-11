@@ -1,0 +1,107 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: api-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/api
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: batch-processor-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/batch-processor
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: critical-service-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/critical-service
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: database-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/database
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: example-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/example
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: experimental-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/experimental
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: frontend-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/frontend
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: production-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/production
+    policy:
+      semver:
+        range: ">=1.0.0"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: web-frontend-source
+  namespace: default
+spec:
+  oci:
+    image: ghcr.io/myorg/web-frontend
+    policy:
+      semver:
+        range: ">=1.0.0"

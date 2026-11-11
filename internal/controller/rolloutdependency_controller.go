@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,8 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 )
 
 // RolloutDependencyReconciler reconciles a RolloutDependency object.
@@ -50,6 +54,15 @@ type RolloutDependencyReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// CatalogueAvailable is set by SetupWithManager when the release-controller
+	// CRDs are installed. The mode is decided by it and the consumer's
+	// spec.releaseSourceRef alone, never by leftover status.
+	CatalogueAvailable bool
+	// CatalogueDiscoveryInterval is how often discovery is polled when the CRDs were
+	// not installed at startup (default 30s).
+	CatalogueDiscoveryInterval time.Duration
+	lateCatalogue              atomic.Bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies,verbs=get;list;watch;create;update;patch;delete
@@ -57,6 +70,7 @@ type RolloutDependencyReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
 
 // Reconcile evaluates a RolloutDependency and syncs the RolloutGate it manages.
 func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -136,7 +150,11 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	admitted, blocked := evaluateDependency(consumer.Status.AvailableReleases, contract, providedVersion)
+	consumerRels, err := r.consumerReleases(ctx, consumer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	admitted, blocked := evaluateDependency(consumerRels, contract, providedVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -147,7 +165,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	blocking := blockedTags(blocked, pendingReleases(consumer))
+	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer, r.usesCatalogue(consumer)))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -199,16 +217,25 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// pendingReleases returns the tags the consumer Rollout could still move to,
+// pendingTags returns the tags the consumer Rollout could still move to,
 // i.e. releases newer than the one currently deployed.
 //
-// An empty result means the consumer has nothing to advance to — either there
-// are no releases at all, or its deployed tag is no longer in availableReleases
+// An empty result means the consumer has nothing to advance to: either there
+// are no releases at all, or its deployed tag is no longer in the release list
 // (retention pruned it), so no upgrade path can be computed. Both are correctly
-// read as "this dependency is holding nothing back": the Rollout has no
-// candidate to deploy regardless of what any gate says.
-func pendingReleases(consumer *kuberikcomv1alpha1.Rollout) []string {
-	candidates, err := getNextReleaseCandidates(consumer.Status.AvailableReleases, &consumer.Status)
+// read as "this dependency is holding nothing back".
+//
+// rels is what consumerReleases returned (oldest first). In slices mode that is
+// already only the releases newer than the deployed one.
+func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout, fromCatalogue bool) []string {
+	if fromCatalogue {
+		tags := make([]string, 0, len(rels))
+		for _, v := range rels {
+			tags = append(tags, v.Tag)
+		}
+		return tags
+	}
+	candidates, err := getNextReleaseCandidates(rels, &consumer.Status)
 	if err != nil {
 		return nil
 	}
@@ -384,15 +411,86 @@ func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorderFor("rolloutdependency-controller") //nolint:staticcheck // SA1019
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&kuberikcomv1alpha1.RolloutDependency{}).
 		Owns(&kuberikcomv1alpha1.RolloutGate{}).
 		Watches(
 			&kuberikcomv1alpha1.Rollout{},
 			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForRollout),
-		).
+		)
+	r.CatalogueAvailable = catalogueCRDsInstalled(mgr.GetRESTMapper())
+	if r.CatalogueAvailable {
+		// For catalogue Rollouts the gate is evaluated over the consumer's catalogue, which
+		// can change (a repair, a new release) without the Rollout changing.
+		b = b.Watches(
+			&releasecatalogue.ReleaseSlice{},
+			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice),
+		)
+	}
+	c, err := b.
 		Named("rolloutdependency").
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+	if r.CatalogueAvailable {
+		return nil
+	}
+	watches := newWatchSet()
+	return registerWhenCatalogueServed(mgr, "rolloutdependency", r.CatalogueDiscoveryInterval, func(context.Context) error {
+		if err := watches.ensure("ReleaseSlice", func() error {
+			return c.Watch(source.Kind[client.Object](mgr.GetCache(), &releasecatalogue.ReleaseSlice{},
+				handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice)))
+		}); err != nil {
+			return err
+		}
+		r.lateCatalogue.Store(true)
+		return nil
+	})
+}
+
+// findDependenciesForReleaseSlice maps a ReleaseSlice to the RolloutDependencies
+// whose consumer Rollout references the slice's ReleaseSource.
+func (r *RolloutDependencyReconciler) findDependenciesForReleaseSlice(ctx context.Context, obj client.Object) []reconcile.Request {
+	slice, ok := obj.(*releasecatalogue.ReleaseSlice)
+	if !ok {
+		return nil
+	}
+	source := slice.Labels[releasecatalogue.SourceLabel]
+	if source == "" {
+		source = slice.Source
+	}
+	if source == "" {
+		return nil
+	}
+	rollouts := &kuberikcomv1alpha1.RolloutList{}
+	if err := r.List(ctx, rollouts, client.InNamespace(slice.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list Rollouts")
+		return nil
+	}
+	consumers := map[string]bool{}
+	for _, ro := range rollouts.Items {
+		if ro.Spec.ReleaseSourceRef != nil && ro.Spec.ReleaseSourceRef.Name == source {
+			consumers[ro.Name] = true
+		}
+	}
+	if len(consumers) == 0 {
+		return nil
+	}
+	dependencies := &kuberikcomv1alpha1.RolloutDependencyList{}
+	if err := r.List(ctx, dependencies, client.InNamespace(slice.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list RolloutDependencies")
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, dependency := range dependencies.Items {
+		if consumers[dependency.Spec.RolloutRef.Name] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: dependency.Namespace, Name: dependency.Name},
+			})
+		}
+	}
+	return requests
 }
 
 // findDependenciesForRollout maps a Rollout to every RolloutDependency that
@@ -423,4 +521,36 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 		}
 	}
 	return requests
+}
+
+// usesCatalogue reports whether the consumer's releases come from its
+// ReleaseSource catalogue: spec.releaseSourceRef with the
+// release-controller CRDs installed, nothing from status. Without a ref the code
+// path is the list-mode one and ReleaseSlices are never listed.
+func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
+	return (r.CatalogueAvailable || r.lateCatalogue.Load()) && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
+}
+
+// consumerReleases returns the releases to evaluate, oldest first. In slices
+// mode that is the consumer's whole catalogue (merged and sorted from the
+// informer cache) restricted to releases newer than the deployed one, not just
+// the K candidates in status: a dependency that blocks the K newest must still
+// admit an older one, as it does in list mode. Otherwise availableReleases.
+func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, consumer *kuberikcomv1alpha1.Rollout) ([]kuberikcomv1alpha1.VersionInfo, error) {
+	if !r.usesCatalogue(consumer) {
+		return consumer.Status.AvailableReleases, nil
+	}
+	sliceList := &releasecatalogue.ReleaseSliceList{}
+	if err := r.List(ctx, sliceList, client.InNamespace(consumer.Namespace),
+		client.MatchingLabels{releasecatalogue.SourceLabel: consumer.Spec.ReleaseSourceRef.Name}); err != nil {
+		return nil, err
+	}
+	cat := mergeSlices(sliceList.Items)
+	newer, err := cat.candidatesAfter(&consumer.Status) // newest first
+	if err != nil {
+		return nil, nil // empty catalogue: nothing to evaluate
+	}
+	out := slices.Clone(newer)
+	slices.Reverse(out)
+	return out, nil
 }

@@ -51,6 +51,6 @@ metadata:
   labels:
     freeze: "holiday"  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: frontend-policy
+  releaseSourceRef:
+    name: frontend-source
   versionHistoryLimit: 10

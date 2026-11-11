@@ -5,9 +5,5 @@ directories:
     path: ocirepositories
   - http: {}
     path: kustomizations
-  - http: {}
-    path: imagepolicies
-  - http: {}
-    path: imagerepositories
   path: vendir
 kind: LockConfig

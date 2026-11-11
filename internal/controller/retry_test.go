@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -22,10 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
-	fluxmeta "github.com/fluxcd/pkg/apis/meta"
-	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
 
 func testLogger() logr.Logger { return logr.Discard() }
@@ -43,31 +40,19 @@ var _ = Describe("Rollout retry annotation", func() {
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		policy := &imagev1.ImagePolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "retry-ip", Namespace: namespace},
-			Spec: imagev1.ImagePolicySpec{
-				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1.ImagePolicyChoice{
-					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Conditions = []metav1.Condition{{
-			Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now(), Reason: "Ready",
-		}}
-		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		policy := newTestFeed(namespace, "retry-ip")
+		policy.Publish("1.0.0")
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "retry-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "retry-ip"},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: "retry-ip"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 
 		fakeClock = NewFakeClock()
-		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+		reconciler = &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 		key = types.NamespacedName{Name: rollout.Name, Namespace: namespace}
 	})
 
@@ -310,26 +295,16 @@ var _ = Describe("Rollout errorCutoff with retry", func() {
 		namespace = ns.Name
 
 		fakeClock = NewFakeClock()
-		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+		reconciler = &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 
 		// Image policy required by the reconcile loop.
-		policy := &imagev1.ImagePolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "ip", Namespace: namespace},
-			Spec: imagev1.ImagePolicySpec{
-				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1.ImagePolicyChoice{
-					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
-		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		policy := newTestFeed(namespace, "ip")
+		policy.Publish("1.0.0")
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "ip"},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: "ip"},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"suite": "errcutoff"},

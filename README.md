@@ -424,80 +424,44 @@ If no timezone is specified, UTC is used by default.
 ## Overview
 
 The Rollout Controller manages application deployments by:
-- Monitoring available releases from Flux ImagePolicy
+- Reading available releases from a release-controller `ReleaseSource` catalogue
 - Evaluating deployment gates
 - Managing bake time for health checks
 - Copying releases from source to target repositories
 
-## Flux ImagePolicy Integration
+## Release Sources
 
-The rollout controller integrates with Flux's image automation components to provide a GitOps-friendly approach to release management. Instead of directly accessing OCI repositories, the controller uses Flux's ImagePolicy to determine available releases.
-
-### Architecture
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   ImageRepo     │    │  ImagePolicy    │    │    Rollout      │
-│   (Flux)        │───▶│   (Flux)        │───▶│  Controller     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                         │
-                                                         ▼
-                                               ┌─────────────────┐
-                                               │ Target Repo     │
-                                               │ (Deployment)    │
-                                               └─────────────────┘
-```
+A Rollout reads its releases from a `ReleaseSource` (release-controller) and its `ReleaseSlice`
+catalogue. This is the only release path: `spec.releaseSourceRef` names the ReleaseSource in the
+Rollout's namespace. The release-controller CRDs must be installed.
 
 ### Setup
 
-1. **Create an ImageRepository** (Flux component):
+1. **Create a ReleaseSource** (release-controller):
 ```yaml
-apiVersion: image.toolkit.fluxcd.io/v1beta2
-kind: ImageRepository
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
 metadata:
-  name: my-app-repo
-  namespace: flux-system
+  name: my-app-source
 spec:
-  image: ghcr.io/myorg/myapp
-  interval: 1m0s
-  secretRef:
-    name: ghcr-secret
+  oci:
+    image: ghcr.io/myorg/myapp
+    policy:
+      semver:
+        range: '>=1.0.0'
 ```
 
-2. **Create an ImagePolicy** (Flux component):
-```yaml
-apiVersion: image.toolkit.fluxcd.io/v1beta2
-kind: ImagePolicy
-metadata:
-  name: my-app-policy
-  namespace: flux-system
-spec:
-  imageRepositoryRef:
-    name: my-app-repo
-  policy:
-    semver:
-      range: '>=1.0.0'
-      prereleases:
-        enabled: true
-        allow:
-          - rc
-          - beta
-          - alpha
-  digestReflectionPolicy: IfNotPresent
-```
-
-3. **Create a Rollout** (this controller):
+2. **Create a Rollout** (this controller):
 ```yaml
 apiVersion: kuberik.com/v1alpha1
 kind: Rollout
 metadata:
   name: my-app-rollout
 spec:
-  releasesImagePolicy:
-    name: my-app-policy
+  releaseSourceRef:
+    name: my-app-source
 
   versionHistoryLimit: 10
-  releaseUpdateInterval: "5m"
 
   # Optional: bake time for health checks
   bakeTime: "10m"
@@ -506,14 +470,54 @@ spec:
       app: myapp
 ```
 
+The controller writes `status.releaseSource` and `status.candidates` (the release status), and
+nothing else about releases.
+
+### Migrating from a Flux ImagePolicy
+
+`spec.releasesImagePolicy` and `status.availableReleases`, `status.releaseCandidates` and
+`status.gatedReleaseCandidates` are ignored and will be removed in the next release; the status
+lists are cleared on reconcile. To keep an existing Flux ImagePolicy, create a ReleaseSource that
+references it in one object and point the Rollout at that:
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: my-app-source
+spec:
+  oci:
+    imagePolicyRef:
+      name: my-app-policy
+```
+
+**Upgrading:** create a ReleaseSource per app and set `spec.releaseSourceRef` on its Rollouts. Keep
+the ImagePolicy objects until the new path is verified: downgrading the controller restores the old
+release path only while they exist.
+
+### Conditions
+
+| Situation | Condition | Reason |
+|---|---|---|
+| No `spec.releaseSourceRef` | `ReleasesUpdated=False` and `Ready=False` | `ReleaseSourceRequired` |
+| `spec.releasesImagePolicy` set | `ReleasesImagePolicyIgnored=True` | `ReleasesImagePolicyIgnored` |
+| catalogue is empty | `Ready=False` | `NoReleases` (derived from the deployment history again once releases return) |
+| release-controller CRDs not installed | `ReleasesUpdated=False` and `Ready=False` | `ReleaseCatalogueUnavailable` |
+| ReleaseSource missing / not Ready | `ReleaseSourceReady=False` | `ReleaseSourceNotFound` / `ReleaseSourceNotReady` |
+
+Each Warning Event is emitted once per change, not on every reconcile.
+
 ### How it Works
 
-1. **Release Discovery**: The controller reads the `latestRef` from the ImagePolicy status to determine available releases.
+1. **Release Discovery**: The controller reads the ReleaseSlice catalogue of the Rollout's ReleaseSource.
 
 2. **Version Selection**: The controller applies semver logic to select the next release to deploy, considering:
    - Current deployed version
-   - Available releases from ImagePolicy
+   - Releases in the ReleaseSource catalogue
    - Gates and constraints
+
+   The candidates are the catalogue releases after the deployed one, newest first. When the
+   deployed tag has expired from the catalogue, candidates start after the newest release created
+   before it, in catalogue order, so an older release is never offered as an upgrade.
 
 3. **Resource Patching**: The controller finds and patches Flux resources with specific annotations:
    - **OCIRepositories**: Updates `spec.ref.tag` for resources with `rollout.kuberik.com/rollout: <rollout-name>`
@@ -614,7 +618,9 @@ kubectl apply -k config/default/
 
 See the `config/samples/` directory for complete examples including:
 - `v1alpha1_imagerepository.yaml` - Flux ImageRepository example
-- `v1alpha1_imagepolicy.yaml` - Flux ImagePolicy example
+- `v1alpha1_releasesource.yaml` - ReleaseSource samples (`oci.image` + `policy`)
+- `v1alpha1_releasesource_from_imagepolicy.yaml` - ReleaseSource migrating a Flux ImagePolicy (`oci.imagePolicyRef`)
+- `v1alpha1_imagepolicy.yaml` - Flux ImagePolicy example, referenced by the migration sample
 - `v1alpha1_rollout.yaml` - Rollout controller example
 - `v1alpha1_rolloutschedule.yaml` - RolloutSchedule example
 - `v1alpha1_clusterrolloutschedule.yaml` - ClusterRolloutSchedule example

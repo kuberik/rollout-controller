@@ -1,0 +1,13 @@
+# Migration example: a ReleaseSource that reads an existing Flux ImagePolicy
+# (and its ImageRepository) through oci.imagePolicyRef, so the image, secretRef,
+# filterTags and policy are not repeated. Point a Rollout's spec.releaseSourceRef at it.
+# See v1alpha1_imagepolicy.yaml and v1alpha1_imagerepository.yaml for the Flux objects.
+apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: my-app-source
+  namespace: flux-system
+spec:
+  oci:
+    imagePolicyRef:
+      name: my-app-policy

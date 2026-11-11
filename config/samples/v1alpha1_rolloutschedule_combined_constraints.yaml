@@ -50,8 +50,8 @@ metadata:
   labels:
     schedule: restricted  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: critical-service-policy
+  releaseSourceRef:
+    name: critical-service-source
   versionHistoryLimit: 20
   bakeTime: "1h"
   healthCheckSelector:
