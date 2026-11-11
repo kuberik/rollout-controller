@@ -165,7 +165,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer, r.usesCatalogue(consumer)))
+	blocking := blockedTags(blocked, pendingTags(consumerRels))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -217,31 +217,14 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// pendingTags returns the tags the consumer Rollout could still move to,
-// i.e. releases newer than the one currently deployed.
-//
-// An empty result means the consumer has nothing to advance to: either there
-// are no releases at all, or its deployed tag is no longer in the release list
-// (retention pruned it), so no upgrade path can be computed. Both are correctly
-// read as "this dependency is holding nothing back".
-//
-// rels is what consumerReleases returned (oldest first). In slices mode that is
-// already only the releases newer than the deployed one.
-func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout, fromCatalogue bool) []string {
-	if fromCatalogue {
-		tags := make([]string, 0, len(rels))
-		for _, v := range rels {
-			tags = append(tags, v.Tag)
-		}
-		return tags
-	}
-	candidates, err := getNextReleaseCandidates(rels, &consumer.Status)
-	if err != nil {
-		return nil
-	}
-	tags := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		tags = append(tags, candidate.Tag)
+// pendingTags returns the tags the consumer Rollout could still move to: the
+// releases consumerReleases returned, which are already only the ones newer
+// than the deployed tag. An empty result (no catalogue, an empty catalogue, or
+// nothing newer) reads as "this dependency is holding nothing back".
+func pendingTags(rels []kuberikcomv1alpha1.VersionInfo) []string {
+	tags := make([]string, 0, len(rels))
+	for _, v := range rels {
+		tags = append(tags, v.Tag)
 	}
 	return tags
 }
@@ -525,20 +508,20 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 
 // usesCatalogue reports whether the consumer's releases come from its
 // ReleaseSource catalogue: spec.releaseSourceRef with the
-// release-controller CRDs installed, nothing from status. Without a ref the code
-// path is the list-mode one and ReleaseSlices are never listed.
+// release-controller CRDs installed, nothing from status. Without one the
+// consumer has no releases and ReleaseSlices are never listed.
 func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
 	return (r.CatalogueAvailable || r.lateCatalogue.Load()) && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
 }
 
-// consumerReleases returns the releases to evaluate, oldest first. In slices
-// mode that is the consumer's whole catalogue (merged and sorted from the
-// informer cache) restricted to releases newer than the deployed one, not just
-// the K candidates in status: a dependency that blocks the K newest must still
-// admit an older one, as it does in list mode. Otherwise availableReleases.
+// consumerReleases returns the releases to evaluate, oldest first: the
+// consumer's whole catalogue (merged and sorted from the informer cache)
+// restricted to releases newer than the deployed one, not just the K candidates
+// in status, so a dependency that blocks the K newest still admits an older
+// one. A consumer without a catalogue has none.
 func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, consumer *kuberikcomv1alpha1.Rollout) ([]kuberikcomv1alpha1.VersionInfo, error) {
 	if !r.usesCatalogue(consumer) {
-		return consumer.Status.AvailableReleases, nil
+		return nil, nil
 	}
 	sliceList := &releasecatalogue.ReleaseSliceList{}
 	if err := r.List(ctx, sliceList, client.InNamespace(consumer.Namespace),

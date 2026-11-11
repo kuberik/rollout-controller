@@ -573,6 +573,10 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 	if err := r.handleRetryAnnotation(ctx, rollout, log); err != nil {
 		return nil, nil, true, err
 	}
+	// An empty catalogue has no candidates: drop the ones an earlier read left.
+	if len(cat.releases) == 0 {
+		rollout.Status.Candidates = nil
+	}
 	// Ready=False/NoReleases was written while the catalogue was empty; releases
 	// are back, so Ready is derived from the history again, not left stuck.
 	if len(cat.releases) > 0 && restoreReadyAfterNoReleases(rollout) {

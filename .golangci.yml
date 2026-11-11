@@ -24,12 +24,15 @@ issues:
       linters:
         - gocyclo
       text: "of func `\\(\\*RolloutReconciler\\)\\.(Reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high"
-    # The release-list fields are deprecated for users, but the controller
-    # still reads them in list mode and dual-writes them in slices mode until
-    # they are removed.
+    # Deprecated Rollout fields that are still referenced until they are removed:
+    #   AvailableReleases, ReleaseCandidates, GatedReleaseCandidates: shapeReleaseStatus
+    #     clears them on every reconcile, and the tests assert they stay empty.
+    #   ReleasesImagePolicy: shapeReleaseStatus reads it to raise
+    #     ReleasesImagePolicyIgnored, and the tests set it.
+    # Nothing references AvailableReleasesRetentionDays or AvailableReleasesMinCount.
     - linters:
         - staticcheck
-      text: "SA1019: .*\\.(AvailableReleases|ReleaseCandidates|GatedReleaseCandidates|ReleasesImagePolicy|AvailableReleasesRetentionDays|AvailableReleasesMinCount) is deprecated"
+      text: "SA1019: .*\\.(AvailableReleases|ReleaseCandidates|GatedReleaseCandidates|ReleasesImagePolicy) is deprecated"
 linters:
   disable-all: true
   enable:

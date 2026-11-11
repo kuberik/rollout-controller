@@ -339,6 +339,17 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(tagsOf(got)).To(Equal([]string{"r0009", "r0010"}), "oldest first")
 	})
 
+	It("RolloutDependency evaluates no releases for a consumer without a releaseSourceRef, whatever status.availableReleases holds", func() {
+		consumer := &rolloutv1alpha1.Rollout{}
+		consumer.Namespace = ns
+		consumer.Name = "no-ref"
+		consumer.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: "stale1"}, {Tag: "stale2"}}
+		d := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
+		got, err := d.consumerReleases(ctx, consumer)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeEmpty(), "the deprecated status list is not a release source")
+	})
+
 	// m3: createdObserved releases carry an observed time, not a build time.
 	It("leaves VersionInfo.Created nil for createdObserved releases but still orders by the catalogue time", func() {
 		t0 := time.Now().UTC().Truncate(time.Second)
@@ -959,6 +970,28 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(k8sClient.Update(ctx, s)).To(Succeed())
 		Eventually(func() string { st, reason := readyOf("flap"); return string(st) + "/" + reason },
 			20*time.Second, 100*time.Millisecond).Should(Equal("True/BakeTimePassed"))
+	})
+
+	It("clears status.candidates when the catalogue is emptied and keeps Ready=False/NoReleases", func() {
+		createSource("src", true, 3, "r0003")
+		createSlice("src", 0, trainRels(3, time.Hour))
+		newRollout("emptied", true, trainRels(3, time.Hour), rolloutOpts{current: "r0001"})
+		newGate("emptied", nil, passing(false))
+		r, _ := newRecorderR(true)
+		got := reconcileOnce(r, "emptied")
+		Expect(got.Status.Candidates).NotTo(BeEmpty(), "precondition: candidates exist while the catalogue has releases")
+
+		s := &releasecatalogue.ReleaseSlice{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "src-00000"}, s)).To(Succeed())
+		s.Releases = []releasecatalogue.Release{}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+
+		got = reconcileOnce(r, "emptied")
+		Expect(got.Status.Candidates).To(BeEmpty(), "candidates name releases no longer in the catalogue")
+		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReady)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("NoReleases"))
 	})
 
 	It("a status-only change on a ReleaseSource enqueues its Rollouts and updates ReleaseSourceReady", func() {
