@@ -39,7 +39,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -61,7 +60,6 @@ func init() {
 	utilruntime.Must(kuberikcomv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(releasecatalogue.AddToScheme(scheme))
 	utilruntime.Must(sourcev1.AddToScheme(scheme))
-	utilruntime.Must(imagev1.AddToScheme(scheme))
 	utilruntime.Must(kustomizev1.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -77,11 +75,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	var dualWriteReleaseLists bool
 	var releaseCandidates int
-	flag.BoolVar(&dualWriteReleaseLists, "dual-write-release-lists", true,
-		"For Rollouts with spec.releaseSourceRef, keep writing the deprecated status.availableReleases, "+
-			"releaseCandidates and gatedReleaseCandidates.")
 	flag.IntVar(&releaseCandidates, "release-candidates", 20,
 		"For Rollouts with spec.releaseSourceRef, the number of newest releases kept in status.candidates (K).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -237,7 +231,6 @@ func main() {
 		&kuberikcomv1alpha1.RolloutSchedule{},
 		&kuberikcomv1alpha1.ClusterRolloutSchedule{},
 		&kuberikcomv1alpha1.RolloutDependency{},
-		&imagev1.ImagePolicy{},
 		&kustomizev1.Kustomization{},
 	}
 	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), required...); err != nil {
@@ -251,8 +244,7 @@ func main() {
 		Scheme: mgr.GetScheme(),
 		Clock:  &controller.RealClock{},
 
-		DualWriteReleaseLists: dualWriteReleaseLists,
-		ReleaseCandidates:     releaseCandidates,
+		ReleaseCandidates: releaseCandidates,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Rollout")
 		os.Exit(1)

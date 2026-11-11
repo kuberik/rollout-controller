@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -28,11 +28,11 @@ import (
 )
 
 func TestCheckRequiredKinds(t *testing.T) {
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{kuberikcomv1alpha1.GroupVersion, imagev1.GroupVersion})
+	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{kuberikcomv1alpha1.GroupVersion, kustomizev1.GroupVersion})
 	mapper.Add(kuberikcomv1alpha1.GroupVersion.WithKind("Rollout"), meta.RESTScopeNamespace)
-	mapper.Add(imagev1.GroupVersion.WithKind("ImagePolicy"), meta.RESTScopeNamespace)
+	mapper.Add(kustomizev1.GroupVersion.WithKind("Kustomization"), meta.RESTScopeNamespace)
 
-	if err := checkRequiredKinds(mapper, scheme, &kuberikcomv1alpha1.Rollout{}, &imagev1.ImagePolicy{}); err != nil {
+	if err := checkRequiredKinds(mapper, scheme, &kuberikcomv1alpha1.Rollout{}, &kustomizev1.Kustomization{}); err != nil {
 		t.Fatalf("all kinds served, expected nil, got %v", err)
 	}
 

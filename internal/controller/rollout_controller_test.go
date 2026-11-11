@@ -21,9 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/docker/cli/cli/config/configfile"
-	dockertypes "github.com/docker/cli/cli/config/types"
-	"github.com/google/go-containerregistry/pkg/authn"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -33,8 +30,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
-	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	k8sptr "k8s.io/utils/ptr"
 
@@ -61,7 +56,7 @@ var _ = Describe("Rollout Controller", func() {
 		var namespace string
 		var typeNamespacedName types.NamespacedName
 		var rollout *rolloutv1alpha1.Rollout
-		var imagePolicy *imagev1.ImagePolicy
+		var imagePolicy *testFeed
 		var bakeTime *metav1.Duration
 		var healthCheckSelector *rolloutv1alpha1.HealthCheckSelectorConfig
 
@@ -81,36 +76,7 @@ var _ = Describe("Rollout Controller", func() {
 				Namespace: namespace,
 			}
 
-			By("creating the ImagePolicy")
-			imagePolicy = &imagev1.ImagePolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				},
-				Spec: imagev1.ImagePolicySpec{
-					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-						Name: "test-image-repo",
-					},
-					Policy: imagev1.ImagePolicyChoice{
-						SemVer: &imagev1.SemVerPolicy{
-							Range: ">=0.1.0",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-
-			By("setting up ImagePolicy status")
-			imagePolicy.Status.Conditions = []metav1.Condition{
-				{
-					Type:               "Ready",
-					Status:             metav1.ConditionTrue,
-					LastTransitionTime: metav1.Now(),
-					Reason:             "Ready",
-					Message:            "ImagePolicy is ready",
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy = newTestFeed(namespace, "test-image-policy")
 
 			By("creating the custom resource for the Kind Rollout")
 			rollout = &rolloutv1alpha1.Rollout{
@@ -119,9 +85,7 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
+					ReleaseSourceRef:    &corev1.LocalObjectReference{Name: "test-image-policy"},
 					BakeTime:            bakeTime,
 					HealthCheckSelector: healthCheckSelector,
 				},
@@ -141,15 +105,13 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update deployment history after successful deployment", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_1_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_1_0)
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -170,8 +132,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(*updatedRollout.Status.History[0].Message).To(ContainSubstring("Automatic deployment"))
 
 			By("Updating ImagePolicy with a new version")
-			imagePolicy.Status.LatestRef.Tag = version0_2_0
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_2_0)
 
 			By("Reconciling the resources again")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -214,15 +175,13 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should assign auto-incrementing IDs to history entries", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version1_0_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("1.0.0")
 
 			By("Reconciling the resources to create first deployment")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -240,8 +199,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version1_0_0))
 
 			By("Deploying second version")
-			imagePolicy.Status.LatestRef.Tag = version2_0_0
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("2.0.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -260,8 +218,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[1].Version.Tag).To(Equal(version1_0_0))
 
 			By("Deploying third version")
-			imagePolicy.Status.LatestRef.Tag = version3_0_0
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("3.0.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -283,10 +240,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should continue incrementing IDs when history limit is reached", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version1_0_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("1.0.0")
 
 			By("Setting a custom history limit of 2")
 			rollout := &rolloutv1alpha1.Rollout{}
@@ -298,8 +252,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			// Deploy version 1.0.0
@@ -309,16 +264,14 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 2.0.0
-			imagePolicy.Status.LatestRef.Tag = version2_0_0
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("2.0.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 3.0.0 (should cause 1.0.0 to be removed due to limit)
-			imagePolicy.Status.LatestRef.Tag = version3_0_0
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("3.0.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -357,22 +310,20 @@ var _ = Describe("Rollout Controller", func() {
 					Timestamp: metav1.Now(),
 				},
 			}
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-				{Tag: version2_0_0},
-				{Tag: version1_0_0},
-			}
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+				{Tag: "2.0.0"},
+				{Tag: "1.0.0"},
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting up ImagePolicy with new release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version3_0_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("3.0.0")
 
 			By("Reconciling to create new deployment")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -396,10 +347,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should respect the history limit", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "0.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("0.1.0")
 
 			By("Setting a custom history limit of 3")
 			rollout := &rolloutv1alpha1.Rollout{}
@@ -411,8 +359,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			// Deploy version 0.1.0
@@ -422,24 +371,21 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 0.2.0
-			imagePolicy.Status.LatestRef.Tag = "0.2.0"
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("0.2.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 0.3.0
-			imagePolicy.Status.LatestRef.Tag = "0.3.0"
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("0.3.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Deploy version 0.4.0
-			imagePolicy.Status.LatestRef.Tag = "0.4.0"
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("0.4.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -469,17 +415,15 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			// Deploy 11 versions to exceed the default limit of 10
 			for i := 1; i <= 11; i++ {
 				version := fmt.Sprintf("0.%d.0", i)
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version)
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: typeNamespacedName,
 				})
@@ -501,11 +445,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should respect the wanted version override", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
 				{Tag: version0_3_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting a specific wanted version")
@@ -518,8 +462,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -556,10 +501,7 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should use custom deployment message when annotation is provided", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_1_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_1_0)
 
 			By("Setting wanted version with custom message annotation")
 			rollout := &rolloutv1alpha1.Rollout{}
@@ -575,8 +517,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -597,15 +540,13 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should update available releases in status", func() {
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_1_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_1_0)
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -623,10 +564,7 @@ var _ = Describe("Rollout Controller", func() {
 			}))
 
 			By("Setting up ImagePolicy with a release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_2_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_2_0)
 
 			By("Reconciling the resources")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -651,16 +589,13 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			// The currently-deployed version must be present in AvailableReleases for
 			// release-candidate computation to find newer releases.
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: "0.0.9"},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting up ImagePolicy with initial release")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_1_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_1_0)
 
 			// Create a gate that is not passing (blocks all releases)
 			blockingGate := &rolloutv1alpha1.RolloutGate{
@@ -678,8 +613,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -696,10 +632,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_1_0}))
 
 			By("Adding more releases to ImagePolicy")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_2_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_2_0)
 
 			By("Reconciling again to pick up the new release")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -720,10 +653,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should allow any wanted version to be set regardless of available releases", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Setting a wanted version that is not in available releases")
@@ -736,8 +669,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -755,15 +689,13 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should support rollback to a previous version", func() {
 			By("Updating image policy with version 0.1.0")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_1_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_1_0)
 
 			By("Reconciling the resources to deploy version 0.1.0")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -778,10 +710,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
 
 			By("Publishing version 0.2.0")
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: version0_2_0,
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish(version0_2_0)
 
 			By("Reconciling to deploy version 0.2.0")
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -820,14 +749,14 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should deploy the latest release if there are no gates", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Reconciling the resources")
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -841,11 +770,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should only deploy versions allowed by a passing gate with allowedVersions", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
 				{Tag: version0_3_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -857,7 +786,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -879,10 +808,10 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 			}
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -894,7 +823,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -911,11 +840,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should only deploy intersection of allowedVersions from multiple passing gates", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
 				{Tag: version0_3_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate1 := &rolloutv1alpha1.RolloutGate{
@@ -938,7 +867,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -956,10 +885,10 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 			}
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -972,7 +901,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -987,11 +916,11 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should ignore gates if wantedVersion is set", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
 				{Tag: version0_3_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			rolloutWithWanted := &rolloutv1alpha1.Rollout{}
@@ -1010,7 +939,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1024,10 +953,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should deploy the latest release if a single passing gate has no allowedVersions", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -1039,7 +968,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1056,10 +985,10 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 			}
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			gate1 := &rolloutv1alpha1.RolloutGate{
@@ -1080,7 +1009,7 @@ var _ = Describe("Rollout Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gate2)).To(Succeed())
 
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1098,8 +1027,7 @@ var _ = Describe("Rollout Controller", func() {
 		When("performing the first deploy with an empty history", func() {
 			It("should deploy the initial version despite a non-passing gate", func() {
 				By("Setting up ImagePolicy with the initial release")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Creating a gate that is not passing (would block all releases)")
 				gate := &rolloutv1alpha1.RolloutGate{
@@ -1112,7 +1040,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1125,8 +1053,7 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should fall back to raw release candidates when a passing gate filters out every candidate", func() {
 				By("Setting up ImagePolicy with the initial release")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Creating a passing gate that allows only an unavailable version")
 				gate := &rolloutv1alpha1.RolloutGate{
@@ -1140,7 +1067,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1175,11 +1102,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Setting up ImagePolicy with the initial release")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1193,10 +1119,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should patch Kustomization with rollout-specific substitute annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a Kustomization with rollout-specific annotation")
@@ -1226,7 +1152,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
 
 			By("Reconciling the resources")
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1246,10 +1172,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should patch OCIRepository with rollout annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating an OCIRepository with rollout annotation")
@@ -1272,7 +1198,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, ociRepo)).To(Succeed())
 
 			By("Reconciling the resources")
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1292,10 +1218,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should not patch OCIRepository with non-matching rollout annotation", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating an OCIRepository with different rollout annotation")
@@ -1318,7 +1244,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, ociRepo)).To(Succeed())
 
 			By("Reconciling the resources")
-			controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1334,83 +1260,6 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updatedRollout.Status.History).To(HaveLen(1))
 			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
-		})
-
-		It("should find rollouts that reference a given ImagePolicy", func() {
-			By("Creating multiple rollouts with different ImagePolicy references")
-			rollout1 := &rolloutv1alpha1.Rollout{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "rollout-1",
-					Namespace: namespace,
-				},
-				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, rollout1)).To(Succeed())
-
-			rollout2 := &rolloutv1alpha1.Rollout{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "rollout-2",
-					Namespace: namespace,
-				},
-				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, rollout2)).To(Succeed())
-
-			rollout3 := &rolloutv1alpha1.Rollout{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "rollout-3",
-					Namespace: namespace,
-				},
-				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "other-image-policy",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, rollout3)).To(Succeed())
-
-			By("Creating the ImagePolicy")
-			imagePolicy := &imagev1.ImagePolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				},
-				Spec: imagev1.ImagePolicySpec{
-					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-						Name: "test-image-repo",
-					},
-					Policy: imagev1.ImagePolicyChoice{
-						SemVer: &imagev1.SemVerPolicy{
-							Range: ">=0.1.0",
-						},
-					},
-				},
-			}
-
-			By("Testing the findRolloutsForImagePolicy function")
-			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			requests := controllerReconciler.findRolloutsForImagePolicy(ctx, imagePolicy)
-			Expect(requests).To(HaveLen(3)) // test-resource, rollout-1, rollout-2
-
-			// Verify that the correct rollouts are found
-			rolloutNames := make([]string, len(requests))
-			for i, req := range requests {
-				rolloutNames[i] = req.NamespacedName.Name
-			}
-			Expect(rolloutNames).To(ContainElements("test-resource", "rollout-1", "rollout-2"))
-			Expect(rolloutNames).NotTo(ContainElement("rollout-3"))
 		})
 
 		When("using bake time and health check selector", func() {
@@ -1446,11 +1295,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment when status is Deploying (minimal case)", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1464,10 +1310,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Attempting to deploy new version while status is Deploying")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1482,11 +1325,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment if bake is in progress", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1512,10 +1352,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Advancing clock within bake window and ensuring no health errors")
 				fakeClock.Add(1 * time.Minute) // Still within bake window
@@ -1534,11 +1371,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when rollout is in progress", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1564,10 +1398,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Advancing clock within bake window and ensuring no health errors")
 				fakeClock.Add(1 * time.Minute) // Still within bake window
@@ -1593,11 +1424,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when rollout is in deploying status", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1609,10 +1437,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeStartTime).To(BeNil()) // Bake hasn't started yet
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Reconciling while bake is deploying")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1632,11 +1457,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should populate release candidates when bake status changes to failed", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1660,10 +1482,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Simulating health check error to cause bake to fail")
 				fakeClock.Add(2 * time.Minute) // Still within bake window
@@ -1690,11 +1509,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should block new deployment if previous bake failed", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1720,10 +1536,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Advancing clock within bake window and simulating health check error")
 				fakeClock.Add(2 * time.Minute) // Still within bake window
@@ -1744,12 +1557,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment if previous bake succeeded", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1775,10 +1585,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing and deploying a new image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Advancing clock past bake window and ensuring no recent health errors")
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
@@ -1801,11 +1608,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow wantedVersion override regardless of bake status", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1831,10 +1635,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Setting wantedVersion and advancing clock within bake window")
 				rollout.Spec.WantedVersion = k8sptr.To(version0_2_0)
@@ -1856,11 +1657,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing in-progress bake when deploying new version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1886,10 +1684,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Attempting to deploy new version while bake is in progress")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -1904,11 +1699,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment after bake time completes", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -1920,10 +1712,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 				By("Setting healthcheck to healthy and starting bake for first deployment")
 				deployTime := rollout.Status.History[0].Timestamp
 				Expect(deployTime).NotTo(BeNil())
@@ -1975,11 +1764,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow new deployment if bake succeeded and LastErrorTime is nil", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2005,10 +1791,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Pushing a new deployment image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Advancing clock past bake window and ensuring LastErrorTime is nil")
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
@@ -2029,11 +1812,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle health check errors that occur exactly at deployment time", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2088,11 +1868,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2144,11 +1921,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle health check errors that occur before deployment time", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2190,11 +1964,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should fail bake when health check errors occur during deploying phase (before bake starts)", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2232,11 +2003,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2263,11 +2031,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record failed health checks when health check errors occur during deploying phase", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2300,9 +2065,8 @@ var _ = Describe("Rollout Controller", func() {
 			})
 
 			It("snapshots health check observations into the failed record and keeps them after recovery", func() {
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: version0_1_0}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2343,11 +2107,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record failed health checks when health check errors occur after bake starts", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2404,11 +2165,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Create(ctx, healthCheck2)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2462,11 +2220,8 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2501,11 +2256,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record health checks without messages when message is nil", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2535,11 +2287,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle requeue timing correctly during bake process", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2576,11 +2325,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should handle bake status transitions correctly", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2626,13 +2372,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Reconciling the wanted version deployment")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2668,13 +2411,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Pushing the wanted version to ImagePolicy")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("First reconcile: deploys wanted version, bake status = Deploying (health checks not healthy yet)")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2701,11 +2441,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing deploying bake when deploying new version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2721,10 +2458,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Deploying wanted version which should cancel the deploying bake")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -2747,11 +2481,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should cancel existing in-progress bake when deploying wanted version", func() {
 				By("Pushing and deploying an initial image")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				imagePolicy.Publish(version0_1_0)
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2781,10 +2512,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with the wanted version")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Deploying wanted version which should cancel the in-progress bake")
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -2860,21 +2588,18 @@ var _ = Describe("Rollout Controller", func() {
 				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 				}
-				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}...)
 				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 				By("Setting image policy to a newer version")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Setting health check to unhealthy status")
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2886,17 +2611,14 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should allow automatic deployment when health check is healthy", func() {
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Ensuring health check is healthy")
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2908,10 +2630,10 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should bypass health checks for manual deployments (wantedVersion)", func() {
 				By("Setting available releases")
-				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 					{Tag: version0_1_0},
 					{Tag: version0_2_0},
-				}
+				}...)
 				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 				By("Setting health check to unhealthy")
@@ -2923,7 +2645,7 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2935,17 +2657,14 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should not block deployment when health check has pending status", func() {
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Setting health check to pending status (not unhealthy)")
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusPending
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2961,13 +2680,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
 
 				By("Setting image policy status")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_1_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_1_0)
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -2983,7 +2699,7 @@ var _ = Describe("Rollout Controller", func() {
 				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 				}
-				rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}}...)
 				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 				By("Creating a second health check")
@@ -3007,13 +2723,10 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Setting image policy to a newer version")
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version0_2_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+				imagePolicy.Publish(version0_2_0)
 
 				By("Reconciling")
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -3026,10 +2739,10 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should bypass gates when bypass-gates annotation is set", func() {
 			By("Setting available releases")
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_2_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a blocking gate")
@@ -3054,8 +2767,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -3099,10 +2813,10 @@ var _ = Describe("Rollout Controller", func() {
 			rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
 				{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
 			}
-			rollout.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
 				{Tag: version0_1_0},
 				{Tag: version0_3_0},
-			}
+			}...)
 			Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
 
 			By("Creating a blocking gate")
@@ -3127,8 +2841,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -3165,10 +2880,8 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
@@ -3194,8 +2907,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Reconcile - should not deploy due to blocking gate
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -3233,10 +2947,8 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -3253,15 +2965,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "1.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("1.1.0")
 
 			// Reconcile - should deploy despite failed bake status due to unblock annotation
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -3303,10 +3013,8 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{
@@ -3323,15 +3031,13 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, combinedRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "1.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("1.1.0")
 
 			// Reconcile - should deploy despite failed bake status and gates due to both annotations
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -3365,73 +3071,59 @@ var _ = Describe("Rollout Controller", func() {
 		Context("Force Deploy Annotation", func() {
 			It("should force deploy version and cancel current deployment when force-deploy annotation is set", func() {
 				By("Setting up a rollout with in-progress bake")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				forceDeployRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "force-deploy-rollout",
 						Namespace: namespace,
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version3_0_0},
-							{Tag: version2_0_0},
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, forceDeployRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, forceDeployRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with multiple releases")
 				// Get the existing ImagePolicy and update it with multiple releases
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with multiple releases
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version3_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("3.0.0")
 
 				// Update to add more releases
-				imagePolicy.Status.LatestRef.Tag = version2_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version1_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version3_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("3.0.0")
 
 				By("Updating rollout status with all available releases")
 				// Update the rollout status to include all available releases
 				var rolloutToUpdate rolloutv1alpha1.Rollout
-				err = k8sClient.Get(ctx, types.NamespacedName{
+				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "force-deploy-rollout",
 					Namespace: namespace,
 				}, &rolloutToUpdate)
 				Expect(err).NotTo(HaveOccurred())
 
-				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-					{Tag: version3_0_0},
-					{Tag: version2_0_0},
-					{Tag: version1_0_0},
-				}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
 
 				By("Creating initial deployment")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
 				// First reconciliation to create initial deployment
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -3515,6 +3207,11 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should use custom deploy message when deploy-message annotation is provided", func() {
 				By("Setting up a rollout with force-deploy and custom message annotations")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				customMessageRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "custom-message-rollout",
@@ -3525,64 +3222,45 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version3_0_0},
-							{Tag: version2_0_0},
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, customMessageRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, customMessageRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with multiple releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with multiple releases
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version3_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("3.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version2_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version1_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version3_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("3.0.0")
 
 				By("Updating rollout status with all available releases")
 				var rolloutToUpdate rolloutv1alpha1.Rollout
-				err = k8sClient.Get(ctx, types.NamespacedName{
+				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      "custom-message-rollout",
 					Namespace: namespace,
 				}, &rolloutToUpdate)
 				Expect(err).NotTo(HaveOccurred())
 
-				rolloutToUpdate.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-					{Tag: version3_0_0},
-					{Tag: version2_0_0},
-					{Tag: version1_0_0},
-				}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				Expect(k8sClient.Status().Update(ctx, &rolloutToUpdate)).To(Succeed())
 
 				By("Creating initial deployment")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
 				// First reconciliation to create initial deployment
 				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -3624,6 +3302,10 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should fail when force-deploy version is not in next available releases", func() {
 				By("Setting up a rollout with force-deploy annotation for unavailable version")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				forceDeployRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "force-deploy-unavailable-rollout",
@@ -3633,44 +3315,28 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version2_0_0},
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, forceDeployRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, forceDeployRollout)).To(Succeed())
 
 				By("Updating ImagePolicy with releases (but not 3.0.0)")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases (but not 3.0.0)
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version2_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version1_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling with force-deploy annotation")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "force-deploy-unavailable-rollout",
 						Namespace: namespace,
@@ -3696,6 +3362,10 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should prioritize WantedVersion over force-deploy annotation", func() {
 				By("Setting up a rollout with both WantedVersion and force-deploy annotation")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				priorityRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "priority-test-rollout",
@@ -3705,45 +3375,29 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						WantedVersion: stringPtr(version1_0_0), // This should take priority
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						WantedVersion:    stringPtr("1.0.0"), // This should take priority
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version2_0_0},
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, priorityRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, priorityRollout)).To(Succeed())
 
 				By("Updating ImagePolicy with releases")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version2_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
-				imagePolicy.Status.LatestRef.Tag = version1_0_0
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling with both WantedVersion and force-deploy annotation")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "priority-test-rollout",
 						Namespace: namespace,
@@ -3770,6 +3424,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should clear deploy-message annotation when WantedVersion is used", func() {
 				By("Setting up a rollout with WantedVersion and deploy-message annotation")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				}...)
 				wantedVersionRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "wanted-version-message-rollout",
@@ -3779,41 +3436,27 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						WantedVersion: stringPtr(version1_0_0),
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						WantedVersion:    stringPtr("1.0.0"),
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, wantedVersionRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, wantedVersionRollout)).To(Succeed())
 
 				By("Updating ImagePolicy with releases")
 				// Get the existing ImagePolicy and update it with releases
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
 				// Set up ImagePolicy status with releases
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version1_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling with WantedVersion and deploy-message annotation")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "wanted-version-message-rollout",
 						Namespace: namespace,
@@ -3840,6 +3483,11 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record user-triggered deployment with deploy-user annotation (force deploy)", func() {
 				By("Setting up a rollout with force-deploy and deploy-user annotations")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "3.0.0"},
+					{Tag: "2.0.0"},
+					{Tag: "1.0.0"},
+				}...)
 				userTriggeredRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "user-triggered-force-deploy-rollout",
@@ -3850,40 +3498,24 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version3_0_0},
-							{Tag: version2_0_0},
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, userTriggeredRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version2_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
 				By("Reconciling with force-deploy and deploy-user annotations")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "user-triggered-force-deploy-rollout",
 						Namespace: namespace,
@@ -3911,6 +3543,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record user-triggered deployment with deploy-user annotation (wanted version)", func() {
 				By("Setting up a rollout with WantedVersion and deploy-user annotation")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				}...)
 				userTriggeredRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "user-triggered-wanted-version-rollout",
@@ -3920,39 +3555,25 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						WantedVersion: stringPtr(version1_0_0),
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						WantedVersion:    stringPtr("1.0.0"),
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, userTriggeredRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, userTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version1_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling with WantedVersion and deploy-user annotation")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "user-triggered-wanted-version-rollout",
 						Namespace: namespace,
@@ -3980,47 +3601,33 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should record system-triggered deployment when no deploy-user annotation is present", func() {
 				By("Setting up a rollout without deploy-user annotation (automatic deployment)")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				}...)
 				systemTriggeredRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "system-triggered-rollout",
 						Namespace: namespace,
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, systemTriggeredRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, systemTriggeredRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version1_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling without deploy-user annotation (automatic deployment)")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "system-triggered-rollout",
 						Namespace: namespace,
@@ -4049,6 +3656,9 @@ var _ = Describe("Rollout Controller", func() {
 				// automatic deployment must NOT be attributed to that user, and the stale
 				// annotation must be cleared so it doesn't keep mislabeling deployments.
 				By("Setting up a rollout with a stale deploy-user/deploy-message but no manual deployment")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				}...)
 				staleAnnotationRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "stale-deploy-user-rollout",
@@ -4059,41 +3669,24 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-						GatedReleaseCandidates: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, staleAnnotationRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, staleAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version1_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling (automatic deployment) with a stale deploy-user present")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "stale-deploy-user-rollout",
 						Namespace: namespace,
@@ -4122,6 +3715,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should clear deploy-user annotation when force deploy is used", func() {
 				By("Setting up a rollout with force-deploy and deploy-user annotations")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "2.0.0"},
+				}...)
 				clearAnnotationRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "clear-deploy-user-force-rollout",
@@ -4133,38 +3729,24 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version2_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, clearAnnotationRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version2_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("2.0.0")
 
 				By("Reconciling with force-deploy annotation")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "clear-deploy-user-force-rollout",
 						Namespace: namespace,
@@ -4188,6 +3770,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			It("should clear deploy-user annotation when WantedVersion is used", func() {
 				By("Setting up a rollout with WantedVersion and deploy-user annotation")
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: "1.0.0"},
+				}...)
 				clearAnnotationRollout := &rolloutv1alpha1.Rollout{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "clear-deploy-user-wanted-rollout",
@@ -4198,39 +3783,25 @@ var _ = Describe("Rollout Controller", func() {
 						},
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
-						WantedVersion: stringPtr(version1_0_0),
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+						WantedVersion:    stringPtr("1.0.0"),
 					},
-					Status: rolloutv1alpha1.RolloutStatus{
-						AvailableReleases: []rolloutv1alpha1.VersionInfo{
-							{Tag: version1_0_0},
-						},
-					},
+					Status: rolloutv1alpha1.RolloutStatus{},
 				}
 				Expect(k8sClient.Create(ctx, clearAnnotationRollout)).To(Succeed())
 				Expect(k8sClient.Status().Update(ctx, clearAnnotationRollout)).To(Succeed())
 
 				By("Setting up ImagePolicy with releases")
-				var imagePolicy imagev1.ImagePolicy
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "test-image-policy",
-					Namespace: namespace,
-				}, &imagePolicy)
-				Expect(err).NotTo(HaveOccurred())
 
-				imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-					Tag: version1_0_0,
-				}
-				Expect(k8sClient.Status().Update(ctx, &imagePolicy)).To(Succeed())
+				imagePolicy.Publish("1.0.0")
 
 				By("Reconciling with WantedVersion")
 				controllerReconciler := &RolloutReconciler{
-					Client: k8sClient,
-					Scheme: k8sClient.Scheme(),
+					CatalogueAvailable: true,
+					Client:             k8sClient,
+					Scheme:             k8sClient.Scheme(),
 				}
-				_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      "clear-deploy-user-wanted-rollout",
 						Namespace: namespace,
@@ -4254,25 +3825,23 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should continue status updates even when deployment is blocked by failed bake status", func() {
 			// Create a fresh rollout with failed bake status (no unblock annotation)
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+				{Tag: "1.0.0"},
+			}...)
 			freshRollout := &rolloutv1alpha1.Rollout{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "status-update-test-rollout",
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 			Expect(k8sClient.Create(ctx, freshRollout)).To(Succeed())
 
 			// Update the status separately since status is ignored during creation
 			freshRollout.Status = rolloutv1alpha1.RolloutStatus{
-				AvailableReleases: []rolloutv1alpha1.VersionInfo{
-					{Tag: version1_0_0},
-				},
 				History: []rolloutv1alpha1.DeploymentHistoryEntry{
 					{
 						Version:       rolloutv1alpha1.VersionInfo{Tag: version1_0_0},
@@ -4286,10 +3855,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, freshRollout)).To(Succeed())
 
 			// Set up ImagePolicy with a new release
-			imagePolicy.Status.LatestRef = &imagev1.ImageRef{
-				Tag: "1.1.0",
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			imagePolicy.Publish("1.1.0")
 
 			// Create a gate that should be evaluated
 			gate := &rolloutv1alpha1.RolloutGate{
@@ -4308,8 +3874,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Reconcile - should update status but block deployment
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -4345,25 +3912,23 @@ var _ = Describe("Rollout Controller", func() {
 
 		It("should return empty release candidates when custom version is deployed", func() {
 			// Create a rollout with a custom version that's not in available releases
+			imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+				{Tag: "1.1.0"}, // Only newer releases available
+				{Tag: "1.2.0"},
+			}...)
 			customRollout := &rolloutv1alpha1.Rollout{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "custom-version-rollout",
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, customRollout)).To(Succeed())
 
 			// Set up status with a custom version in history that's not in available releases
 			customRollout.Status = rolloutv1alpha1.RolloutStatus{
-				AvailableReleases: []rolloutv1alpha1.VersionInfo{
-					{Tag: "1.1.0"}, // Only newer releases available
-					{Tag: "1.2.0"},
-				},
 				History: []rolloutv1alpha1.DeploymentHistoryEntry{
 					{
 						Version:       rolloutv1alpha1.VersionInfo{Tag: "custom-v1.0.0"}, // Custom version not in available releases
@@ -4378,8 +3943,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			// Reconcile
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -4411,9 +3977,10 @@ var _ = Describe("Rollout Controller", func() {
 		BeforeEach(func() {
 			fakeClock = NewFakeClock()
 			controllerReconciler = &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Clock:  fakeClock,
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				Clock:              fakeClock,
 			}
 
 			// Create a namespace for helper method tests
@@ -4649,9 +4216,7 @@ var _ = Describe("Rollout Controller", func() {
 						Namespace: helperNamespace, // Use the helper test namespace
 					},
 					Spec: rolloutv1alpha1.RolloutSpec{
-						ReleasesImagePolicy: corev1.LocalObjectReference{
-							Name: "test-image-policy",
-						},
+						ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					},
 				}
 
@@ -4709,7 +4274,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(BeNumerically(">", 0))
@@ -4731,7 +4296,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(BeNumerically(">", 0))
@@ -4749,7 +4314,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(Equal(10 * time.Second))
@@ -4765,7 +4330,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(Equal(10 * time.Second))
@@ -4786,7 +4351,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				}
 
-				controllerReconciler := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+				controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 				requeueAfter := controllerReconciler.calculateRequeueTime(rollout)
 
 				Expect(requeueAfter).To(Equal(10 * time.Second))
@@ -4935,9 +4500,10 @@ var _ = Describe("Rollout Controller", func() {
 			ctx = context.Background()
 			fakeClock = NewFakeClock()
 			controllerReconciler = &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Clock:  fakeClock,
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				Clock:              fakeClock,
 			}
 
 			ns := &corev1.Namespace{
@@ -4954,11 +4520,9 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime:      &metav1.Duration{Duration: 5 * time.Minute},
-					DeployTimeout: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
+					DeployTimeout:    &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 		})
@@ -5103,7 +4667,6 @@ var _ = Describe("Rollout Controller", func() {
 	Describe("Enhanced HealthCheckSelector", func() {
 		var namespace1, namespace2, namespace3 string
 		var rollout *rolloutv1alpha1.Rollout
-		var imagePolicy *imagev1.ImagePolicy
 
 		BeforeEach(func() {
 			By("creating test namespaces")
@@ -5143,36 +4706,7 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(k8sClient.Create(ctx, ns3)).To(Succeed())
 			namespace3 = ns3.Name
 
-			By("creating the ImagePolicy")
-			imagePolicy = &imagev1.ImagePolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-image-policy",
-					Namespace: namespace1,
-				},
-				Spec: imagev1.ImagePolicySpec{
-					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-						Name: "test-image-repo",
-					},
-					Policy: imagev1.ImagePolicyChoice{
-						SemVer: &imagev1.SemVerPolicy{
-							Range: ">=0.1.0",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-
-			By("setting up ImagePolicy status")
-			imagePolicy.Status.Conditions = []metav1.Condition{
-				{
-					Type:               "Ready",
-					Status:             metav1.ConditionTrue,
-					LastTransitionTime: metav1.Now(),
-					Reason:             "Ready",
-					Message:            "ImagePolicy is ready",
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+			_ = newTestFeed(namespace1, "test-image-policy")
 
 			By("creating the Rollout")
 			rollout = &rolloutv1alpha1.Rollout{
@@ -5181,10 +4715,8 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace1,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
-					BakeTime: &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				},
 			}
 		})
@@ -5242,8 +4774,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("verifying that only matching HealthChecks are selected")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			// Simulate deployment by setting history - bake hasn't started yet
@@ -5538,8 +5071,8 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace1,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
-					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "my-app"},
@@ -5558,8 +5091,8 @@ var _ = Describe("Rollout Controller", func() {
 					Namespace: namespace2,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
-					BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
+					BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"app": "other-app"},
@@ -5584,8 +5117,9 @@ var _ = Describe("Rollout Controller", func() {
 
 			By("verifying that findRolloutsForHealthCheck finds the correct rollouts")
 			controllerReconciler := &RolloutReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				CatalogueAvailable: true,
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
 			}
 
 			requests := controllerReconciler.findRolloutsForHealthCheck(ctx, healthCheck)
@@ -5615,222 +5149,6 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(foundRollout2).To(BeFalse(), "rollout-2 should not be found due to different app label")
 		})
 
-	})
-
-	Context("OCI Annotation Parsing", func() {
-		var (
-			reconciler *RolloutReconciler
-			ctx        context.Context
-			namespace  string
-		)
-
-		BeforeEach(func() {
-			reconciler = &RolloutReconciler{
-				Client: k8sClient,
-			}
-			ctx = context.Background()
-
-			By("creating a unique namespace for the test")
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "oci-test-ns-",
-				},
-			}
-			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
-			namespace = ns.Name
-		})
-
-		Context("getImageRepositoryAuthentication", func() {
-			It("should return default keychain when no secret is configured", func() {
-				// Create ImagePolicy without secret
-				imagePolicy := &imagev1.ImagePolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-policy",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImagePolicySpec{
-						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-							Name: "test-repo",
-						},
-					},
-				}
-
-				// Create ImageRepository without secret
-				imageRepo := &imagev1.ImageRepository{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-repo",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImageRepositorySpec{
-						Image: "test-registry.com/test/image",
-					},
-				}
-
-				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-				Expect(k8sClient.Create(ctx, imageRepo)).To(Succeed())
-
-				keychain, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(keychain).ToNot(BeNil())
-			})
-
-			It("should return dockerConfigKeychain when secret is configured", func() {
-				// Create secret with docker config
-				dockerConfig := `{
-					"auths": {
-						"test-registry.com": {
-							"username": "testuser",
-							"password": "testpass"
-						}
-					}
-				}`
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-secret",
-						Namespace: namespace,
-					},
-					Type: corev1.SecretTypeDockerConfigJson,
-					Data: map[string][]byte{
-						".dockerconfigjson": []byte(dockerConfig),
-					},
-				}
-
-				// Create ImagePolicy with secret
-				imagePolicy := &imagev1.ImagePolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-policy",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImagePolicySpec{
-						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-							Name: "test-repo",
-						},
-					},
-				}
-
-				// Create ImageRepository with secret
-				imageRepo := &imagev1.ImageRepository{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-repo",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImageRepositorySpec{
-						Image: "test-registry.com/test/image",
-						SecretRef: &fluxmeta.LocalObjectReference{
-							Name: "test-secret",
-						},
-					},
-				}
-
-				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-				Expect(k8sClient.Create(ctx, imageRepo)).To(Succeed())
-
-				keychain, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(keychain).ToNot(BeNil())
-
-				// Verify it's a dockerConfigKeychain
-				_, ok := keychain.(*dockerConfigKeychain)
-				Expect(ok).To(BeTrue())
-			})
-
-			It("should return error when ImageRepository is not found", func() {
-				imagePolicy := &imagev1.ImagePolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-policy",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImagePolicySpec{
-						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-							Name: "nonexistent-repo",
-						},
-					},
-				}
-
-				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-
-				_, err := reconciler.getImageRepositoryAuthentication(ctx, imagePolicy)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("failed to get ImageRepository"))
-			})
-		})
-
-		Context("parseOCIManifest", func() {
-			It("should handle invalid image references gracefully", func() {
-				// Create a minimal ImagePolicy for testing
-				imagePolicy := &imagev1.ImagePolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-policy",
-						Namespace: namespace,
-					},
-					Spec: imagev1.ImagePolicySpec{
-						ImageRepositoryRef: fluxmeta.NamespacedObjectReference{
-							Name: "nonexistent-repo",
-						},
-					},
-				}
-
-				Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-
-				// Test with invalid image reference to trigger error path
-				meta, err := reconciler.parseOCIManifest(ctx, "invalid-image-ref", imagePolicy)
-				Expect(err).To(HaveOccurred())
-				Expect(meta.Version).To(BeNil())
-				Expect(meta.Revision).To(BeNil())
-				Expect(meta.ArtifactType).To(BeNil())
-				Expect(meta.Source).To(BeNil())
-				Expect(meta.Title).To(BeNil())
-				Expect(meta.Description).To(BeNil())
-				Expect(meta.Created).To(BeNil())
-				Expect(meta.Requires).To(BeNil())
-			})
-		})
-
-		Context("dockerConfigKeychain", func() {
-			It("should resolve authentication for matching registry", func() {
-				// Create a mock config file
-				configFile := &configfile.ConfigFile{
-					AuthConfigs: map[string]dockertypes.AuthConfig{
-						"test-registry.com": {
-							Username: "testuser",
-							Password: "testpass",
-						},
-					},
-				}
-
-				keychain := &dockerConfigKeychain{config: configFile}
-
-				// Create a mock resource
-				resource := &mockResource{registry: "test-registry.com"}
-				auth, err := keychain.Resolve(resource)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(auth).ToNot(BeNil())
-
-				// Verify it's not anonymous (should have credentials)
-				Expect(auth).ToNot(Equal(authn.Anonymous))
-			})
-
-			It("should return anonymous authenticator for non-matching registry", func() {
-				configFile := &configfile.ConfigFile{
-					AuthConfigs: map[string]dockertypes.AuthConfig{
-						"other-registry.com": {
-							Username: "testuser",
-							Password: "testpass",
-						},
-					},
-				}
-
-				keychain := &dockerConfigKeychain{config: configFile}
-				resource := &mockResource{registry: "test-registry.com"}
-				auth, err := keychain.Resolve(resource)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(auth).ToNot(BeNil())
-
-				// Should be anonymous authenticator
-				Expect(auth).To(Equal(authn.Anonymous))
-			})
-		})
 	})
 
 })
@@ -5958,19 +5276,6 @@ func NewFakeClock() *FakeClock {
 	}
 }
 
-// mockResource implements authn.Resource for testing
-type mockResource struct {
-	registry string
-}
-
-func (m *mockResource) RegistryStr() string {
-	return m.registry
-}
-
-func (m *mockResource) String() string {
-	return m.registry
-}
-
 var _ = Describe("Rollout gated by a RolloutDependency", func() {
 	// Exercises both controllers against the same pair of Rollouts: the
 	// dependency controller decides which consumer releases are admissible and
@@ -5991,31 +5296,16 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		rolloutReconciler    *RolloutReconciler
 	)
 
-	newImagePolicy := func(name, latestTag string) {
-		policy := &imagev1.ImagePolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec: imagev1.ImagePolicySpec{
-				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "test-image-repo"},
-				Policy: imagev1.ImagePolicyChoice{
-					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.1"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.LatestRef = &imagev1.ImageRef{Tag: latestTag}
-		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
-	}
-
 	// newRollout creates a Rollout whose history already holds deployedTag, so
 	// that gate evaluation applies — a Rollout with no history deploys its
 	// newest release regardless of gates.
 	newRollout := func(name, deployedTag, deployedVersion string, available []rolloutv1alpha1.VersionInfo) *rolloutv1alpha1.Rollout {
-		newImagePolicy(name, available[len(available)-1].Tag)
+		newTestFeed(namespace, name).PublishInfo(available...)
 
 		rollout := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: name},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: name},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
@@ -6025,7 +5315,6 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		if deployedVersion != "" {
 			deployed.Version = &deployedVersion
 		}
-		rollout.Status.AvailableReleases = available
 		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
 			Version:    deployed,
 			Timestamp:  metav1.Now(),
@@ -6060,8 +5349,8 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		dependencyReconciler = &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		rolloutReconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}
+		dependencyReconciler = &RolloutDependencyReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
+		rolloutReconciler = &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}
 
 		By("deploying a provider that serves contract api 1.0.0")
 		newRollout(providerName, "provider-1", "1.0.0-1", []rolloutv1alpha1.VersionInfo{

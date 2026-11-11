@@ -349,15 +349,15 @@ var _ = Describe("RolloutDependency Controller", func() {
 	// newRollout creates a Rollout carrying the given available releases, and
 	// optionally a successfully deployed history entry.
 	newRollout := func(name string, releases []kuberikcomv1alpha1.VersionInfo, deployed *kuberikcomv1alpha1.VersionInfo) *kuberikcomv1alpha1.Rollout {
+		newTestFeed(namespace, name).PublishInfo(releases...)
 		rollout := &kuberikcomv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: kuberikcomv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: name},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: name},
 			},
 		}
 		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
 
-		rollout.Status.AvailableReleases = releases
 		if deployed != nil {
 			succeeded := kuberikcomv1alpha1.BakeStatusSucceeded
 			rollout.Status.History = []kuberikcomv1alpha1.DeploymentHistoryEntry{{
@@ -418,8 +418,9 @@ var _ = Describe("RolloutDependency Controller", func() {
 		})).To(Succeed())
 
 		reconciler = &RolloutDependencyReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
+			CatalogueAvailable: true,
+			Client:             k8sClient,
+			Scheme:             k8sClient.Scheme(),
 		}
 	})
 

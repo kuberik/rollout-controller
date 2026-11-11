@@ -38,6 +38,14 @@ const (
 	reasonCatalogueUnavailable = "ReleaseCatalogueUnavailable"
 	reasonSourceNotFound       = "ReleaseSourceNotFound"
 	reasonSourceNotReady       = "ReleaseSourceNotReady"
+	reasonImagePolicyIgnored   = "ReleasesImagePolicyIgnored"
+	reasonSourceRequired       = "ReleaseSourceRequired"
+
+	messageImagePolicyIgnored = "spec.releasesImagePolicy is deprecated and ignored; it will be removed in the next release. " +
+		"Releases are read from the ReleaseSource named by spec.releaseSourceRef"
+	messageSourceRequired = "spec.releaseSourceRef is not set, so this Rollout has no releases. Create a ReleaseSource for the app " +
+		"and reference it from spec.releaseSourceRef; to migrate an existing Flux ImagePolicy, create a ReleaseSource with " +
+		"spec.oci.imagePolicyRef pointing at it"
 )
 
 // catalogue is the merged, ordered view of a ReleaseSource's slices.
@@ -234,6 +242,40 @@ func (r *RolloutReconciler) blockOnSource(ctx context.Context, rollout *rolloutv
 	return r.Status().Update(ctx, rollout)
 }
 
+// shapeReleaseStatus makes the release-related status match the one release
+// path (the catalogue) before anything else runs, in memory (the next status
+// update persists it).
+//
+//   - status.availableReleases, releaseCandidates and gatedReleaseCandidates are
+//     never written any more; they are cleared if present.
+//   - spec.releasesImagePolicy is inert: if set, ReleasesImagePolicyIgnored=True
+//     and one Warning Event per change; otherwise the condition is removed.
+//   - A Rollout without spec.releaseSourceRef drops stale catalogue status
+//     (status.releaseSource and the ReleaseSourceReady condition).
+func (r *RolloutReconciler) shapeReleaseStatus(rollout *rolloutv1alpha1.Rollout) {
+	rollout.Status.AvailableReleases = nil
+	rollout.Status.ReleaseCandidates = nil
+	rollout.Status.GatedReleaseCandidates = nil
+	if rollout.Spec.ReleaseSourceRef == nil || rollout.Spec.ReleaseSourceRef.Name == "" {
+		rollout.Status.ReleaseSource = nil
+		rollout.Status.Candidates = nil
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
+	}
+	if rollout.Spec.ReleasesImagePolicy.Name == "" {
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesImagePolicyIgnored)
+		return
+	}
+	existing := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesImagePolicyIgnored)
+	changed := existing == nil || existing.Status != metav1.ConditionTrue || existing.Message != messageImagePolicyIgnored
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type: rolloutv1alpha1.RolloutReleasesImagePolicyIgnored, Status: metav1.ConditionTrue,
+		Reason: reasonImagePolicyIgnored, Message: messageImagePolicyIgnored,
+	})
+	if changed && r.Recorder != nil {
+		r.Recorder.Event(rollout, corev1.EventTypeWarning, reasonImagePolicyIgnored, messageImagePolicyIgnored)
+	}
+}
+
 func (r *RolloutReconciler) candidateLimit() int {
 	switch {
 	case r.ReleaseCandidates <= 0:
@@ -374,9 +416,9 @@ func blockedByGates(gates []rolloutv1alpha1.RolloutGate, rolloutName, tag string
 	return out
 }
 
-// applyCandidateStatus writes status.candidates and, with dual-write on, the
-// three deprecated lists, all derived from the catalogue. With dual-write off
-// the deprecated lists are cleared. Pure with respect to the cluster.
+// applyCandidateStatus writes status.candidates, derived from the catalogue. The
+// deprecated release lists are not written for catalogue Rollouts (they are
+// cleared by shapeReleaseStatus). Pure with respect to the cluster.
 func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollout, cat *catalogue, gates []rolloutv1alpha1.RolloutGate) error {
 	all, err := cat.candidatesAfter(&rollout.Status)
 	if err != nil {
@@ -409,79 +451,7 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 	}
 	rollout.Status.Candidates = cands
 
-	if !r.DualWriteReleaseLists {
-		rollout.Status.AvailableReleases = nil
-		rollout.Status.ReleaseCandidates = nil
-		rollout.Status.GatedReleaseCandidates = nil
-		return nil
-	}
-	rollout.Status.AvailableReleases = dualWriteAvailable(rollout.Status.AvailableReleases, cat)
-	rollout.Status.ReleaseCandidates = all
-	rollout.Status.GatedReleaseCandidates = gatedAll
 	return nil
-}
-
-// dualWriteAvailable runs list mode's own algorithm with the catalogue as the
-// input: the persisted status.availableReleases, plus catalogue releases not yet
-// in it appended in catalogue order, and an unresolved entry refreshed once the
-// catalogue has it resolved (updateAvailableReleases). It never trims. List mode
-// trims only inside deployRelease, when the history overflows
-// (cleanupOldAvailableReleases), and so does slices mode.
-//
-// List mode only ever appends what is newer than what it has, so releases it
-// trimmed never come back. The catalogue still holds them, so a release is
-// appended only when it sorts after the last persisted one (or, with nothing
-// persisted yet, always).
-func dualWriteAvailable(persisted []rolloutv1alpha1.VersionInfo, cat *catalogue) []rolloutv1alpha1.VersionInfo {
-	out := slices.Clone(persisted)
-	index := make(map[string]int, len(out))
-	for i, v := range out {
-		index[v.Tag] = i
-	}
-	start := 0 // first catalogue position eligible for appending
-	if n := len(out); n > 0 {
-		// Anchor on the newest persisted entry the catalogue still holds, so
-		// a trailing entry that left the catalogue (or never entered it) does
-		// not re-open releases list mode already trimmed.
-		anchored := false
-		for j := n - 1; j >= 0 && !anchored; j-- {
-			tag := out[j].Tag
-			if pos := slices.IndexFunc(cat.releases, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == tag }); pos >= 0 {
-				start = pos + 1
-				anchored = true
-			}
-		}
-		if !anchored {
-			// Nothing persisted is in the catalogue: like list mode, which
-			// only ever appends the newest release, append just the newest.
-			start = max(len(cat.releases)-1, 0)
-			last := out[n-1]
-			if last.Created != nil {
-				for i, v := range cat.releases {
-					if v.Created != nil && v.Created.After(last.Created.Time) {
-						start = i
-						break
-					}
-				}
-			}
-		}
-	}
-	for pos, rel := range cat.releases {
-		if i, ok := index[rel.Tag]; ok {
-			if out[i].MetadataUnresolved && !rel.MetadataUnresolved {
-				if rel.Digest == nil {
-					rel.Digest = out[i].Digest
-				}
-				out[i] = rel
-			}
-			continue
-		}
-		if pos >= start {
-			out = append(out, rel)
-			index[rel.Tag] = len(out) - 1
-		}
-	}
-	return out
 }
 
 func (r *RolloutReconciler) listGatesFor(ctx context.Context, namespace string) ([]rolloutv1alpha1.RolloutGate, error) {
@@ -550,13 +520,6 @@ func (r *RolloutReconciler) findRolloutsForReleaseSource(ctx context.Context, ob
 	return reqs
 }
 
-// usesCatalogue reports whether the Rollout reads its releases from a
-// ReleaseSource catalogue: spec.releaseSourceRef is set and the release-controller
-// CRDs are installed. Nothing from status.
-func (r *RolloutReconciler) usesCatalogue(rollout *rolloutv1alpha1.Rollout) bool {
-	return r.CatalogueAvailable && rollout.Spec.ReleaseSourceRef != nil && rollout.Spec.ReleaseSourceRef.Name != ""
-}
-
 // catalogueCRDsInstalled reports whether the ReleaseSource and ReleaseSlice
 // kinds are served by the cluster.
 func catalogueCRDsInstalled(mapper meta.RESTMapper) bool {
@@ -568,119 +531,84 @@ func catalogueCRDsInstalled(mapper meta.RESTMapper) bool {
 	return true
 }
 
-// resolveReleases runs the release-source gate for catalogue Rollouts, consumes
-// the retry annotation, and returns the releases the rest of the reconcile
-// works on: the catalogue's, or status.availableReleases from the ImagePolicy.
-// done is true when the reconcile must stop and return err as is.
+// resolveReleases runs the release-source gate, consumes the retry annotation,
+// and returns the catalogue the rest of the reconcile works on. The catalogue is
+// the only release path: a Rollout without spec.releaseSourceRef, or in a cluster
+// where the release-controller CRDs are not served, gets no releases and a
+// condition saying why. done is true when the reconcile must stop and return err
+// as is.
 func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) (cat *catalogue, releases []rolloutv1alpha1.VersionInfo, done bool, err error) {
-	// A catalogue Rollout without a usable ReleaseSource does nothing else,
-	// so the source gate runs before the retry annotation is consumed.
-	useCatalogue := r.usesCatalogue(rollout)
-	if useCatalogue {
-		var proceed bool
-		cat, proceed, err = r.prepareSlices(ctx, rollout, log)
-		if err != nil || !proceed {
-			return nil, nil, true, err
-		}
+	r.shapeReleaseStatus(rollout)
+	if rollout.Spec.ReleaseSourceRef == nil || rollout.Spec.ReleaseSourceRef.Name == "" {
+		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonSourceRequired, messageSourceRequired)
+	}
+	if !r.CatalogueAvailable {
+		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonCatalogueUnavailable, fmt.Sprintf(
+			"spec.releaseSourceRef is %q, but the release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed, "+
+				"so no releases are read; install release-controller and restart the controller",
+			rollout.Spec.ReleaseSourceRef.Name))
+	}
+	// A Rollout without a usable ReleaseSource does nothing else, so the source
+	// gate runs before the retry annotation is consumed.
+	cat, proceed, err := r.prepareSlices(ctx, rollout, log)
+	if err != nil || !proceed {
+		return nil, nil, true, err
 	}
 	if err := r.handleRetryAnnotation(ctx, rollout, log); err != nil {
 		return nil, nil, true, err
 	}
-	if useCatalogue {
-		return cat, cat.releases, false, nil
-	}
-	if rollout.Spec.ReleasesImagePolicy.Name == "" && rollout.Spec.ReleaseSourceRef != nil {
-		// Valid since releasesImagePolicy became optional, but without the
-		// release-controller CRDs there is nothing to read: say why instead of
-		// looping on an ImagePolicy Get error.
-		msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but the release-controller "+
-			"CRDs (ReleaseSource, ReleaseSlice) are not installed, so no releases are read; install release-controller "+
-			"and restart the controller, or set spec.releasesImagePolicy",
-			rollout.Spec.ReleaseSourceRef.Name)
-		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type: rolloutv1alpha1.RolloutReleasesUpdated, Status: metav1.ConditionFalse,
-			Reason: reasonCatalogueUnavailable, Message: msg,
-		})
-		return nil, nil, true, r.updateRolloutStatusOnError(ctx, rollout, reasonCatalogueUnavailable, msg)
-	}
-	if err := r.updateAvailableReleases(ctx, rollout, log); err != nil {
-		return nil, nil, true, err
-	}
-	return nil, rollout.Status.AvailableReleases, false, nil
+	return cat, cat.releases, false, nil
 }
 
-// nextReleaseCandidates returns the releases newer than the deployed one. In
-// slices mode that is every newer release in the catalogue (not the capped
-// working set) together with the namespace's gates; otherwise the candidates
-// are also written to status.releaseCandidates.
-func (r *RolloutReconciler) nextReleaseCandidates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue, releases []rolloutv1alpha1.VersionInfo) ([]rolloutv1alpha1.VersionInfo, []rolloutv1alpha1.RolloutGate, error) {
-	if cat != nil {
-		gates, err := r.listGatesFor(ctx, rollout.Namespace)
-		if err != nil {
-			return nil, nil, err
-		}
-		candidates, err := cat.candidatesAfter(&rollout.Status)
-		return candidates, gates, err
+// blockOnRelease records that the Rollout has no release source to read:
+// ReleasesUpdated=False and Ready=False with reason, one Warning Event per
+// change of reason or message (not per reconcile), and the status write.
+func (r *RolloutReconciler) blockOnRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, reason, message string) error {
+	existing := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
+	changed := existing == nil || existing.Status != metav1.ConditionFalse || existing.Reason != reason || existing.Message != message
+	for _, t := range []string{rolloutv1alpha1.RolloutReleasesUpdated, rolloutv1alpha1.RolloutReady} {
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: t, Status: metav1.ConditionFalse, Reason: reason, Message: message,
+		})
 	}
-	candidates, err := getNextReleaseCandidates(releases, &rollout.Status)
+	if changed && r.Recorder != nil {
+		r.Recorder.Event(rollout, corev1.EventTypeWarning, reason, message)
+	}
+	return r.Status().Update(ctx, rollout)
+}
+
+// nextReleaseCandidates returns every release in the catalogue newer than the
+// deployed one (not the capped working set) together with the namespace's gates.
+func (r *RolloutReconciler) nextReleaseCandidates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) ([]rolloutv1alpha1.VersionInfo, []rolloutv1alpha1.RolloutGate, error) {
+	gates, err := r.listGatesFor(ctx, rollout.Namespace)
 	if err != nil {
 		return nil, nil, err
 	}
-	rollout.Status.ReleaseCandidates = candidates
-	return candidates, nil, nil
+	candidates, err := cat.candidatesAfter(&rollout.Status)
+	return candidates, gates, err
 }
 
 // evaluateCandidateGates evaluates the gates for the candidates and records
-// the gated candidates in status, from the catalogue in slices mode.
+// status.candidates from the catalogue.
 func (r *RolloutReconciler) evaluateCandidateGates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue, gates []rolloutv1alpha1.RolloutGate, candidates []rolloutv1alpha1.VersionInfo, log logr.Logger) ([]rolloutv1alpha1.VersionInfo, bool, error) {
 	gated, passing, err := r.evaluateGates(ctx, rollout.Namespace, rollout, candidates)
 	if err != nil {
 		log.Error(err, "Failed to evaluate gates")
 		return nil, false, err
 	}
-	if cat != nil {
-		return gated, passing, r.applyCandidateStatus(rollout, cat, gates)
-	}
-	rollout.Status.GatedReleaseCandidates = gated
-	return gated, passing, nil
+	return gated, passing, r.applyCandidateStatus(rollout, cat, gates)
 }
 
-// deployedVersionInfo looks up the version info for the release being
-// deployed (fallback.Tag): in slices mode the catalogue, then history, then
-// the bare tag, always found; otherwise status.availableReleases. When the
-// release is not found it returns fallback and false.
-func (r *RolloutReconciler) deployedVersionInfo(rollout *rolloutv1alpha1.Rollout, cat *catalogue, fallback rolloutv1alpha1.VersionInfo) (rolloutv1alpha1.VersionInfo, bool) {
-	if cat != nil {
-		return r.versionInfoForDeploy(rollout, cat, fallback.Tag), true
-	}
-	for _, release := range rollout.Status.AvailableReleases {
-		if release.Tag == fallback.Tag {
-			return release, true
-		}
-	}
-	return fallback, false
-}
-
-// refreshCandidatesAfterDeploy recomputes the candidate lists in status once a
-// deployment has been recorded.
+// refreshCandidatesAfterDeploy recomputes status.candidates once a deployment
+// has been recorded.
 func (r *RolloutReconciler) refreshCandidatesAfterDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) error {
-	log := logf.FromContext(ctx)
-	if cat != nil {
-		gates, err := r.listGatesFor(ctx, rollout.Namespace)
-		if err != nil {
-			return err
-		}
-		if err := r.applyCandidateStatus(rollout, cat, gates); err != nil {
-			log.Error(err, "Failed to refresh candidates")
-			return err
-		}
-		return nil
-	}
-	candidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
+	gates, err := r.listGatesFor(ctx, rollout.Namespace)
 	if err != nil {
-		log.Error(err, "Failed to get next release candidates")
 		return err
 	}
-	rollout.Status.ReleaseCandidates = candidates
+	if err := r.applyCandidateStatus(rollout, cat, gates); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to refresh candidates")
+		return err
+	}
 	return nil
 }

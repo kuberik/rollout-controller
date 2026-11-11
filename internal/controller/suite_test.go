@@ -32,7 +32,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -72,9 +71,6 @@ var _ = BeforeSuite(func() {
 	err = sourcev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = imagev1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
 	err = kustomizev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -86,8 +82,6 @@ var _ = BeforeSuite(func() {
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "vendir", "ocirepositories"),
 			filepath.Join("..", "..", "vendir", "kustomizations"),
-			filepath.Join("..", "..", "vendir", "imagepolicies"),
-			filepath.Join("..", "..", "vendir", "imagerepositories"),
 			filepath.Join("testdata", "release-catalogue-crds"),
 		},
 		ErrorIfCRDPathMissing: true,

@@ -17,9 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -28,12 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/cli/cli/config"
-	"github.com/docker/cli/cli/config/configfile"
 	"github.com/go-logr/logr"
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/crane"
-	"github.com/google/go-containerregistry/pkg/name"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,7 +39,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -54,6 +46,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
+
+// annotationTrue is the value of boolean annotations such as unblock-failed.
+const annotationTrue = "true"
 
 type Clock interface {
 	Now() time.Time
@@ -63,25 +58,6 @@ type RealClock struct{}
 
 func (RealClock) Now() time.Time { return time.Now() }
 
-// dockerConfigKeychain implements authn.Keychain interface for Docker config JSON
-type dockerConfigKeychain struct {
-	config *configfile.ConfigFile
-}
-
-func (k *dockerConfigKeychain) Resolve(resource authn.Resource) (authn.Authenticator, error) {
-	// Find the registry in our config
-	for registry, auth := range k.config.AuthConfigs {
-		if resource.RegistryStr() == registry {
-			return authn.FromConfig(authn.AuthConfig{
-				Username: auth.Username,
-				Password: auth.Password,
-			}), nil
-		}
-	}
-	// Return anonymous authenticator if no match found
-	return authn.Anonymous, nil
-}
-
 // RolloutReconciler reconciles a Rollout object
 type RolloutReconciler struct {
 	client.Client
@@ -90,13 +66,9 @@ type RolloutReconciler struct {
 	Recorder record.EventRecorder
 
 	// CatalogueAvailable is set when the release-controller ReleaseSource and
-	// ReleaseSlice CRDs are installed (SetupWithManager detects it). Rollouts
-	// with spec.releaseSourceRef then read releases from the catalogue; all
-	// others use the ImagePolicy path.
+	// ReleaseSlice CRDs are installed (SetupWithManager detects it). Without them
+	// no Rollout gets releases.
 	CatalogueAvailable bool
-	// DualWriteReleaseLists keeps the deprecated availableReleases,
-	// releaseCandidates and gatedReleaseCandidates written for catalogue Rollouts.
-	DualWriteReleaseLists bool
 	// ReleaseCandidates is K, the newest candidates kept in status.candidates.
 	ReleaseCandidates int
 }
@@ -109,10 +81,7 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=releasesources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagepolicies,verbs=get;list;watch
-// +kubebuilder:rbac:groups=image.toolkit.fluxcd.io,resources=imagerepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -139,7 +108,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
-	releaseCandidates, sliceGates, err := r.nextReleaseCandidates(ctx, &rollout, cat, releases)
+	releaseCandidates, sliceGates, err := r.nextReleaseCandidates(ctx, &rollout, cat)
 	if err != nil {
 		log.Error(err, "Failed to get next release candidates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
@@ -372,7 +341,7 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.CatalogueAvailable = catalogueCRDsInstalled(mgr.GetRESTMapper())
 	if !r.CatalogueAvailable {
 		logf.Log.WithName("rollout").Info("release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed; " +
-			"Rollouts with spec.releaseSourceRef fall back to spec.releasesImagePolicy. Restart after installing them.")
+			"Rollouts get no releases and report ReleaseCatalogueUnavailable. Restart after installing them.")
 	}
 
 	b := ctrl.NewControllerManagedBy(mgr).
@@ -386,10 +355,6 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Watches(&releasecatalogue.ReleaseSource{}, handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource))
 	}
 	return b.
-		Watches(
-			&imagev1.ImagePolicy{},
-			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForImagePolicy),
-		).
 		Watches(
 			&rolloutv1alpha1.RolloutGate{},
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForRolloutGate),
@@ -422,403 +387,6 @@ func getNextReleaseCandidates(releases []rolloutv1alpha1.VersionInfo, status *ro
 		}
 	}
 	return releases, nil
-}
-
-// getImageRepositoryAuthentication extracts authentication information from ImageRepository
-func (r *RolloutReconciler) getImageRepositoryAuthentication(ctx context.Context, imagePolicy *imagev1.ImagePolicy) (authn.Keychain, error) {
-	// Get the ImageRepository referenced by the ImagePolicy
-	imageRepoRef := imagePolicy.Spec.ImageRepositoryRef
-	imageRepoNamespace := imagePolicy.Namespace
-	if imageRepoRef.Namespace != "" {
-		imageRepoNamespace = imageRepoRef.Namespace
-	}
-
-	imageRepo := &imagev1.ImageRepository{}
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Namespace: imageRepoNamespace,
-		Name:      imageRepoRef.Name,
-	}, imageRepo); err != nil {
-		return nil, fmt.Errorf("failed to get ImageRepository: %w", err)
-	}
-
-	// Handle secretRef authentication
-	if imageRepo.Spec.SecretRef != nil {
-		secret := &corev1.Secret{}
-		if err := r.Client.Get(ctx, client.ObjectKey{
-			Namespace: imageRepoNamespace,
-			Name:      imageRepo.Spec.SecretRef.Name,
-		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get secret: %w", err)
-		}
-
-		// Parse Docker config JSON using the same approach as crane
-		if dockerConfigJSON, exists := secret.Data[".dockerconfigjson"]; exists {
-			reader := bytes.NewReader(dockerConfigJSON)
-			configFile, err := config.LoadFromReader(reader)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load Docker config: %w", err)
-			}
-
-			// Create a keychain that can resolve authentication for any registry
-			return &dockerConfigKeychain{config: configFile}, nil
-		}
-	}
-
-	// Return anonymous keychain if no authentication found
-	return authn.DefaultKeychain, nil
-}
-
-// parseVersionInfoFromOCI extracts version information from OCI image for a specific tag.
-// It handles getting ImagePolicy, ImageRepository, and parsing the OCI manifest.
-func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout *rolloutv1alpha1.Rollout, tag string, log logr.Logger) (rolloutv1alpha1.VersionInfo, error) {
-	versionInfo := rolloutv1alpha1.VersionInfo{
-		Tag: tag,
-	}
-
-	// Get the ImagePolicy
-	imagePolicyNamespace := rollout.Namespace
-	imagePolicy := &imagev1.ImagePolicy{}
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Namespace: imagePolicyNamespace,
-		Name:      rollout.Spec.ReleasesImagePolicy.Name,
-	}, imagePolicy); err != nil {
-		return versionInfo, fmt.Errorf("failed to get ImagePolicy: %w", err)
-	}
-
-	// Get the ImageRepository to construct the image reference
-	imageRepoRef := imagePolicy.Spec.ImageRepositoryRef
-	imageRepoNamespace := imagePolicy.Namespace
-	if imageRepoRef.Namespace != "" {
-		imageRepoNamespace = imageRepoRef.Namespace
-	}
-
-	imageRepo := &imagev1.ImageRepository{}
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Namespace: imageRepoNamespace,
-		Name:      imageRepoRef.Name,
-	}, imageRepo); err != nil {
-		return versionInfo, fmt.Errorf("failed to get ImageRepository: %w", err)
-	}
-
-	// Construct the full image reference
-	imageRef := imageRepo.Spec.Image + ":" + tag
-
-	// Parse OCI manifest to extract version information
-	if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
-		versionInfo.Version = ociMeta.Version
-		versionInfo.Revision = ociMeta.Revision
-		versionInfo.Created = ociMeta.Created
-		versionInfo.Requires = ociMeta.Requires
-		log.V(4).Info("Successfully extracted version info from OCI image", "imageRef", imageRef, "version", ociMeta.Version, "revision", ociMeta.Revision, "created", ociMeta.Created, "requires", ociMeta.Requires)
-	} else {
-		versionInfo.MetadataUnresolved = true
-		log.V(5).Info("Could not parse OCI manifest", "imageRef", imageRef, "error", err)
-		// Return the versionInfo even if parsing failed - we still have the tag
-	}
-
-	return versionInfo, nil
-}
-
-// Bounds on the requires annotations one image may declare. maxRequiresAnnotations
-// matches the MaxProperties marker on VersionInfo.Requires, so a hostile or broken
-// image cannot produce a status the API server would then reject. Exceeding any of
-// these is an error rather than a truncation — see parseOCIManifest.
-//
-// A contract name is a service name and a value is a SemVer constraint; neither is
-// ever long.
-const (
-	annotationTrue = "true"
-
-	maxRequiresAnnotations = 32
-	maxRequiresKeyLength   = 64
-	maxRequiresValueLength = 256
-)
-
-// ociMetadata holds the image metadata the rollout controller reads out of an
-// OCI manifest.
-type ociMetadata struct {
-	Version      *string
-	Revision     *string
-	ArtifactType *string
-	Source       *string
-	Title        *string
-	Description  *string
-	Created      *metav1.Time
-
-	// Requires maps a contract name to the version required by this image, read
-	// from "com.kuberik.rollout.requires.<contract>" annotations.
-	Requires map[string]string
-}
-
-// parseOCIManifest extracts all metadata from OCI image manifest including version, revision, artifact type, source, title, description, and required contract versions.
-func (r *RolloutReconciler) parseOCIManifest(ctx context.Context, imageRef string, imagePolicy *imagev1.ImagePolicy) (ociMetadata, error) {
-	log := logf.FromContext(ctx)
-
-	// Get authentication keychain from ImageRepository
-	keychain, err := r.getImageRepositoryAuthentication(ctx, imagePolicy)
-	if err != nil {
-		return ociMetadata{}, fmt.Errorf("failed to get authentication for %s: %w", imageRef, err)
-	}
-
-	// Parse the image reference
-	ref, err := name.ParseReference(imageRef)
-	if err != nil {
-		return ociMetadata{}, fmt.Errorf("failed to parse image reference %s: %w", imageRef, err)
-	}
-
-	// Fetch the manifest with authentication using keychain
-	manifest, err := crane.Manifest(ref.String(), crane.WithAuthFromKeychain(keychain))
-	if err != nil {
-		return ociMetadata{}, fmt.Errorf("failed to fetch manifest for %s: %w", imageRef, err)
-	}
-
-	// Parse the manifest JSON
-	var manifestData struct {
-		MediaType    string            `json:"mediaType"`
-		ArtifactType string            `json:"artifactType"`
-		Annotations  map[string]string `json:"annotations"`
-		Config       struct {
-			MediaType   string            `json:"mediaType"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"config"`
-	}
-	if err := json.Unmarshal(manifest, &manifestData); err != nil {
-		return ociMetadata{}, fmt.Errorf("failed to parse manifest JSON for %s: %w", imageRef, err)
-	}
-
-	// Extract all metadata
-	var versionStr, revisionStr, artifactTypeStr, sourceStr, titleStr, descriptionStr *string
-	var createdTime *metav1.Time
-	var requires map[string]string
-
-	// Determine artifact type (preference order: artifactType, config.mediaType, manifest.mediaType)
-	if manifestData.ArtifactType != "" {
-		artifactTypeStr = &manifestData.ArtifactType
-	} else if manifestData.Config.MediaType != "" {
-		artifactTypeStr = &manifestData.Config.MediaType
-	} else if manifestData.MediaType != "" {
-		artifactTypeStr = &manifestData.MediaType
-	}
-
-	// Collect required contract versions from both manifest and config annotations.
-	// Manifest annotations take precedence over config annotations for the same contract.
-	// An empty value is kept rather than dropped. Dropping it would make a
-	// mis-templated annotation indistinguishable from "declares no requirement",
-	// which admits the release; keeping it fails the version check instead.
-	//
-	// These come from image annotations, which are outside this controller's
-	// trust boundary, so the limits below fail closed. Dropping the excess
-	// instead would be a gate bypass: Go randomises map iteration, so an image
-	// carrying more junk requires.* annotations than the cap would push the real
-	// requirement out of the map at random, and a release with no recorded
-	// requirement is one a dependency admits.
-	for _, annotations := range []map[string]string{manifestData.Config.Annotations, manifestData.Annotations} {
-		for key, value := range annotations {
-			contract, found := strings.CutPrefix(key, rolloutv1alpha1.RequiresAnnotationPrefix)
-			if !found || contract == "" {
-				continue
-			}
-			if len(contract) > maxRequiresKeyLength || len(value) > maxRequiresValueLength {
-				return ociMetadata{}, fmt.Errorf(
-					"requires annotation for contract %q on %s exceeds the size limit (%d/%d bytes)",
-					contract, imageRef, maxRequiresKeyLength, maxRequiresValueLength)
-			}
-			if _, existing := requires[contract]; !existing && len(requires) >= maxRequiresAnnotations {
-				return ociMetadata{}, fmt.Errorf(
-					"%s declares more than %d requires annotations", imageRef, maxRequiresAnnotations)
-			}
-			if requires == nil {
-				requires = make(map[string]string)
-			}
-			requires[contract] = value
-		}
-	}
-
-	// Check manifest annotations first
-	if annotations := manifestData.Annotations; annotations != nil {
-		// Look for version
-		if v, exists := annotations["org.opencontainers.image.version"]; exists && v != "" {
-			versionStr = &v
-		}
-
-		// Look for revision
-		if r, exists := annotations["org.opencontainers.image.revision"]; exists && r != "" {
-			revisionStr = &r
-		}
-
-		// Look for source
-		if s, exists := annotations["org.opencontainers.image.source"]; exists && s != "" {
-			sourceStr = &s
-		}
-
-		// Look for title
-		if t, exists := annotations["org.opencontainers.image.title"]; exists && t != "" {
-			titleStr = &t
-		}
-
-		// Look for description
-		if d, exists := annotations["org.opencontainers.image.description"]; exists && d != "" {
-			descriptionStr = &d
-		}
-
-		// Look for created timestamp
-		if c, exists := annotations["org.opencontainers.image.created"]; exists && c != "" {
-			if parsedTime, err := time.Parse(time.RFC3339, c); err == nil {
-				createdTime = &metav1.Time{Time: parsedTime}
-			}
-		}
-	}
-
-	// Check config annotations if not found in manifest
-	if versionStr == nil || revisionStr == nil || sourceStr == nil || titleStr == nil || descriptionStr == nil || createdTime == nil {
-		if annotations := manifestData.Config.Annotations; annotations != nil {
-			// Look for version
-			if versionStr == nil {
-				if v, exists := annotations["org.opencontainers.image.version"]; exists && v != "" {
-					versionStr = &v
-				}
-			}
-
-			// Look for revision
-			if revisionStr == nil {
-				if r, exists := annotations["org.opencontainers.image.revision"]; exists && r != "" {
-					revisionStr = &r
-				}
-			}
-
-			// Look for source
-			if sourceStr == nil {
-				if s, exists := annotations["org.opencontainers.image.source"]; exists && s != "" {
-					sourceStr = &s
-				}
-			}
-
-			// Look for title
-			if titleStr == nil {
-				if t, exists := annotations["org.opencontainers.image.title"]; exists && t != "" {
-					titleStr = &t
-				}
-			}
-
-			// Look for description
-			if descriptionStr == nil {
-				if d, exists := annotations["org.opencontainers.image.description"]; exists && d != "" {
-					descriptionStr = &d
-				}
-			}
-
-			// Look for created timestamp
-			if createdTime == nil {
-				if c, exists := annotations["org.opencontainers.image.created"]; exists && c != "" {
-					if parsedTime, err := time.Parse(time.RFC3339, c); err == nil {
-						createdTime = &metav1.Time{Time: parsedTime}
-					}
-				}
-			}
-		}
-	}
-
-	log.V(5).Info("Parsed OCI manifest", "imageRef", imageRef, "version", versionStr, "revision", revisionStr, "artifactType", artifactTypeStr, "source", sourceStr, "title", titleStr, "description", descriptionStr, "created", createdTime, "requires", requires)
-	return ociMetadata{
-		Version:      versionStr,
-		Revision:     revisionStr,
-		ArtifactType: artifactTypeStr,
-		Source:       sourceStr,
-		Title:        titleStr,
-		Description:  descriptionStr,
-		Created:      createdTime,
-		Requires:     requires,
-	}, nil
-}
-
-// updateAvailableReleases fetches available releases from the ImagePolicy and updates status.
-func (r *RolloutReconciler) updateAvailableReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) error {
-	// Get the ImagePolicy
-	imagePolicyNamespace := rollout.Namespace
-
-	imagePolicy := &imagev1.ImagePolicy{}
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Namespace: imagePolicyNamespace,
-		Name:      rollout.Spec.ReleasesImagePolicy.Name,
-	}, imagePolicy); err != nil {
-		log.Error(err, "Failed to get ImagePolicy")
-		return errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "RolloutFailed", err.Error()))
-	}
-
-	// Extract available releases from ImagePolicy status
-	var newReleases []rolloutv1alpha1.VersionInfo
-	if imagePolicy.Status.LatestRef != nil && imagePolicy.Status.LatestRef.Tag != "" {
-		// Use the reusable function to parse version info from OCI
-		versionInfo, err := r.parseVersionInfoFromOCI(ctx, rollout, imagePolicy.Status.LatestRef.Tag, log)
-		if err != nil {
-			log.V(5).Info("Could not parse version info from OCI, using basic info", "error", err)
-			versionInfo = rolloutv1alpha1.VersionInfo{
-				Tag: imagePolicy.Status.LatestRef.Tag,
-			}
-		}
-
-		// Extract digest if available (this is specific to ImagePolicy status)
-		if imagePolicy.Status.LatestRef.Digest != "" {
-			versionInfo.Digest = &imagePolicy.Status.LatestRef.Digest
-		}
-
-		// For rollout-level metadata, we need to parse the OCI manifest again to get artifact type, source, title, and description
-		// This is a limitation of the current design - we could optimize this further
-		imageRef := imagePolicy.Status.LatestRef.Name + ":" + imagePolicy.Status.LatestRef.Tag
-		if ociMeta, err := r.parseOCIManifest(ctx, imageRef, imagePolicy); err == nil {
-			// Set rollout-level metadata from the latest release
-			rollout.Status.ArtifactType = ociMeta.ArtifactType
-			rollout.Status.Source = ociMeta.Source
-			rollout.Status.Title = ociMeta.Title
-			rollout.Status.Description = ociMeta.Description
-			if ociMeta.ArtifactType != nil || ociMeta.Source != nil || ociMeta.Title != nil || ociMeta.Description != nil {
-				log.V(4).Info("Successfully extracted OCI metadata for rollout", "imageRef", imageRef, "artifactType", ociMeta.ArtifactType, "source", ociMeta.Source, "title", ociMeta.Title, "description", ociMeta.Description)
-			}
-		} else {
-			log.V(5).Info("Could not parse OCI manifest for rollout metadata", "imageRef", imageRef, "error", err)
-		}
-
-		newReleases = []rolloutv1alpha1.VersionInfo{versionInfo}
-	}
-
-	// Append new releases to existing ones if they're not already present
-	existingReleases := rollout.Status.AvailableReleases
-	for _, newRelease := range newReleases {
-		// Check if this release already exists by comparing tags
-		found := false
-		for i, existing := range existingReleases {
-			if existing.Tag != newRelease.Tag {
-				continue
-			}
-			found = true
-			// A release recorded while the registry was unreachable is blocked by
-			// any RolloutDependency until its metadata resolves, and is otherwise
-			// never revisited. Refresh it once the fetch succeeds.
-			if existing.MetadataUnresolved && !newRelease.MetadataUnresolved {
-				newRelease.Digest = existing.Digest
-				existingReleases[i] = newRelease
-				log.V(4).Info("Refreshed release with metadata that failed to resolve earlier", "tag", newRelease.Tag)
-			}
-			break
-		}
-		if !found {
-			existingReleases = append(existingReleases, newRelease)
-		}
-	}
-
-	rollout.Status.AvailableReleases = existingReleases
-	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-		Type:               rolloutv1alpha1.RolloutReleasesUpdated,
-		Status:             metav1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
-		Reason:             "ReleasesUpdated",
-		Message:            "Available releases were updated successfully from ImagePolicy",
-	})
-	if err := r.Status().Update(ctx, rollout); err != nil {
-		log.Error(err, "Failed to update available releases in status")
-		return err
-	}
-	return nil
 }
 
 // updateRolloutStatusOnError sets a condition and updates status, returning error for early return.
@@ -1406,24 +974,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Extract triggered by information
 	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
 
-	// Find the version info for the wanted release
-	var versionInfo rolloutv1alpha1.VersionInfo
-	versionInfo.Tag = wantedRelease
-
-	// Try to find additional version information from available releases
-	versionInfo, foundInReleases := r.deployedVersionInfo(rollout, cat, versionInfo)
-
-	// If not found in available releases, try to parse it from OCI image
-	if !foundInReleases {
-		log.V(4).Info("Version info not found in available releases, attempting to parse from OCI image", "wantedRelease", wantedRelease)
-
-		// Use the reusable function to parse version info from OCI
-		if parsedVersionInfo, err := r.parseVersionInfoFromOCI(ctx, rollout, wantedRelease, log); err == nil {
-			versionInfo = parsedVersionInfo
-		} else {
-			log.V(5).Info("Could not parse version info from OCI image", "wantedRelease", wantedRelease, "error", err)
-		}
-	}
+	// Version info for the wanted release: catalogue, then history, else the bare tag.
+	versionInfo := r.versionInfoForDeploy(rollout, cat, wantedRelease)
 
 	// Set BakeFailureDisabled before creating the new entry so it can read the current
 	// (about-to-become-previous) entry's BakeStatus. Persists for the entry's lifetime.
@@ -1449,10 +1001,6 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 	if int32(len(rollout.Status.History)) > versionHistoryLimit {
 		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
-		// If history is full, remove available versions based on retention criteria
-		if len(rollout.Status.History) > 0 {
-			r.cleanupOldAvailableReleases(rollout, log)
-		}
 	}
 
 	// Update the condition message to reflect if gates were bypassed
@@ -1558,116 +1106,6 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	return nil
-}
-
-// cleanupOldAvailableReleases removes available releases based on multiple retention criteria.
-// This is called when history is full to prevent AvailableReleases from growing unbounded.
-// It keeps the maximum number of releases that satisfy at least one of:
-// 1. Everything up to and including the history entry that's furthest down in AvailableReleases
-// 2. All releases created within the retention period (configurable via AvailableReleasesRetentionDays, default: 7 days)
-// 3. At least a minimum number of releases (configurable via AvailableReleasesMinCount, default: 30)
-// We keep the maximum number that satisfies any of these criteria.
-func (r *RolloutReconciler) cleanupOldAvailableReleases(rollout *rolloutv1alpha1.Rollout, log logr.Logger) {
-	if len(rollout.Status.History) == 0 || len(rollout.Status.AvailableReleases) == 0 {
-		return
-	}
-
-	// Get configurable retention values with defaults
-	retentionDays := int32(7) // default value
-	if rollout.Spec.AvailableReleasesRetentionDays != nil {
-		retentionDays = *rollout.Spec.AvailableReleasesRetentionDays
-	}
-
-	minReleases := int32(30) // default value
-	if rollout.Spec.AvailableReleasesMinCount != nil {
-		minReleases = *rollout.Spec.AvailableReleasesMinCount
-	}
-
-	cutoffTime := r.now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-
-	updatedReleases := CalculateAvailableReleasesToKeep(
-		rollout.Status.AvailableReleases,
-		rollout.Status.History,
-		cutoffTime,
-		int(minReleases),
-	)
-
-	if len(updatedReleases) < len(rollout.Status.AvailableReleases) {
-		removedCount := len(rollout.Status.AvailableReleases) - len(updatedReleases)
-		rollout.Status.AvailableReleases = updatedReleases
-		log.Info("Cleaned up old available releases",
-			"removed", removedCount,
-			"remaining", len(updatedReleases))
-	}
-}
-
-// CalculateAvailableReleasesToKeep determines which available releases should be retained based on multiple criteria.
-// It returns a slice of VersionInfo that should be kept.
-// releases: the current list of available releases (sorted oldest to newest)
-// history: the current deployment history
-// cutoffTime: releases older than this may be removed (unless kept by other criteria)
-// minReleases: keep at least this many newest releases
-func CalculateAvailableReleasesToKeep(
-	releases []rolloutv1alpha1.VersionInfo,
-	history []rolloutv1alpha1.DeploymentHistoryEntry,
-	cutoffTime time.Time,
-	minReleases int,
-) []rolloutv1alpha1.VersionInfo {
-	if len(releases) == 0 {
-		return nil
-	}
-
-	// Criterion 1: Keep everything from the lowest history entry index to the end
-	minHistoryIndex := len(releases)
-	for _, historyEntry := range history {
-		targetTag := historyEntry.Version.Tag
-		for i := 0; i < len(releases); i++ {
-			if releases[i].Tag == targetTag {
-				if i < minHistoryIndex {
-					minHistoryIndex = i
-				}
-				break
-			}
-		}
-	}
-	criterion1KeepFromEnd := 0
-	if minHistoryIndex < len(releases) {
-		criterion1KeepFromEnd = len(releases) - minHistoryIndex
-	}
-
-	// Criterion 2: Keep releases within the retention period (newer than cutoffTime)
-	retentionTimeIndex := 0
-	for i := len(releases) - 1; i >= 0; i-- {
-		if releases[i].Created != nil && releases[i].Created.Time.Before(cutoffTime) {
-			// This release is too old, so we keep everything after it (i+1 onwards)
-			retentionTimeIndex = i + 1
-			break
-		}
-	}
-	criterion2KeepFromEnd := len(releases) - retentionTimeIndex
-
-	// Criterion 3: Keep at least a minimum number of releases
-	criterion3KeepFromEnd := minReleases
-	if criterion3KeepFromEnd > len(releases) {
-		criterion3KeepFromEnd = len(releases)
-	}
-
-	// Keep the maximum number of releases that satisfy any of the criteria
-	keepFromEnd := criterion1KeepFromEnd
-	if criterion2KeepFromEnd > keepFromEnd {
-		keepFromEnd = criterion2KeepFromEnd
-	}
-	if criterion3KeepFromEnd > keepFromEnd {
-		keepFromEnd = criterion3KeepFromEnd
-	}
-
-	// Ensure we don't exceed the actual list length
-	if keepFromEnd >= len(releases) {
-		return releases
-	}
-
-	// Return the newest keepFromEnd releases
-	return releases[len(releases)-keepFromEnd:]
 }
 
 // patchOCIRepositories finds OCIRepositories with rollout annotation and patches their tag.
@@ -2328,35 +1766,6 @@ func (r *RolloutReconciler) resetFailedBakeStatus(ctx context.Context, rollout *
 	})
 
 	return r.Status().Update(ctx, rollout)
-}
-
-// findRolloutsForImagePolicy finds all rollouts that reference the given ImagePolicy.
-func (r *RolloutReconciler) findRolloutsForImagePolicy(ctx context.Context, obj client.Object) []reconcile.Request {
-	imagePolicy, ok := obj.(*imagev1.ImagePolicy)
-	if !ok {
-		return nil
-	}
-
-	// List all rollouts in the same namespace as the ImagePolicy
-	rolloutList := &rolloutv1alpha1.RolloutList{}
-	if err := r.List(ctx, rolloutList, client.InNamespace(imagePolicy.Namespace)); err != nil {
-		return nil
-	}
-
-	var requests []reconcile.Request
-	for _, rollout := range rolloutList.Items {
-		// Check if this rollout references the ImagePolicy
-		if rollout.Spec.ReleasesImagePolicy.Name == imagePolicy.Name {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKey{
-					Namespace: rollout.Namespace,
-					Name:      rollout.Name,
-				},
-			})
-		}
-	}
-
-	return requests
 }
 
 // findRolloutsForRolloutGate finds all rollouts that reference the given RolloutGate.

@@ -30,15 +30,6 @@ rules:
   - list
   - watch
 - apiGroups:
-  - image.toolkit.fluxcd.io
-  resources:
-  - imagepolicies
-  - imagerepositories
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - kuberik.com
   resources:
   - clusterrolloutschedules
@@ -96,8 +87,6 @@ rules:
   verbs:
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - source.toolkit.fluxcd.io

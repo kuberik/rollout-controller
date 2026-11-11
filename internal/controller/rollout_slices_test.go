@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -25,8 +24,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
-	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
@@ -173,7 +170,7 @@ var _ = Describe("Slices mode reader", func() {
 	}
 
 	// newRollout creates a Rollout named name. slices=true points it at source
-	// "src"; otherwise at an ImagePolicy and the list is seeded in status.
+	// "src"; otherwise at a catalogue of its own named after the Rollout.
 	newRollout := func(name string, slices bool, rels []testRel, o rolloutOpts) {
 		ro := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
@@ -192,28 +189,13 @@ var _ = Describe("Slices mode reader", func() {
 		if slices {
 			ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
 		} else {
-			ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: name}
-			pol := &imagev1.ImagePolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: imagev1.ImagePolicySpec{
-					ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "repo"},
-					Policy:             imagev1.ImagePolicyChoice{SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.1"}},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pol)).To(Succeed())
-			pol.Status.LatestRef = &imagev1.ImageRef{Tag: rels[len(rels)-1].tag}
-			Expect(k8sClient.Status().Update(ctx, pol)).To(Succeed())
+			// its own catalogue, named after the Rollout
+			catalogueOf(name, rels)
+			ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: name}
 		}
 		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
 
 		succeeded := rolloutv1alpha1.BakeStatusSucceeded
-		if !slices {
-			for _, r := range rels {
-				c := metav1.NewTime(r.created)
-				ro.Status.AvailableReleases = append(ro.Status.AvailableReleases,
-					rolloutv1alpha1.VersionInfo{Tag: r.tag, Created: &c, Requires: r.requires})
-			}
-		}
 		if o.current != "" {
 			// History holds up to 3 entries ending at current, so the history
 			// criterion of retention has something to protect.
@@ -261,10 +243,9 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, ro)).To(Succeed())
 		return ro
 	}
-	listR := func() *RolloutReconciler { return &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()} }
-	sliceR := func(dual bool, k int) *RolloutReconciler {
+	sliceR := func(_ bool, k int) *RolloutReconciler {
 		return &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-			CatalogueAvailable: true, DualWriteReleaseLists: dual, ReleaseCandidates: k}
+			CatalogueAvailable: true, ReleaseCandidates: k}
 	}
 	passing := func(b bool) *bool { return &b }
 
@@ -276,72 +257,6 @@ var _ = Describe("Slices mode reader", func() {
 		allowed []string // gate allowedVersions, nil = no gate
 		expect  string   // expected deployed tag ("" = unchanged)
 	}
-	DescribeTable("picks the same release as list mode",
-		func(sc scenario) {
-			rels := trainRels(30, time.Hour)
-			// list world
-			newRollout("list", false, rels, rolloutOpts{current: sc.current, force: sc.force, wanted: sc.wanted})
-			// slices world
-			catalogueOf("src", rels)
-			newRollout("sl", true, rels, rolloutOpts{current: sc.current, force: sc.force, wanted: sc.wanted})
-			if sc.allowed != nil {
-				newGate("list", sc.allowed, nil)
-				newGate("sl", sc.allowed, nil)
-			}
-			l := reconcileOnce(listR(), "list")
-			s := reconcileOnce(sliceR(false, 3), "sl")
-			Expect(s.Status.History).To(HaveLen(len(l.Status.History)))
-			if len(l.Status.History) > 0 {
-				Expect(s.Status.History[0].Version.Tag).To(Equal(l.Status.History[0].Version.Tag))
-			}
-			want := sc.expect
-			if want == "" {
-				want = sc.current
-			}
-			Expect(s.Status.History[0].Version.Tag).To(Equal(want))
-		},
-		Entry("fresh rollout deploys the newest", scenario{expect: "r0030"}),
-		Entry("mid-train advances to the newest", scenario{current: "r0010", expect: "r0030"}),
-		Entry("gate restricts to a version outside K", scenario{current: "r0010", allowed: []string{"r0012"}, expect: "r0012"}),
-		Entry("force-deploy an older catalogued release", scenario{current: "r0010", force: "r0015", expect: "r0015"}),
-		Entry("wantedVersion outside the catalogue", scenario{current: "r0010", wanted: "elsewhere", expect: "elsewhere"}),
-		Entry("current tag not in catalogue yields no candidates", scenario{current: "custom"}),
-	)
-
-	// M1: gates, bypass and selection run over the whole catalogue; K and the 64
-	// cap only shape status.candidates.
-	DescribeTable("matches list mode when many gate-named releases exceed the 64 cap",
-		func(manual []string, bypass, expect string) {
-			rels := trainRels(200, time.Minute)
-			var wide []string
-			for _, r := range rels[1:] {
-				wide = append(wide, r.tag)
-			}
-			newRollout("list", false, rels, rolloutOpts{current: "r0001"})
-			catalogueOf("src", rels)
-			newRollout("sl", true, rels, rolloutOpts{current: "r0001"})
-			for _, n := range []string{"list", "sl"} {
-				newGateNamed("a-dependency-"+n, n, wide, nil)
-				if manual != nil {
-					newGateNamed("b-manual-"+n, n, manual, nil)
-				}
-				if bypass != "" {
-					newGateNamed("c-freeze-"+n, n, nil, passing(false))
-					ro := &rolloutv1alpha1.Rollout{}
-					Expect(k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: ns}, ro)).To(Succeed())
-					ro.Annotations = map[string]string{"rollout.kuberik.com/bypass-gates": bypass}
-					Expect(k8sClient.Update(ctx, ro)).To(Succeed())
-				}
-			}
-			l := reconcileOnce(listR(), "list")
-			s := reconcileOnce(sliceR(true, 3), "sl")
-			Expect(l.Status.History[0].Version.Tag).To(Equal(expect), "list mode")
-			Expect(s.Status.History[0].Version.Tag).To(Equal(expect), "slices mode")
-			Expect(len(s.Status.Candidates)).To(BeNumerically("<=", 64))
-		},
-		Entry("a manual gate allows one release older than the 64 newest", []string{"r0005"}, "", "r0005"),
-		Entry("bypass-gates names a release older than the 64 newest", nil, "r0010", "r0010"),
-	)
 
 	It("trims status.candidates to 64: the deployed pick and pins first, then the K newest, then named tags newest first", func() {
 		var rs []releasecatalogue.Release
@@ -500,104 +415,6 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(tagsOf(working)).NotTo(ContainElement("r0005"))
 	})
 
-	// 2. Dual-write lists equal list mode.
-	It("dual-writes lists equal to list mode (no deploy, gate blocking)", func() {
-		rels := trainRels(30, time.Hour)
-		newRollout("list", false, rels, rolloutOpts{current: "r0020"})
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, rolloutOpts{current: "r0020"})
-		newGate("list", nil, passing(false))
-		newGate("sl", nil, passing(false))
-		l := reconcileOnce(listR(), "list")
-		s := reconcileOnce(sliceR(true, 3), "sl")
-		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal(tagsOf(l.Status.AvailableReleases)))
-		Expect(tagsOf(s.Status.ReleaseCandidates)).To(Equal(tagsOf(l.Status.ReleaseCandidates)))
-		Expect(tagsOf(s.Status.GatedReleaseCandidates)).To(Equal(tagsOf(l.Status.GatedReleaseCandidates)))
-		Expect(s.Status.ReleaseCandidates).To(HaveLen(10))
-		Expect(s.Status.Candidates).To(HaveLen(3))
-	})
-
-	It("dual-writes the same retention as list mode when the history overflows", func() {
-		rels := trainRels(30, time.Hour)
-		opts := rolloutOpts{current: "r0020", limit: ptrTo(int32(3)), days: ptrTo(int32(1)), minCnt: ptrTo(int32(5))}
-		newRollout("list", false, rels, opts)
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, opts)
-		l := reconcileOnce(listR(), "list")
-		s := reconcileOnce(sliceR(true, 3), "sl")
-		Expect(s.Status.History[0].Version.Tag).To(Equal("r0030"))
-		Expect(len(l.Status.AvailableReleases)).To(BeNumerically("<", 30), "list mode must have trimmed")
-		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal(tagsOf(l.Status.AvailableReleases)))
-		Expect(tagsOf(s.Status.ReleaseCandidates)).To(Equal(tagsOf(l.Status.ReleaseCandidates)))
-	})
-
-	// M3: list mode trims availableReleases only inside deployRelease, when the history overflows.
-	It("keeps all 30 availableReleases in both modes when a full history does not deploy (QA probe)", func() {
-		rels := trainRels(30, time.Hour)
-		opts := rolloutOpts{current: "r0020", limit: ptrTo(int32(3)), days: ptrTo(int32(1)), minCnt: ptrTo(int32(5))}
-		newRollout("list", false, rels, opts)
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, opts)
-		for _, n := range []string{"list", "sl"} {
-			ro := &rolloutv1alpha1.Rollout{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: n, Namespace: ns}, ro)).To(Succeed())
-			succeeded := rolloutv1alpha1.BakeStatusSucceeded
-			ro.Status.History = nil
-			for _, t := range []string{"r0020", "r0019", "r0018"} { // history is full (limit 3)
-				ro.Status.History = append(ro.Status.History, rolloutv1alpha1.DeploymentHistoryEntry{
-					Version: rolloutv1alpha1.VersionInfo{Tag: t}, Timestamp: metav1.Now(), BakeStatus: &succeeded})
-			}
-			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
-			newGate(n, nil, passing(false)) // no deploy
-		}
-		l := reconcileOnce(listR(), "list")
-		s := reconcileOnce(sliceR(true, 3), "sl")
-		Expect(l.Status.AvailableReleases).To(HaveLen(30))
-		Expect(s.Status.AvailableReleases).To(HaveLen(30))
-		s = reconcileOnce(sliceR(true, 3), "sl")
-		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal(tagsOf(l.Status.AvailableReleases)), "stable across reconciles")
-	})
-
-	It("does not re-add releases list mode trimmed when the catalogue still holds them", func() {
-		rels := trainRels(30, time.Hour)
-		opts := rolloutOpts{current: "r0020", limit: ptrTo(int32(3)), days: ptrTo(int32(1)), minCnt: ptrTo(int32(5))}
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, opts)
-		s := reconcileOnce(sliceR(true, 3), "sl") // deploys r0030, history overflows, cleanup trims
-		trimmed := len(s.Status.AvailableReleases)
-		Expect(trimmed).To(BeNumerically("<", 30))
-		s = reconcileOnce(sliceR(true, 3), "sl")
-		Expect(s.Status.AvailableReleases).To(HaveLen(trimmed))
-	})
-
-	It("refreshes an unresolved availableRelease once the catalogue resolves it, as list mode does", func() {
-		rels := trainRels(3, time.Hour)
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, rolloutOpts{})
-		ro := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sl", Namespace: ns}, ro)).To(Succeed())
-		ro.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{
-			{Tag: "r0001", MetadataUnresolved: true}, {Tag: "r0002"}}
-		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
-		newGate("sl", nil, passing(false))
-		s := reconcileOnce(sliceR(true, 3), "sl")
-		Expect(tagsOf(s.Status.AvailableReleases)).To(Equal([]string{"r0001", "r0002", "r0003"}))
-		Expect(s.Status.AvailableReleases[0].MetadataUnresolved).To(BeFalse())
-		Expect(s.Status.AvailableReleases[0].Created).NotTo(BeNil())
-	})
-
-	It("clears the deprecated lists with dual-write off", func() {
-		rels := trainRels(30, time.Hour)
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, rolloutOpts{current: "r0020"})
-		newGate("sl", nil, passing(false))
-		s := reconcileOnce(sliceR(false, 3), "sl")
-		Expect(s.Status.AvailableReleases).To(BeEmpty())
-		Expect(s.Status.ReleaseCandidates).To(BeEmpty())
-		Expect(s.Status.GatedReleaseCandidates).To(BeEmpty())
-		Expect(s.Status.Candidates).To(HaveLen(3))
-	})
-
 	It("records a bare unresolved tag and an Event for a pin outside the catalogue", func() {
 		rels := trainRels(5, time.Hour)
 		catalogueOf("src", rels)
@@ -613,180 +430,6 @@ var _ = Describe("Slices mode reader", func() {
 			events = append(events, <-rec.Events)
 		}
 		Expect(events).To(ContainElement(ContainSubstring("ReleaseNotInCatalogue")))
-	})
-
-	// 4. RolloutDependency parity.
-	It("RolloutDependency admits and blocks the same releases in slices mode", func() {
-		provider := []testRel{{tag: "provider-1", created: time.Now().Add(-2 * time.Hour)}}
-		cons := []testRel{
-			{tag: "consumer-1", created: time.Now().Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-			{tag: "consumer-2", created: time.Now().Add(-1 * time.Hour), requires: map[string]string{"api": "^1.1.0"}},
-		}
-		ver := sliceVer1
-		mk := func(name string, slices bool) {
-			newRollout(name, slices, cons, rolloutOpts{current: "consumer-1"})
-		}
-		// provider (list mode is fine: only its history matters)
-		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
-		p := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
-		p.Status.History[0].Version.Version = &ver
-		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
-
-		mk("cons-list", false)
-		catalogueOf("src", cons)
-		mk("cons-sl", true)
-		// What a prior slices reconcile leaves behind, minus the gate.
-		c := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons-sl", Namespace: ns}, c)).To(Succeed())
-		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
-		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
-
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
-		for _, n := range []string{"list", "sl"} {
-			dep := &rolloutv1alpha1.RolloutDependency{
-				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
-				Spec: rolloutv1alpha1.RolloutDependencySpec{
-					RolloutRef:  corev1.LocalObjectReference{Name: "cons-" + n},
-					ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
-					Contract:    ptrTo("api"),
-				},
-			}
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			_, err := depR.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dep)})
-			Expect(err).NotTo(HaveOccurred())
-		}
-		getDep := func(n string) *rolloutv1alpha1.RolloutDependency {
-			d := &rolloutv1alpha1.RolloutDependency{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "dep-" + n, Namespace: ns}, d)).To(Succeed())
-			return d
-		}
-		dl, ds := getDep("list"), getDep("sl")
-		Expect(ds.Status.BlockedReleases).To(Equal(dl.Status.BlockedReleases))
-		Expect(ds.Status.BlockedReleases).To(HaveLen(1))
-		Expect(ds.Status.BlockedReleases[0].Tag).To(Equal("consumer-2"))
-		for _, cond := range []string{rolloutv1alpha1.RolloutDependencySatisfied} {
-			Expect(meta.FindStatusCondition(ds.Status.Conditions, cond).Status).
-				To(Equal(meta.FindStatusCondition(dl.Status.Conditions, cond).Status))
-		}
-		l := reconcileOnce(listR(), "cons-list")
-		s := reconcileOnce(sliceR(false, 3), "cons-sl")
-		Expect(l.Status.History[0].Version.Tag).To(Equal("consumer-1"))
-		Expect(s.Status.History[0].Version.Tag).To(Equal("consumer-1"), "blocked consumer-2 must not deploy")
-	})
-
-	// 4b. Dependency parity beyond the K candidates: K newest blocked, 4th admitted.
-	It("RolloutDependency admits an older release when the K newest are all blocked, like list mode", func() {
-		now := time.Now()
-		provider := []testRel{{tag: "provider-1", created: now.Add(-10 * time.Hour)}}
-		blockedReq := map[string]string{"api": "^1.1.0"}
-		cons := []testRel{
-			{tag: "cons-0", created: now.Add(-9 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-			{tag: "cons-1-ok", created: now.Add(-8 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-			{tag: "cons-2", created: now.Add(-7 * time.Hour), requires: blockedReq},
-			{tag: "cons-3", created: now.Add(-6 * time.Hour), requires: blockedReq},
-			{tag: "cons-4", created: now.Add(-5 * time.Hour), requires: blockedReq},
-		}
-		ver := sliceVer1
-		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
-		p := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
-		p.Status.History[0].Version.Version = &ver
-		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
-
-		newRollout("cons-list", false, cons, rolloutOpts{current: "cons-0"})
-		catalogueOf("src", cons)
-		newRollout("cons-sl", true, cons, rolloutOpts{current: "cons-0"})
-		c := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons-sl", Namespace: ns}, c)).To(Succeed())
-		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
-		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
-
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
-		for _, n := range []string{"list", "sl"} {
-			dep := &rolloutv1alpha1.RolloutDependency{
-				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
-				Spec: rolloutv1alpha1.RolloutDependencySpec{
-					RolloutRef:  corev1.LocalObjectReference{Name: "cons-" + n},
-					ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
-					Contract:    ptrTo("api"),
-				},
-			}
-			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-			_, err := depR.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dep)})
-			Expect(err).NotTo(HaveOccurred())
-		}
-		blockedTagsOf := func(n string) []string {
-			d := &rolloutv1alpha1.RolloutDependency{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "dep-" + n, Namespace: ns}, d)).To(Succeed())
-			var out []string
-			for _, b := range d.Status.BlockedReleases {
-				out = append(out, b.Tag)
-			}
-			Expect(d.Status.AdmittedVersions).To(ContainElement("cons-1-ok"))
-			return out
-		}
-		Expect(blockedTagsOf("sl")).To(ConsistOf("cons-2", "cons-3", "cons-4"))
-		Expect(blockedTagsOf("sl")).To(ConsistOf(blockedTagsOf("list")))
-
-		l := reconcileOnce(listR(), "cons-list")
-		s := reconcileOnce(sliceR(false, 3), "cons-sl")
-		Expect(l.Status.History[0].Version.Tag).To(Equal("cons-1-ok"))
-		Expect(s.Status.History[0].Version.Tag).To(Equal("cons-1-ok"))
-		// cons-1-ok is outside the K=3 newest; it was deployed because the
-		// dependency gate's allowedVersions named it into the working set.
-		Expect(tagsOfCandidates(s.Status.Candidates)).To(ConsistOf("cons-4", "cons-3", "cons-2"))
-	})
-
-	// 4a. M2: the mode is the flag plus spec.releaseSourceRef, never leftover status.
-	It("RolloutDependency with the flag off ignores releaseSourceRef and a leftover status.releaseSource", func() {
-		now := time.Now()
-		provider := []testRel{{tag: "provider-1", created: now.Add(-3 * time.Hour)}}
-		// What the Rollout's own list holds: cons-1 needs api ^1.1.0 and is blocked.
-		listRels := []testRel{
-			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.1.0"}},
-		}
-		// A catalogue the flag-off controller must not look at: nothing is blocked there.
-		catRels := []testRel{
-			{tag: "cons-0", created: now.Add(-2 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-			{tag: "cons-1", created: now.Add(-1 * time.Hour), requires: map[string]string{"api": "^1.0.0"}},
-		}
-		ver := sliceVer1
-		newRollout("prov", false, provider, rolloutOpts{current: "provider-1"})
-		p := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prov", Namespace: ns}, p)).To(Succeed())
-		p.Status.History[0].Version.Version = &ver
-		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
-
-		catalogueOf("src", catRels)
-		newRollout("cons", false, listRels, rolloutOpts{current: "cons-0"})
-		c := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, c)).To(Succeed())
-		c.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
-		Expect(k8sClient.Update(ctx, c)).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, c)).To(Succeed())
-		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true} // leftover
-		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
-
-		dep := &rolloutv1alpha1.RolloutDependency{
-			ObjectMeta: metav1.ObjectMeta{Name: "dep", Namespace: ns},
-			Spec: rolloutv1alpha1.RolloutDependencySpec{
-				RolloutRef:  corev1.LocalObjectReference{Name: "cons"},
-				ProviderRef: rolloutv1alpha1.ProviderRolloutReference{Name: "prov"},
-				Contract:    ptrTo("api"),
-			},
-		}
-		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		_, err := depR.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dep)})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), dep)).To(Succeed())
-		var blocked []string
-		for _, b := range dep.Status.BlockedReleases {
-			blocked = append(blocked, b.Tag)
-		}
-		Expect(blocked).To(ConsistOf("cons-1"), "evaluated against availableReleases, not the catalogue")
 	})
 
 	// startManager runs a manager scoped to the test namespace with the given
@@ -871,67 +514,6 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(blockedNow()).To(BeEmpty())
 	})
 
-	// 4c. releasesImagePolicy is optional.
-	// m6: without the release-controller CRDs, a Rollout with only releaseSourceRef says why.
-	It("says the release-controller CRDs are missing when only releaseSourceRef is set and the catalogue is unavailable", func() {
-		ro := &rolloutv1alpha1.Rollout{
-			ObjectMeta: metav1.ObjectMeta{Name: "nopolicy", Namespace: ns},
-			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
-		}
-		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
-		var err error
-		Expect(func() {
-			_, err = listR().Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "nopolicy", Namespace: ns}})
-		}).NotTo(Panic())
-		Expect(err).NotTo(HaveOccurred(), "no ImagePolicy Get error loop")
-		got := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "nopolicy", Namespace: ns}, got)).To(Succeed())
-		cond := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
-		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(reasonCatalogueUnavailable))
-		Expect(cond.Message).To(ContainSubstring("CRDs"))
-		Expect(cond.Message).To(ContainSubstring("spec.releasesImagePolicy"))
-	})
-
-	// m5: the generated CRD says list mode writes availableReleases too.
-	It("documents availableReleases as written in list mode as well", func() {
-		raw, err := os.ReadFile("../../config/crd/bases/kuberik.com_rollouts.yaml")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(raw)).To(ContainSubstring("Written by Rollouts without releaseSourceRef"))
-		Expect(string(raw)).NotTo(ContainSubstring("--release-slices"))
-	})
-
-	// One reconciler serves both kinds of Rollout: the ref alone opts in.
-	It("reads slices for a Rollout with releaseSourceRef and the ImagePolicy for one without, in the same reconciler", func() {
-		rels := trainRels(30, time.Hour)
-		newRollout("ip", false, rels, rolloutOpts{})
-		catalogueOf("src", rels)
-		newRollout("sl", true, rels, rolloutOpts{})
-		r := sliceR(true, 3)
-		ip := reconcileOnce(r, "ip")
-		sl := reconcileOnce(r, "sl")
-		Expect(ip.Status.History[0].Version.Tag).To(Equal("r0030"))
-		Expect(sl.Status.History[0].Version.Tag).To(Equal("r0030"))
-		Expect(ip.Status.Candidates).To(BeEmpty(), "ImagePolicy Rollout never touches catalogue status")
-		Expect(ip.Status.ReleaseSource).To(BeNil())
-		Expect(sl.Status.ReleaseSource).NotTo(BeNil(), "ref'd Rollout read the catalogue")
-		Expect(meta.FindStatusCondition(ip.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)).To(BeNil())
-	})
-
-	It("falls back to the ImagePolicy for a ref'd Rollout when the catalogue CRDs are absent", func() {
-		rels := trainRels(5, time.Hour)
-		newRollout("both", false, rels, rolloutOpts{})
-		both := &rolloutv1alpha1.Rollout{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "both", Namespace: ns}, both)).To(Succeed())
-		both.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
-		Expect(k8sClient.Update(ctx, both)).To(Succeed())
-		got := reconcileOnce(listR(), "both")
-		Expect(got.Status.History).NotTo(BeEmpty())
-		Expect(got.Status.History[0].Version.Tag).To(Equal("r0005"))
-		Expect(got.Status.ReleaseSource).To(BeNil())
-	})
-
 	DescribeTable("catalogueCRDsInstalled gates the catalogue watches on the RESTMapper",
 		func(kinds []string, want bool) {
 			m := meta.NewDefaultRESTMapper([]schema.GroupVersion{releasecatalogue.GroupVersion})
@@ -943,31 +525,6 @@ var _ = Describe("Slices mode reader", func() {
 		Entry("no CRDs: manager setup must not require them", nil, false),
 		Entry("only ReleaseSource", []string{"ReleaseSource"}, false),
 		Entry("both", []string{"ReleaseSource", "ReleaseSlice"}, true),
-	)
-
-	// The CEL rule on RolloutSpec: has(self.releasesImagePolicy.name) || has(self.releaseSourceRef).
-	DescribeTable("validates releasesImagePolicy / releaseSourceRef on the API server",
-		func(spec map[string]interface{}, wantErr bool) {
-			u := &unstructured.Unstructured{Object: map[string]interface{}{"spec": spec}}
-			u.SetAPIVersion("kuberik.com/v1alpha1")
-			u.SetKind("Rollout")
-			u.SetNamespace(ns)
-			u.SetName("cel")
-			err := k8sClient.Create(ctx, u)
-			if wantErr {
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"))
-				return
-			}
-			Expect(err).NotTo(HaveOccurred())
-		},
-		Entry("only releaseSourceRef is accepted", map[string]interface{}{
-			"releaseSourceRef": map[string]interface{}{"name": "src"}}, false),
-		Entry("existing style, releasesImagePolicy.name, is accepted", map[string]interface{}{
-			"releasesImagePolicy": map[string]interface{}{"name": "pol"}}, false),
-		Entry("neither key is rejected", map[string]interface{}{}, true),
-		Entry("an empty releasesImagePolicy object counts as set (name defaults to empty), as Go clients send it",
-			map[string]interface{}{"releasesImagePolicy": map[string]interface{}{}}, false),
 	)
 
 	It("serialises releasesImagePolicy as a value type, so a Go client leaving it zero still creates a Rollout", func() {
@@ -1133,7 +690,7 @@ var _ = Describe("Slices mode reader", func() {
 		})).To(Succeed())
 		startManager(func(mgr ctrl.Manager) {
 			Expect((&RolloutReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
-				CatalogueAvailable: true, DualWriteReleaseLists: false, ReleaseCandidates: 3}).SetupWithManager(mgr)).To(Succeed())
+				CatalogueAvailable: true, ReleaseCandidates: 3}).SetupWithManager(mgr)).To(Succeed())
 		})
 		reason := func() string {
 			ro := &rolloutv1alpha1.Rollout{}

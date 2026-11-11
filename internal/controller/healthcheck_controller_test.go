@@ -552,9 +552,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						Selector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{
@@ -612,9 +610,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 				},
 				Status: rolloutv1alpha1.RolloutStatus{
 					History: []rolloutv1alpha1.DeploymentHistoryEntry{},
@@ -653,9 +649,7 @@ var _ = Describe("HealthCheck Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: rolloutv1alpha1.RolloutSpec{
-					ReleasesImagePolicy: corev1.LocalObjectReference{
-						Name: "test-image-policy",
-					},
+					ReleaseSourceRef: &corev1.LocalObjectReference{Name: "test-image-policy"},
 					HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{

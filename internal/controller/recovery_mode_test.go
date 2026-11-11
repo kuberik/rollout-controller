@@ -22,11 +22,8 @@ import (
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1 "k8s.io/api/core/v1"
-
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1"
-	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var _ = Describe("setDeploymentBlockedCondition", func() {
@@ -87,7 +84,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 	var (
 		namespace   string
 		rollout     *rolloutv1alpha1.Rollout
-		imagePolicy *imagev1.ImagePolicy
+		imagePolicy *testFeed
 		healthCheck *rolloutv1alpha1.HealthCheck
 		fakeClock   *FakeClock
 		reconciler  *RolloutReconciler
@@ -99,27 +96,14 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		imagePolicy = &imagev1.ImagePolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "rec-ip", Namespace: namespace},
-			Spec: imagev1.ImagePolicySpec{
-				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1.ImagePolicyChoice{
-					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-		imagePolicy.Status.Conditions = []metav1.Condition{{
-			Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now(), Reason: "Ready",
-		}}
-		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
-		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+		imagePolicy = newTestFeed(namespace, "rec-ip")
+		imagePolicy.Publish("1.0.0")
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "rec-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "rec-ip"},
-				BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: "rec-ip"},
+				BakeTime:         &metav1.Duration{Duration: 5 * time.Minute},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test-app"}},
 				},
@@ -136,7 +120,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
 
 		fakeClock = NewFakeClock()
-		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+		reconciler = &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 		key = types.NamespacedName{Name: rollout.Name, Namespace: namespace}
 	})
 
@@ -302,8 +286,7 @@ var _ = Describe("BakeFailureDisabled condition (set at deploy time)", func() {
 		Expect(bakeFailureCondition().Reason).To(Equal("DeployedWithUnhealthyHealthChecks"))
 
 		// Make a new release available.
-		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "2.0.0"}
-		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+		imagePolicy.Publish("2.0.0")
 
 		// Heal the HC so the next deploy is created with healthy HCs.
 		healthCheck.Status.Status = rolloutv1alpha1.HealthStatusHealthy
@@ -332,7 +315,7 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 	var (
 		namespace   string
 		rollout     *rolloutv1alpha1.Rollout
-		imagePolicy *imagev1.ImagePolicy
+		imagePolicy *testFeed
 		healthCheck *rolloutv1alpha1.HealthCheck
 		fakeClock   *FakeClock
 		reconciler  *RolloutReconciler
@@ -344,26 +327,13 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 
-		imagePolicy = &imagev1.ImagePolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "block-ip", Namespace: namespace},
-			Spec: imagev1.ImagePolicySpec{
-				ImageRepositoryRef: fluxmeta.NamespacedObjectReference{Name: "ignored"},
-				Policy: imagev1.ImagePolicyChoice{
-					SemVer: &imagev1.SemVerPolicy{Range: ">=0.0.0"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, imagePolicy)).To(Succeed())
-		imagePolicy.Status.Conditions = []metav1.Condition{{
-			Type: "Ready", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now(), Reason: "Ready",
-		}}
-		imagePolicy.Status.LatestRef = &imagev1.ImageRef{Tag: "1.0.0"}
-		Expect(k8sClient.Status().Update(ctx, imagePolicy)).To(Succeed())
+		imagePolicy = newTestFeed(namespace, "block-ip")
+		imagePolicy.Publish("1.0.0")
 
 		rollout = &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "block-rollout", Namespace: namespace},
 			Spec: rolloutv1alpha1.RolloutSpec{
-				ReleasesImagePolicy: corev1.LocalObjectReference{Name: "block-ip"},
+				ReleaseSourceRef: &corev1.LocalObjectReference{Name: "block-ip"},
 				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test-app"}},
 				},
@@ -380,7 +350,7 @@ var _ = Describe("DeploymentBlocked condition with concurrent gate blocking", fu
 		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
 
 		fakeClock = NewFakeClock()
-		reconciler = &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+		reconciler = &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
 		key = types.NamespacedName{Name: rollout.Name, Namespace: namespace}
 	})
 
