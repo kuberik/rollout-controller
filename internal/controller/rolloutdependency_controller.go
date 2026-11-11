@@ -165,7 +165,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// next, not against every release ever seen: releases already behind the
 	// deployed one are irrelevant to whether this dependency is holding anything
 	// back.
-	blocking := blockedTags(blocked, pendingTags(consumerRels, consumer, r.usesCatalogue(consumer)))
+	blocking := blockedTags(blocked, pendingTags(consumerRels))
 
 	dependency.Status.ProvidedVersion = nilIfEmpty(providedVersion)
 	dependency.Status.ProvidedTag = nilIfEmpty(providedTag)
@@ -217,31 +217,14 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// pendingTags returns the tags the consumer Rollout could still move to,
-// i.e. releases newer than the one currently deployed.
-//
-// An empty result means the consumer has nothing to advance to: either there
-// are no releases at all, or its deployed tag is no longer in the release list
-// (retention pruned it), so no upgrade path can be computed. Both are correctly
-// read as "this dependency is holding nothing back".
-//
-// rels is what consumerReleases returned (oldest first). In slices mode that is
-// already only the releases newer than the deployed one.
-func pendingTags(rels []kuberikcomv1alpha1.VersionInfo, consumer *kuberikcomv1alpha1.Rollout, fromCatalogue bool) []string {
-	if fromCatalogue {
-		tags := make([]string, 0, len(rels))
-		for _, v := range rels {
-			tags = append(tags, v.Tag)
-		}
-		return tags
-	}
-	candidates, err := getNextReleaseCandidates(rels, &consumer.Status)
-	if err != nil {
-		return nil
-	}
-	tags := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		tags = append(tags, candidate.Tag)
+// pendingTags returns the tags the consumer Rollout could still move to: the
+// releases consumerReleases returned, which are already only the ones newer
+// than the deployed tag. An empty result (no catalogue, an empty catalogue, or
+// nothing newer) reads as "this dependency is holding nothing back".
+func pendingTags(rels []kuberikcomv1alpha1.VersionInfo) []string {
+	tags := make([]string, 0, len(rels))
+	for _, v := range rels {
+		tags = append(tags, v.Tag)
 	}
 	return tags
 }
