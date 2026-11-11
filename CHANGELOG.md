@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Release catalogue reader: with `--release-slices`, the Rollout controller reads releases from a release-controller `ReleaseSource` (`spec.releaseSourceRef`) and its `ReleaseSlice` catalogue instead of an ImagePolicy, and publishes `status.candidates` and `status.releaseSource`.
-- `--dual-write-release-lists` (default on): in slices mode, keep writing `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` so existing readers keep working.
+- Release catalogue reader: a Rollout with `spec.releaseSourceRef` reads releases from the release-controller `ReleaseSource` and its `ReleaseSlice` catalogue instead of an ImagePolicy (no flag; Rollouts without the ref keep using `spec.releasesImagePolicy`). Without the release-controller CRDs installed the controller still starts and such Rollouts get condition `RolloutReleasesUpdated=False`, reason `ReleaseCatalogueUnavailable`; restart the controller after installing the CRDs, and publishes `status.candidates` and `status.releaseSource`.
+- `--dual-write-release-lists` (default on): for Rollouts with `spec.releaseSourceRef`, keep writing `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` so existing readers keep working.
 
 ### Deprecated
 

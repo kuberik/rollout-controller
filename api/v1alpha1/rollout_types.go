@@ -113,15 +113,15 @@ func (hcsc *HealthCheckSelectorConfig) IsValid() bool {
 // +kubebuilder:validation:XValidation:rule="has(self.releasesImagePolicy.name) || has(self.releaseSourceRef)",message="one of spec.releasesImagePolicy or spec.releaseSourceRef must be set"
 type RolloutSpec struct {
 	// ReleaseSourceRef names a ReleaseSource (kuberik.com, served by release-controller)
-	// in the same namespace that provides this Rollout's releases. It is only read
-	// when the controller runs with --release-slices; in that mode a Rollout without
-	// it does not proceed (condition ReleaseSourceReady=False, reason ReleaseSourceNotSet).
+	// in the same namespace that provides this Rollout's releases. When set (and the
+	// release-controller CRDs are installed) the Rollout reads its releases from the
+	// source's ReleaseSlice catalogue; a Rollout without it uses releasesImagePolicy.
 	// +optional
 	ReleaseSourceRef *corev1.LocalObjectReference `json:"releaseSourceRef,omitempty"`
 
 	// ReleasesImagePolicy specifies the ImagePolicy that provides available releases.
 	// Deprecated in favour of releaseSourceRef; will be removed in a later release.
-	// Read only in list mode (without --release-slices). Optional when releaseSourceRef is set.
+	// Read only by Rollouts without releaseSourceRef. Optional when releaseSourceRef is set.
 	// A value type, so Go clients always send "releasesImagePolicy: {}"; the API
 	// server defaults name to "" and the RolloutSpec rule then counts it as set.
 	// The rule therefore rejects a manifest that omits both keys, not a Go client
@@ -285,7 +285,7 @@ type RolloutStatus struct {
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
 
 	// Deprecated: read status.candidates and the ReleaseSlice catalogue instead.
-	// Written in list mode (without --release-slices), and in slices mode while
+	// Written by Rollouts without releaseSourceRef, and by those with one while
 	// --dual-write-release-lists is on (its default); cleared otherwise. Will be
 	// removed in a later release.
 	// AvailableReleases is a list of all releases available in the releases repository.

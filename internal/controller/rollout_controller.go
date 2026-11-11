@@ -89,11 +89,13 @@ type RolloutReconciler struct {
 	Clock    Clock
 	Recorder record.EventRecorder
 
-	// ReleaseSlices enables slices mode: releases come from a ReleaseSource
-	// catalogue (--release-slices). Off = today's ImagePolicy path.
-	ReleaseSlices bool
+	// CatalogueAvailable is set when the release-controller ReleaseSource and
+	// ReleaseSlice CRDs are installed (SetupWithManager detects it). Rollouts
+	// with spec.releaseSourceRef then read releases from the catalogue; all
+	// others use the ImagePolicy path.
+	CatalogueAvailable bool
 	// DualWriteReleaseLists keeps the deprecated availableReleases,
-	// releaseCandidates and gatedReleaseCandidates written in slices mode.
+	// releaseCandidates and gatedReleaseCandidates written for catalogue Rollouts.
 	DualWriteReleaseLists bool
 	// ReleaseCandidates is K, the newest candidates kept in status.candidates.
 	ReleaseCandidates int
@@ -367,9 +369,15 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize the EventRecorder
 	r.Recorder = mgr.GetEventRecorderFor("rollout-controller") //nolint:staticcheck // SA1019
 
+	r.CatalogueAvailable = catalogueCRDsInstalled(mgr.GetRESTMapper())
+	if !r.CatalogueAvailable {
+		logf.Log.WithName("rollout").Info("release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed; " +
+			"Rollouts with spec.releaseSourceRef fall back to spec.releasesImagePolicy. Restart after installing them.")
+	}
+
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{})
-	if r.ReleaseSlices {
+	if r.CatalogueAvailable {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &rolloutv1alpha1.Rollout{},
 			releaseSourceIndexField, releaseSourceRefIndexer); err != nil {
 			return err

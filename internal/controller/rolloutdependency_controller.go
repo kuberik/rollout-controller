@@ -52,10 +52,10 @@ type RolloutDependencyReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// ReleaseSlices mirrors the Rollout controller's --release-slices. The mode
-	// is decided by this flag and the consumer's spec.releaseSourceRef alone,
-	// never by leftover status.
-	ReleaseSlices bool
+	// CatalogueAvailable is set by SetupWithManager when the release-controller
+	// CRDs are installed. The mode is decided by it and the consumer's
+	// spec.releaseSourceRef alone, never by leftover status.
+	CatalogueAvailable bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies,verbs=get;list;watch;create;update;patch;delete
@@ -411,8 +411,9 @@ func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&kuberikcomv1alpha1.Rollout{},
 			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForRollout),
 		)
-	if r.ReleaseSlices {
-		// In slices mode the gate is evaluated over the consumer's catalogue, which
+	r.CatalogueAvailable = catalogueCRDsInstalled(mgr.GetRESTMapper())
+	if r.CatalogueAvailable {
+		// For catalogue Rollouts the gate is evaluated over the consumer's catalogue, which
 		// can change (a repair, a new release) without the Rollout changing.
 		b = b.Watches(
 			&releasecatalogue.ReleaseSlice{},
@@ -499,11 +500,11 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 }
 
 // usesCatalogue reports whether the consumer's releases come from its
-// ReleaseSource catalogue: the --release-slices flag and spec.releaseSourceRef,
-// nothing from status. With the flag off the code path is the list-mode one and
-// ReleaseSlices are never listed.
+// ReleaseSource catalogue: spec.releaseSourceRef with the
+// release-controller CRDs installed, nothing from status. Without a ref the code
+// path is the list-mode one and ReleaseSlices are never listed.
 func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
-	return r.ReleaseSlices && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
+	return r.CatalogueAvailable && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
 }
 
 // consumerReleases returns the releases to evaluate, oldest first. In slices

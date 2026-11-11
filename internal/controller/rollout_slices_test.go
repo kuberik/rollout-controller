@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -263,7 +264,7 @@ var _ = Describe("Slices mode reader", func() {
 	listR := func() *RolloutReconciler { return &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()} }
 	sliceR := func(dual bool, k int) *RolloutReconciler {
 		return &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-			ReleaseSlices: true, DualWriteReleaseLists: dual, ReleaseCandidates: k}
+			CatalogueAvailable: true, DualWriteReleaseLists: dual, ReleaseCandidates: k}
 	}
 	passing := func(b bool) *bool { return &b }
 
@@ -424,7 +425,7 @@ var _ = Describe("Slices mode reader", func() {
 			Version: rolloutv1alpha1.VersionInfo{Tag: "expired", Created: &created}, Timestamp: metav1.Now()}}
 		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cons", Namespace: ns}, ro)).To(Succeed())
-		d := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
+		d := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
 		got, err := d.consumerReleases(ctx, ro)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tagsOf(got)).To(Equal([]string{"r0009", "r0010"}), "oldest first")
@@ -641,7 +642,7 @@ var _ = Describe("Slices mode reader", func() {
 		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
 		for _, n := range []string{"list", "sl"} {
 			dep := &rolloutv1alpha1.RolloutDependency{
 				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
@@ -701,7 +702,7 @@ var _ = Describe("Slices mode reader", func() {
 		c.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 
-		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ReleaseSlices: true}
+		depR := &RolloutDependencyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), CatalogueAvailable: true}
 		for _, n := range []string{"list", "sl"} {
 			dep := &rolloutv1alpha1.RolloutDependency{
 				ObjectMeta: metav1.ObjectMeta{Name: "dep-" + n, Namespace: ns},
@@ -843,7 +844,7 @@ var _ = Describe("Slices mode reader", func() {
 		}
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 		startManager(func(mgr ctrl.Manager) {
-			Expect((&RolloutDependencyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), ReleaseSlices: true}).SetupWithManager(mgr)).To(Succeed())
+			Expect((&RolloutDependencyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), CatalogueAvailable: true}).SetupWithManager(mgr)).To(Succeed())
 		})
 		admitted := func() []string {
 			d := &rolloutv1alpha1.RolloutDependency{}
@@ -871,8 +872,8 @@ var _ = Describe("Slices mode reader", func() {
 	})
 
 	// 4c. releasesImagePolicy is optional.
-	// m6: list mode with only releaseSourceRef says that slices mode is off.
-	It("says release-controller slices mode is off in list mode when only releaseSourceRef is set", func() {
+	// m6: without the release-controller CRDs, a Rollout with only releaseSourceRef says why.
+	It("says the release-controller CRDs are missing when only releaseSourceRef is set and the catalogue is unavailable", func() {
 		ro := &rolloutv1alpha1.Rollout{
 			ObjectMeta: metav1.ObjectMeta{Name: "nopolicy", Namespace: ns},
 			Spec:       rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "src"}},
@@ -888,7 +889,8 @@ var _ = Describe("Slices mode reader", func() {
 		cond := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Message).To(ContainSubstring("--release-slices"))
+		Expect(cond.Reason).To(Equal(reasonCatalogueUnavailable))
+		Expect(cond.Message).To(ContainSubstring("CRDs"))
 		Expect(cond.Message).To(ContainSubstring("spec.releasesImagePolicy"))
 	})
 
@@ -896,9 +898,52 @@ var _ = Describe("Slices mode reader", func() {
 	It("documents availableReleases as written in list mode as well", func() {
 		raw, err := os.ReadFile("../../config/crd/bases/kuberik.com_rollouts.yaml")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(string(raw)).To(ContainSubstring("Written in list mode (without --release-slices)"))
-		Expect(string(raw)).NotTo(ContainSubstring("Written only with --release-slices"))
+		Expect(string(raw)).To(ContainSubstring("Written by Rollouts without releaseSourceRef"))
+		Expect(string(raw)).NotTo(ContainSubstring("--release-slices"))
 	})
+
+	// One reconciler serves both kinds of Rollout: the ref alone opts in.
+	It("reads slices for a Rollout with releaseSourceRef and the ImagePolicy for one without, in the same reconciler", func() {
+		rels := trainRels(30, time.Hour)
+		newRollout("ip", false, rels, rolloutOpts{})
+		catalogueOf("src", rels)
+		newRollout("sl", true, rels, rolloutOpts{})
+		r := sliceR(true, 3)
+		ip := reconcileOnce(r, "ip")
+		sl := reconcileOnce(r, "sl")
+		Expect(ip.Status.History[0].Version.Tag).To(Equal("r0030"))
+		Expect(sl.Status.History[0].Version.Tag).To(Equal("r0030"))
+		Expect(ip.Status.Candidates).To(BeEmpty(), "ImagePolicy Rollout never touches catalogue status")
+		Expect(ip.Status.ReleaseSource).To(BeNil())
+		Expect(sl.Status.ReleaseSource).NotTo(BeNil(), "ref'd Rollout read the catalogue")
+		Expect(meta.FindStatusCondition(ip.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)).To(BeNil())
+	})
+
+	It("falls back to the ImagePolicy for a ref'd Rollout when the catalogue CRDs are absent", func() {
+		rels := trainRels(5, time.Hour)
+		newRollout("both", false, rels, rolloutOpts{})
+		both := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "both", Namespace: ns}, both)).To(Succeed())
+		both.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
+		Expect(k8sClient.Update(ctx, both)).To(Succeed())
+		got := reconcileOnce(listR(), "both")
+		Expect(got.Status.History).NotTo(BeEmpty())
+		Expect(got.Status.History[0].Version.Tag).To(Equal("r0005"))
+		Expect(got.Status.ReleaseSource).To(BeNil())
+	})
+
+	DescribeTable("catalogueCRDsInstalled gates the catalogue watches on the RESTMapper",
+		func(kinds []string, want bool) {
+			m := meta.NewDefaultRESTMapper([]schema.GroupVersion{releasecatalogue.GroupVersion})
+			for _, k := range kinds {
+				m.Add(releasecatalogue.GroupVersion.WithKind(k), meta.RESTScopeNamespace)
+			}
+			Expect(catalogueCRDsInstalled(m)).To(Equal(want))
+		},
+		Entry("no CRDs: manager setup must not require them", nil, false),
+		Entry("only ReleaseSource", []string{"ReleaseSource"}, false),
+		Entry("both", []string{"ReleaseSource", "ReleaseSlice"}, true),
+	)
 
 	// The CEL rule on RolloutSpec: has(self.releasesImagePolicy.name) || has(self.releaseSourceRef).
 	DescribeTable("validates releasesImagePolicy / releaseSourceRef on the API server",
@@ -1088,7 +1133,7 @@ var _ = Describe("Slices mode reader", func() {
 		})).To(Succeed())
 		startManager(func(mgr ctrl.Manager) {
 			Expect((&RolloutReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
-				ReleaseSlices: true, DualWriteReleaseLists: false, ReleaseCandidates: 3}).SetupWithManager(mgr)).To(Succeed())
+				CatalogueAvailable: true, DualWriteReleaseLists: false, ReleaseCandidates: 3}).SetupWithManager(mgr)).To(Succeed())
 		})
 		reason := func() string {
 			ro := &rolloutv1alpha1.Rollout{}
@@ -1150,12 +1195,7 @@ var _ = Describe("Slices mode reader", func() {
 		func(reason string, setup func()) {
 			setup()
 			ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "sl", Namespace: ns}}
-			if reason != reasonSourceNotSet {
-				ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
-			} else {
-				// spec requires one of the two refs; releasesImagePolicy alone is "ref unset" in slices mode.
-				ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: "unused"}
-			}
+			ro.Spec.ReleaseSourceRef = &corev1.LocalObjectReference{Name: "src"}
 			Expect(k8sClient.Create(ctx, ro)).To(Succeed())
 			succeeded := rolloutv1alpha1.BakeStatusSucceeded
 			ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
@@ -1201,7 +1241,6 @@ var _ = Describe("Slices mode reader", func() {
 			}
 			Expect(count).To(Equal(1))
 		},
-		Entry("ref unset", reasonSourceNotSet, func() {}),
 		Entry("object missing", reasonSourceNotFound, func() {}),
 		Entry("source not Ready", reasonSourceNotReady, func() { createSource("src", false, 0, "x") }),
 	)

@@ -18,7 +18,7 @@ import (
 	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 )
 
-// Slices mode (--release-slices): the Rollout reads its releases from the
+// Catalogue mode: a Rollout with spec.releaseSourceRef reads its releases from the
 // ReleaseSlice catalogue of the ReleaseSource named by spec.releaseSourceRef.
 // The contract follows the release-controller design: slices are read from the
 // informer cache, merged and ordered by sequence; nothing else is copied to status.
@@ -35,9 +35,9 @@ const (
 	maxStatusCandidates  = MaxReleaseCandidates
 	maxBlockedBy         = 16
 
-	reasonSourceNotSet   = "ReleaseSourceNotSet"
-	reasonSourceNotFound = "ReleaseSourceNotFound"
-	reasonSourceNotReady = "ReleaseSourceNotReady"
+	reasonCatalogueUnavailable = "ReleaseCatalogueUnavailable"
+	reasonSourceNotFound       = "ReleaseSourceNotFound"
+	reasonSourceNotReady       = "ReleaseSourceNotReady"
 )
 
 // catalogue is the merged, ordered view of a ReleaseSource's slices.
@@ -145,11 +145,6 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 // prepareSlices resolves the ReleaseSource and loads its catalogue. proceed is
 // false when the Rollout must not go on (status already written).
 func (r *RolloutReconciler) prepareSlices(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) (cat *catalogue, proceed bool, err error) {
-	if rollout.Spec.ReleaseSourceRef == nil || rollout.Spec.ReleaseSourceRef.Name == "" {
-		return nil, false, r.blockOnSource(ctx, rollout, reasonSourceNotSet, fmt.Sprintf(
-			"spec.releaseSourceRef is not set; create ReleaseSource %s/%s with spec.oci.image ... and set spec.releaseSourceRef",
-			rollout.Namespace, rollout.Name))
-	}
 	name := rollout.Spec.ReleaseSourceRef.Name
 
 	src := &releasecatalogue.ReleaseSource{}
@@ -555,14 +550,33 @@ func (r *RolloutReconciler) findRolloutsForReleaseSource(ctx context.Context, ob
 	return reqs
 }
 
-// resolveReleases runs the release-source gate in slices mode, consumes the
-// retry annotation, and returns the releases the rest of the reconcile works
-// on: the catalogue's in slices mode, status.availableReleases otherwise.
+// usesCatalogue reports whether the Rollout reads its releases from a
+// ReleaseSource catalogue: spec.releaseSourceRef is set and the release-controller
+// CRDs are installed. Nothing from status.
+func (r *RolloutReconciler) usesCatalogue(rollout *rolloutv1alpha1.Rollout) bool {
+	return r.CatalogueAvailable && rollout.Spec.ReleaseSourceRef != nil && rollout.Spec.ReleaseSourceRef.Name != ""
+}
+
+// catalogueCRDsInstalled reports whether the ReleaseSource and ReleaseSlice
+// kinds are served by the cluster.
+func catalogueCRDsInstalled(mapper meta.RESTMapper) bool {
+	for _, kind := range []string{"ReleaseSource", "ReleaseSlice"} {
+		if _, err := mapper.RESTMapping(releasecatalogue.GroupVersion.WithKind(kind).GroupKind(), releasecatalogue.GroupVersion.Version); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveReleases runs the release-source gate for catalogue Rollouts, consumes
+// the retry annotation, and returns the releases the rest of the reconcile
+// works on: the catalogue's, or status.availableReleases from the ImagePolicy.
 // done is true when the reconcile must stop and return err as is.
 func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) (cat *catalogue, releases []rolloutv1alpha1.VersionInfo, done bool, err error) {
-	// A slices-mode Rollout without a usable ReleaseSource does nothing else,
+	// A catalogue Rollout without a usable ReleaseSource does nothing else,
 	// so the source gate runs before the retry annotation is consumed.
-	if r.ReleaseSlices {
+	useCatalogue := r.usesCatalogue(rollout)
+	if useCatalogue {
 		var proceed bool
 		cat, proceed, err = r.prepareSlices(ctx, rollout, log)
 		if err != nil || !proceed {
@@ -572,20 +586,22 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 	if err := r.handleRetryAnnotation(ctx, rollout, log); err != nil {
 		return nil, nil, true, err
 	}
-	if r.ReleaseSlices {
+	if useCatalogue {
 		return cat, cat.releases, false, nil
 	}
 	if rollout.Spec.ReleasesImagePolicy.Name == "" && rollout.Spec.ReleaseSourceRef != nil {
-		// Valid since releasesImagePolicy became optional, but list mode has
-		// nothing to read: say why instead of looping on an ImagePolicy Get error.
-		msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but release-controller slices mode "+
-			"(--release-slices) is off, so no releases are read; set spec.releasesImagePolicy or start the controller with --release-slices",
+		// Valid since releasesImagePolicy became optional, but without the
+		// release-controller CRDs there is nothing to read: say why instead of
+		// looping on an ImagePolicy Get error.
+		msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but the release-controller "+
+			"CRDs (ReleaseSource, ReleaseSlice) are not installed, so no releases are read; install release-controller "+
+			"and restart the controller, or set spec.releasesImagePolicy",
 			rollout.Spec.ReleaseSourceRef.Name)
 		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type: rolloutv1alpha1.RolloutReleasesUpdated, Status: metav1.ConditionFalse,
-			Reason: "ReleaseSlicesDisabled", Message: msg,
+			Reason: reasonCatalogueUnavailable, Message: msg,
 		})
-		return nil, nil, true, r.updateRolloutStatusOnError(ctx, rollout, "ReleaseSlicesDisabled", msg)
+		return nil, nil, true, r.updateRolloutStatusOnError(ctx, rollout, reasonCatalogueUnavailable, msg)
 	}
 	if err := r.updateAvailableReleases(ctx, rollout, log); err != nil {
 		return nil, nil, true, err
@@ -598,7 +614,7 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 // working set) together with the namespace's gates; otherwise the candidates
 // are also written to status.releaseCandidates.
 func (r *RolloutReconciler) nextReleaseCandidates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue, releases []rolloutv1alpha1.VersionInfo) ([]rolloutv1alpha1.VersionInfo, []rolloutv1alpha1.RolloutGate, error) {
-	if r.ReleaseSlices {
+	if cat != nil {
 		gates, err := r.listGatesFor(ctx, rollout.Namespace)
 		if err != nil {
 			return nil, nil, err
@@ -622,7 +638,7 @@ func (r *RolloutReconciler) evaluateCandidateGates(ctx context.Context, rollout 
 		log.Error(err, "Failed to evaluate gates")
 		return nil, false, err
 	}
-	if r.ReleaseSlices {
+	if cat != nil {
 		return gated, passing, r.applyCandidateStatus(rollout, cat, gates)
 	}
 	rollout.Status.GatedReleaseCandidates = gated

@@ -77,16 +77,13 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	var releaseSlices, dualWriteReleaseLists bool
+	var dualWriteReleaseLists bool
 	var releaseCandidates int
-	flag.BoolVar(&releaseSlices, "release-slices", false,
-		"Read releases from ReleaseSource/ReleaseSlice (release-controller) instead of the Flux ImagePolicy. "+
-			"Requires the release-controller CRDs.")
 	flag.BoolVar(&dualWriteReleaseLists, "dual-write-release-lists", true,
-		"With --release-slices, keep writing the deprecated status.availableReleases, "+
+		"For Rollouts with spec.releaseSourceRef, keep writing the deprecated status.availableReleases, "+
 			"releaseCandidates and gatedReleaseCandidates.")
 	flag.IntVar(&releaseCandidates, "release-candidates", 20,
-		"With --release-slices, the number of newest releases kept in status.candidates (K).")
+		"For Rollouts with spec.releaseSourceRef, the number of newest releases kept in status.candidates (K).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -243,9 +240,6 @@ func main() {
 		&imagev1.ImagePolicy{},
 		&kustomizev1.Kustomization{},
 	}
-	if releaseSlices {
-		required = append(required, &releasecatalogue.ReleaseSource{}, &releasecatalogue.ReleaseSlice{})
-	}
 	if err := checkRequiredKinds(mgr.GetRESTMapper(), mgr.GetScheme(), required...); err != nil {
 		setupLog.Error(err, "install the CRDs before starting the controller "+
 			"(Kuberik CRDs ship with the chart, Flux CRDs with `flux install`)")
@@ -257,7 +251,6 @@ func main() {
 		Scheme: mgr.GetScheme(),
 		Clock:  &controller.RealClock{},
 
-		ReleaseSlices:         releaseSlices,
 		DualWriteReleaseLists: dualWriteReleaseLists,
 		ReleaseCandidates:     releaseCandidates,
 	}).SetupWithManager(mgr); err != nil {
@@ -309,8 +302,6 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("rolloutdependency-controller"), //nolint:staticcheck // SA1019
-
-		ReleaseSlices: releaseSlices,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "RolloutDependency")
 		os.Exit(1)
