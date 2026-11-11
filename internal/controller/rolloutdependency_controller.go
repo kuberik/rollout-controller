@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
@@ -56,6 +59,10 @@ type RolloutDependencyReconciler struct {
 	// CRDs are installed. The mode is decided by it and the consumer's
 	// spec.releaseSourceRef alone, never by leftover status.
 	CatalogueAvailable bool
+	// CatalogueDiscoveryInterval is how often discovery is polled when the CRDs were
+	// not installed at startup (default 30s).
+	CatalogueDiscoveryInterval time.Duration
+	lateCatalogue              atomic.Bool
 }
 
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies,verbs=get;list;watch;create;update;patch;delete
@@ -420,9 +427,23 @@ func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice),
 		)
 	}
-	return b.
+	c, err := b.
 		Named("rolloutdependency").
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+	if r.CatalogueAvailable {
+		return nil
+	}
+	return registerWhenCatalogueServed(mgr, "rolloutdependency", r.CatalogueDiscoveryInterval, func(context.Context) error {
+		if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), &releasecatalogue.ReleaseSlice{},
+			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice))); err != nil {
+			return err
+		}
+		r.lateCatalogue.Store(true)
+		return nil
+	})
 }
 
 // findDependenciesForReleaseSlice maps a ReleaseSlice to the RolloutDependencies
@@ -504,7 +525,7 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 // release-controller CRDs installed, nothing from status. Without a ref the code
 // path is the list-mode one and ReleaseSlices are never listed.
 func (r *RolloutDependencyReconciler) usesCatalogue(consumer *kuberikcomv1alpha1.Rollout) bool {
-	return r.CatalogueAvailable && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
+	return (r.CatalogueAvailable || r.lateCatalogue.Load()) && consumer.Spec.ReleaseSourceRef != nil && consumer.Spec.ReleaseSourceRef.Name != ""
 }
 
 // consumerReleases returns the releases to evaluate, oldest first. In slices

@@ -24,9 +24,6 @@ import (
 // informer cache, merged and ordered by sequence; nothing else is copied to status.
 
 const (
-	// releaseSourceIndexField indexes Rollouts by spec.releaseSourceRef.name.
-	releaseSourceIndexField = ".spec.releaseSourceRef.name"
-
 	// DefaultReleaseCandidates is K, the number of newest candidates kept in status.
 	DefaultReleaseCandidates = 20
 
@@ -482,14 +479,6 @@ func (r *RolloutReconciler) versionInfoForDeploy(rollout *rolloutv1alpha1.Rollou
 
 // --- watches -------------------------------------------------------------
 
-func releaseSourceRefIndexer(obj client.Object) []string {
-	ro, ok := obj.(*rolloutv1alpha1.Rollout)
-	if !ok || ro.Spec.ReleaseSourceRef == nil || ro.Spec.ReleaseSourceRef.Name == "" {
-		return nil
-	}
-	return []string{ro.Spec.ReleaseSourceRef.Name}
-}
-
 // findRolloutsForReleaseSource maps a ReleaseSource or ReleaseSlice to the
 // Rollouts whose spec.releaseSourceRef names its source.
 func (r *RolloutReconciler) findRolloutsForReleaseSource(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -509,12 +498,14 @@ func (r *RolloutReconciler) findRolloutsForReleaseSource(ctx context.Context, ob
 		return nil
 	}
 	list := &rolloutv1alpha1.RolloutList{}
-	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{releaseSourceIndexField: name}); err != nil {
+	if err := r.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
 	reqs := make([]reconcile.Request, 0, len(list.Items))
 	for _, ro := range list.Items {
+		if ro.Spec.ReleaseSourceRef == nil || ro.Spec.ReleaseSourceRef.Name != name {
+			continue
+		}
 		reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&ro)})
 	}
 	return reqs
@@ -542,11 +533,19 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 	if rollout.Spec.ReleaseSourceRef == nil || rollout.Spec.ReleaseSourceRef.Name == "" {
 		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonSourceRequired, messageSourceRequired)
 	}
-	if !r.CatalogueAvailable {
+	if !r.catalogueOn() {
 		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonCatalogueUnavailable, fmt.Sprintf(
 			"spec.releaseSourceRef is %q, but the release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed, "+
 				"so no releases are read; install release-controller and restart the controller",
 			rollout.Spec.ReleaseSourceRef.Name))
+	}
+	// The reasons set above no longer hold: drop them (Ready is rewritten by the
+	// next deploy or error; ReleasesUpdated by prepareSlices).
+	for _, t := range []string{rolloutv1alpha1.RolloutReleasesUpdated, rolloutv1alpha1.RolloutReady} {
+		if c := meta.FindStatusCondition(rollout.Status.Conditions, t); c != nil &&
+			(c.Reason == reasonSourceRequired || c.Reason == reasonCatalogueUnavailable) {
+			meta.RemoveStatusCondition(&rollout.Status.Conditions, t)
+		}
 	}
 	// A Rollout without a usable ReleaseSource does nothing else, so the source
 	// gate runs before the retry annotation is consumed.

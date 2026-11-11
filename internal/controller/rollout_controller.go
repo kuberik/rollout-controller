@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -35,9 +36,11 @@ import (
 	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
@@ -69,6 +72,11 @@ type RolloutReconciler struct {
 	// ReleaseSlice CRDs are installed (SetupWithManager detects it). Without them
 	// no Rollout gets releases.
 	CatalogueAvailable bool
+	// CatalogueDiscoveryInterval is how often, when the CRDs were not installed
+	// at startup, discovery is polled for them (default 30s).
+	CatalogueDiscoveryInterval time.Duration
+	// lateCatalogue is set when the CRDs appeared after startup.
+	lateCatalogue atomic.Bool
 	// ReleaseCandidates is K, the newest candidates kept in status.candidates.
 	ReleaseCandidates int
 }
@@ -339,22 +347,24 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("rollout-controller") //nolint:staticcheck // SA1019
 
 	r.CatalogueAvailable = catalogueCRDsInstalled(mgr.GetRESTMapper())
-	if !r.CatalogueAvailable {
-		logf.Log.WithName("rollout").Info("release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed; " +
-			"Rollouts get no releases and report ReleaseCatalogueUnavailable. Restart after installing them.")
-	}
 
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{})
+	// Rollouts to reconcile when the catalogue CRDs appear after startup.
+	var late chan event.GenericEvent
 	if r.CatalogueAvailable {
-		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &rolloutv1alpha1.Rollout{},
-			releaseSourceIndexField, releaseSourceRefIndexer); err != nil {
-			return err
-		}
 		b = b.Watches(&releasecatalogue.ReleaseSlice{}, handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource)).
 			Watches(&releasecatalogue.ReleaseSource{}, handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource))
+	} else {
+		logf.Log.WithName("rollout").Info("release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed; " +
+			"Rollouts get no releases and report ReleaseCatalogueUnavailable until they are served (checked periodically, no restart needed)")
+		late = make(chan event.GenericEvent)
+		b = b.WatchesRawSource(source.Channel(late, handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, o client.Object) []reconcile.Request {
+				return []reconcile.Request{{NamespacedName: client.ObjectKeyFromObject(o)}}
+			})))
 	}
-	return b.
+	c, err := b.
 		Watches(
 			&rolloutv1alpha1.RolloutGate{},
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForRolloutGate),
@@ -364,8 +374,39 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findRolloutsForHealthCheck),
 		).
 		Named("rollout").
-		Complete(r)
+		Build(r)
+	if err != nil {
+		return err
+	}
+	if r.CatalogueAvailable {
+		return nil
+	}
+	return registerWhenCatalogueServed(mgr, "rollout", r.CatalogueDiscoveryInterval, func(ctx context.Context) error {
+		for _, o := range []client.Object{&releasecatalogue.ReleaseSlice{}, &releasecatalogue.ReleaseSource{}} {
+			if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), o,
+				handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource))); err != nil {
+				return err
+			}
+		}
+		r.lateCatalogue.Store(true)
+		// Rollouts that reported ReleaseCatalogueUnavailable have no event coming.
+		list := &rolloutv1alpha1.RolloutList{}
+		if err := mgr.GetClient().List(ctx, list); err != nil {
+			return err
+		}
+		for i := range list.Items {
+			select {
+			case late <- event.GenericEvent{Object: &list.Items[i]}:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		return nil
+	})
 }
+
+// catalogueOn reports whether the catalogue CRDs are served: at startup or since.
+func (r *RolloutReconciler) catalogueOn() bool { return r.CatalogueAvailable || r.lateCatalogue.Load() }
 
 func getNextReleaseCandidates(releases []rolloutv1alpha1.VersionInfo, status *rolloutv1alpha1.RolloutStatus) ([]rolloutv1alpha1.VersionInfo, error) {
 	// If there are no releases, return an error

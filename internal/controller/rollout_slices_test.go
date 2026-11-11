@@ -584,7 +584,6 @@ var _ = Describe("Slices mode reader", func() {
 			Cache: cacheOptionsFor(ns),
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(mgr.GetFieldIndexer().IndexField(ctx, &rolloutv1alpha1.Rollout{}, releaseSourceIndexField, releaseSourceRefIndexer)).To(Succeed())
 		mctx, mcancel := context.WithCancel(ctx)
 		defer mcancel()
 		go func() { defer GinkgoRecover(); _ = mgr.Start(mctx) }()
