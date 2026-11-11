@@ -39,6 +39,11 @@ const (
 	reasonSourceRequired       = "ReleaseSourceRequired"
 	reasonNoReleases           = "NoReleases"
 
+	// Controllers before the NoReleases reason wrote an empty catalogue as
+	// Ready=False with this reason and message; Ready can still carry them.
+	legacyNoReleasesReason  = "RolloutSucceeded"
+	legacyNoReleasesMessage = "No releases available"
+
 	messageImagePolicyIgnored = "spec.releasesImagePolicy is deprecated and ignored; it will be removed in the next release. " +
 		"Releases are read from the ReleaseSource named by spec.releaseSourceRef"
 	messageSourceRequired = "spec.releaseSourceRef is not set, so this Rollout has no releases. Create a ReleaseSource for the app " +
@@ -639,10 +644,16 @@ func (r *RolloutReconciler) refreshCandidatesAfterDeploy(ctx context.Context, ro
 }
 
 // restoreReadyAfterNoReleases re-derives Ready when it still carries the
-// NoReleases reason from an earlier empty catalogue. It reports whether it did.
+// NoReleases reason (or the legacy RolloutSucceeded/"No releases available"
+// shape older controllers wrote) from an earlier empty catalogue. It reports
+// whether it did.
 func restoreReadyAfterNoReleases(rollout *rolloutv1alpha1.Rollout) bool {
 	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
-	if c == nil || c.Reason != reasonNoReleases {
+	if c == nil {
+		return false
+	}
+	legacy := c.Status == metav1.ConditionFalse && c.Reason == legacyNoReleasesReason && c.Message == legacyNoReleasesMessage
+	if c.Reason != reasonNoReleases && !legacy {
 		return false
 	}
 	meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
