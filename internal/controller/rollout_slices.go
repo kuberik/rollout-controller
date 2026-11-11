@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -552,4 +553,118 @@ func (r *RolloutReconciler) findRolloutsForReleaseSource(ctx context.Context, ob
 		reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&ro)})
 	}
 	return reqs
+}
+
+// resolveReleases runs the release-source gate in slices mode, consumes the
+// retry annotation, and returns the releases the rest of the reconcile works
+// on: the catalogue's in slices mode, status.availableReleases otherwise.
+// done is true when the reconcile must stop and return err as is.
+func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, log logr.Logger) (cat *catalogue, releases []rolloutv1alpha1.VersionInfo, done bool, err error) {
+	// A slices-mode Rollout without a usable ReleaseSource does nothing else,
+	// so the source gate runs before the retry annotation is consumed.
+	if r.ReleaseSlices {
+		var proceed bool
+		cat, proceed, err = r.prepareSlices(ctx, rollout, log)
+		if err != nil || !proceed {
+			return nil, nil, true, err
+		}
+	}
+	if err := r.handleRetryAnnotation(ctx, rollout, log); err != nil {
+		return nil, nil, true, err
+	}
+	if r.ReleaseSlices {
+		return cat, cat.releases, false, nil
+	}
+	if rollout.Spec.ReleasesImagePolicy.Name == "" && rollout.Spec.ReleaseSourceRef != nil {
+		// Valid since releasesImagePolicy became optional, but list mode has
+		// nothing to read: say why instead of looping on an ImagePolicy Get error.
+		msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but release-controller slices mode "+
+			"(--release-slices) is off, so no releases are read; set spec.releasesImagePolicy or start the controller with --release-slices",
+			rollout.Spec.ReleaseSourceRef.Name)
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutReleasesUpdated, Status: metav1.ConditionFalse,
+			Reason: "ReleaseSlicesDisabled", Message: msg,
+		})
+		return nil, nil, true, r.updateRolloutStatusOnError(ctx, rollout, "ReleaseSlicesDisabled", msg)
+	}
+	if err := r.updateAvailableReleases(ctx, rollout, log); err != nil {
+		return nil, nil, true, err
+	}
+	return nil, rollout.Status.AvailableReleases, false, nil
+}
+
+// nextReleaseCandidates returns the releases newer than the deployed one. In
+// slices mode that is every newer release in the catalogue (not the capped
+// working set) together with the namespace's gates; otherwise the candidates
+// are also written to status.releaseCandidates.
+func (r *RolloutReconciler) nextReleaseCandidates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue, releases []rolloutv1alpha1.VersionInfo) ([]rolloutv1alpha1.VersionInfo, []rolloutv1alpha1.RolloutGate, error) {
+	if r.ReleaseSlices {
+		gates, err := r.listGatesFor(ctx, rollout.Namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		candidates, err := cat.candidatesAfter(&rollout.Status)
+		return candidates, gates, err
+	}
+	candidates, err := getNextReleaseCandidates(releases, &rollout.Status)
+	if err != nil {
+		return nil, nil, err
+	}
+	rollout.Status.ReleaseCandidates = candidates
+	return candidates, nil, nil
+}
+
+// evaluateCandidateGates evaluates the gates for the candidates and records
+// the gated candidates in status, from the catalogue in slices mode.
+func (r *RolloutReconciler) evaluateCandidateGates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue, gates []rolloutv1alpha1.RolloutGate, candidates []rolloutv1alpha1.VersionInfo, log logr.Logger) ([]rolloutv1alpha1.VersionInfo, bool, error) {
+	gated, passing, err := r.evaluateGates(ctx, rollout.Namespace, rollout, candidates)
+	if err != nil {
+		log.Error(err, "Failed to evaluate gates")
+		return nil, false, err
+	}
+	if r.ReleaseSlices {
+		return gated, passing, r.applyCandidateStatus(rollout, cat, gates)
+	}
+	rollout.Status.GatedReleaseCandidates = gated
+	return gated, passing, nil
+}
+
+// deployedVersionInfo looks up the version info for the release being
+// deployed (fallback.Tag): in slices mode the catalogue, then history, then
+// the bare tag, always found; otherwise status.availableReleases. When the
+// release is not found it returns fallback and false.
+func (r *RolloutReconciler) deployedVersionInfo(rollout *rolloutv1alpha1.Rollout, cat *catalogue, fallback rolloutv1alpha1.VersionInfo) (rolloutv1alpha1.VersionInfo, bool) {
+	if cat != nil {
+		return r.versionInfoForDeploy(rollout, cat, fallback.Tag), true
+	}
+	for _, release := range rollout.Status.AvailableReleases {
+		if release.Tag == fallback.Tag {
+			return release, true
+		}
+	}
+	return fallback, false
+}
+
+// refreshCandidatesAfterDeploy recomputes the candidate lists in status once a
+// deployment has been recorded.
+func (r *RolloutReconciler) refreshCandidatesAfterDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) error {
+	log := logf.FromContext(ctx)
+	if cat != nil {
+		gates, err := r.listGatesFor(ctx, rollout.Namespace)
+		if err != nil {
+			return err
+		}
+		if err := r.applyCandidateStatus(rollout, cat, gates); err != nil {
+			log.Error(err, "Failed to refresh candidates")
+			return err
+		}
+		return nil
+	}
+	candidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
+	if err != nil {
+		log.Error(err, "Failed to get next release candidates")
+		return err
+	}
+	rollout.Status.ReleaseCandidates = candidates
+	return nil
 }

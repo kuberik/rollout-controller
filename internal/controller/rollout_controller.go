@@ -126,43 +126,9 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// In slices mode a Rollout without a usable ReleaseSource does nothing else,
-	// so the source gate runs before the retry annotation is consumed.
-	var cat *catalogue
-	var releases []rolloutv1alpha1.VersionInfo
-	if r.ReleaseSlices {
-		var proceed bool
-		var err error
-		cat, proceed, err = r.prepareSlices(ctx, &rollout, log)
-		if err != nil || !proceed {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if err := r.handleRetryAnnotation(ctx, &rollout, log); err != nil {
+	cat, releases, done, err := r.resolveReleases(ctx, &rollout, log)
+	if err != nil || done {
 		return ctrl.Result{}, err
-	}
-
-	if r.ReleaseSlices {
-		releases = cat.releases
-	} else {
-		if rollout.Spec.ReleasesImagePolicy.Name == "" && rollout.Spec.ReleaseSourceRef != nil {
-			// Valid since releasesImagePolicy became optional, but list mode has
-			// nothing to read: say why instead of looping on an ImagePolicy Get error.
-			msg := fmt.Sprintf("spec.releasesImagePolicy is not set and spec.releaseSourceRef is %q, but release-controller slices mode "+
-				"(--release-slices) is off, so no releases are read; set spec.releasesImagePolicy or start the controller with --release-slices",
-				rollout.Spec.ReleaseSourceRef.Name)
-			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-				Type: rolloutv1alpha1.RolloutReleasesUpdated, Status: metav1.ConditionFalse,
-				Reason: "ReleaseSlicesDisabled", Message: msg,
-			})
-			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "ReleaseSlicesDisabled", msg)
-		}
-		err := r.updateAvailableReleases(ctx, &rollout, log)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		releases = rollout.Status.AvailableReleases
 	}
 
 	if len(releases) == 0 {
@@ -171,40 +137,16 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
-	var releaseCandidates []rolloutv1alpha1.VersionInfo
-	var sliceGates []rolloutv1alpha1.RolloutGate
-	var err error
-	if r.ReleaseSlices {
-		sliceGates, err = r.listGatesFor(ctx, req.Namespace)
-		if err == nil {
-			// Every release newer than the deployed one, not the capped working set.
-			releaseCandidates, err = cat.candidatesAfter(&rollout.Status)
-		}
-	} else {
-		releaseCandidates, err = getNextReleaseCandidates(releases, &rollout.Status)
-	}
+	releaseCandidates, sliceGates, err := r.nextReleaseCandidates(ctx, &rollout, cat, releases)
 	if err != nil {
 		log.Error(err, "Failed to get next release candidates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
 	}
-	if !r.ReleaseSlices {
-		rollout.Status.ReleaseCandidates = releaseCandidates
-	}
 
 	// Evaluate gates early (without updating status yet)
-	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
-	var gatesPassing bool
-	gatedReleaseCandidates, gatesPassing, err = r.evaluateGates(ctx, req.Namespace, &rollout, releaseCandidates)
+	gatedReleaseCandidates, gatesPassing, err := r.evaluateCandidateGates(ctx, &rollout, cat, sliceGates, releaseCandidates, log)
 	if err != nil {
-		log.Error(err, "Failed to evaluate gates")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
-	}
-	if r.ReleaseSlices {
-		if err := r.applyCandidateStatus(&rollout, cat, sliceGates); err != nil {
-			return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error())
-		}
-	} else {
-		rollout.Status.GatedReleaseCandidates = gatedReleaseCandidates
 	}
 
 	// Evaluate health checks once and set DeploymentBlocked. Done before the gate
@@ -1461,22 +1403,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	versionInfo.Tag = wantedRelease
 
 	// Try to find additional version information from available releases
-	foundInReleases := false
-	if cat != nil {
-		// Slices mode: catalogue, then history, then the bare tag.
-		versionInfo = r.versionInfoForDeploy(rollout, cat, wantedRelease)
-		foundInReleases = true
-	}
-	for _, release := range rollout.Status.AvailableReleases {
-		if cat != nil {
-			break
-		}
-		if release.Tag == wantedRelease {
-			versionInfo = release
-			foundInReleases = true
-			break
-		}
-	}
+	versionInfo, foundInReleases := r.deployedVersionInfo(rollout, cat, versionInfo)
 
 	// If not found in available releases, try to parse it from OCI image
 	if !foundInReleases {
@@ -1555,22 +1482,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		r.Recorder.Event(rollout, eventType, eventReason, eventMessage)
 	}
 
-	if cat != nil {
-		gates, err := r.listGatesFor(ctx, rollout.Namespace)
-		if err != nil {
-			return err
-		}
-		if err := r.applyCandidateStatus(rollout, cat, gates); err != nil {
-			log.Error(err, "Failed to refresh candidates")
-			return err
-		}
-	} else {
-		releaseCandidates, err := getNextReleaseCandidates(rollout.Status.AvailableReleases, &rollout.Status)
-		if err != nil {
-			log.Error(err, "Failed to get next release candidates")
-			return err
-		}
-		rollout.Status.ReleaseCandidates = releaseCandidates
+	if err := r.refreshCandidatesAfterDeploy(ctx, rollout, cat); err != nil {
+		return err
 	}
 
 	// Update the status first
