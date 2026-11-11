@@ -73,8 +73,20 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
+# KIND_CLUSTER is the kind cluster the e2e suite runs against. The suite deploys to the
+# current kubectl context and uninstalls CRDs on cleanup, so both this target and the suite
+# refuse to run unless the current context is exactly kind-$(KIND_CLUSTER).
+KIND_CLUSTER ?= kind
+export KIND_CLUSTER
+
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+	@ctx="$$(kubectl config current-context 2>/dev/null)"; \
+	[ "$$ctx" = "kind-$(KIND_CLUSTER)" ] || { \
+		echo "Refusing to run e2e tests: current kubectl context is '$$ctx', expected 'kind-$(KIND_CLUSTER)'."; \
+		echo "The suite installs and uninstalls CRDs in the current context. Switch context or set KIND_CLUSTER."; \
+		exit 1; \
+	}
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
