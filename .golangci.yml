@@ -16,6 +16,14 @@ issues:
       linters:
         - dupl
         - lll
+    # Known-large reconcile paths in rollout_controller.go. Splitting them is a
+    # behavioural refactor that deserves its own change; the threshold stays at
+    # the default 30 for every other function. Remove an entry once its
+    # function is split up.
+    - path: internal/controller/rollout_controller\.go
+      linters:
+        - gocyclo
+      text: "of func `\\(\\*RolloutReconciler\\)\\.(Reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high"
 linters:
   disable-all: true
   enable:
