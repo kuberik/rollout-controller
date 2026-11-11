@@ -628,9 +628,9 @@ var _ = Describe("Slices mode reader", func() {
 		}, 10*time.Second, 100*time.Millisecond).Should(ConsistOf("uses-a", "uses-a-too"))
 
 		src := &releasecatalogue.ReleaseSource{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns}}
-		reqs := r.findRolloutsForReleaseSource(ctx, src)
-		Expect(reqs).To(HaveLen(1))
-		Expect(reqs[0].Name).To(Equal("uses-b"))
+		Eventually(func() []reconcile.Request { return r.findRolloutsForReleaseSource(ctx, src) },
+			10*time.Second, 100*time.Millisecond).Should(HaveLen(1))
+		Expect(r.findRolloutsForReleaseSource(ctx, src)[0].Name).To(Equal("uses-b"))
 		other := &releasecatalogue.ReleaseSlice{ObjectMeta: metav1.ObjectMeta{Name: "z-0", Namespace: ns,
 			Labels: map[string]string{releasecatalogue.SourceLabel: "z"}}, Source: "z"}
 		Expect(r.findRolloutsForReleaseSource(ctx, other)).To(BeEmpty())
@@ -801,6 +801,130 @@ var _ = Describe("Slices mode reader", func() {
 		Entry("object missing", reasonSourceNotFound, func() {}),
 		Entry("source not Ready", reasonSourceNotReady, func() { createSource("src", false, 0, "x") }),
 	)
+	// --- one release path: the catalogue ---
+
+	newRecorderR := func(catalogue bool) (*RolloutReconciler, *record.FakeRecorder) {
+		rec := record.NewFakeRecorder(50)
+		return &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: rec,
+			CatalogueAvailable: catalogue, ReleaseCandidates: 3}, rec
+	}
+	get := func(name string) *rolloutv1alpha1.Rollout {
+		ro := &rolloutv1alpha1.Rollout{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, ro)).To(Succeed())
+		return ro
+	}
+	staleLists := func(ro *rolloutv1alpha1.Rollout) {
+		stale := []rolloutv1alpha1.VersionInfo{{Tag: "old-1"}, {Tag: "old-2"}}
+		ro.Status.AvailableReleases = stale
+		ro.Status.ReleaseCandidates = stale
+		ro.Status.GatedReleaseCandidates = stale
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+	}
+
+	It("a Rollout with releaseSourceRef writes only candidates and releaseSource, and clears the old lists", func() {
+		rels := trainRels(6, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("ref", true, rels, rolloutOpts{current: "r0002"})
+		newGate("ref", nil, passing(false)) // hold, so candidates stay in status
+		staleLists(get("ref"))
+
+		got := reconcileOnce(sliceR(false, 3), "ref")
+		Expect(got.Status.AvailableReleases).To(BeEmpty())
+		Expect(got.Status.ReleaseCandidates).To(BeEmpty())
+		Expect(got.Status.GatedReleaseCandidates).To(BeEmpty())
+		Expect(got.Status.ReleaseSource).NotTo(BeNil())
+		Expect(got.Status.ReleaseSource.Name).To(Equal("src"))
+		Expect(tagsOfCandidates(got.Status.Candidates)).To(Equal([]string{"r0006", "r0005", "r0004"}))
+		sliceTags := []string{}
+		for _, r := range rels {
+			sliceTags = append(sliceTags, r.tag)
+		}
+		for _, c := range got.Status.Candidates {
+			Expect(sliceTags).To(ContainElement(c.Tag), "candidate tags are the slice tags")
+		}
+	})
+
+	It("a Rollout without releaseSourceRef gets no releases, reports ReleaseSourceRequired once, and drops stale catalogue status", func() {
+		ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Name: "noref", Namespace: ns}}
+		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
+		ro = get("noref")
+		ro.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "does-not-exist"}
+		meta.SetStatusCondition(&ro.Status.Conditions, metav1.Condition{Type: rolloutv1alpha1.RolloutReleaseSourceReady,
+			Status: metav1.ConditionFalse, Reason: "ReleaseSourceNotSet", Message: "stale"})
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		staleLists(get("noref"))
+
+		r, rec := newRecorderR(true)
+		got := reconcileOnce(r, "noref")
+		Expect(got.Status.ReleaseSource).To(BeNil())
+		Expect(meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)).To(BeNil())
+		Expect(got.Status.AvailableReleases).To(BeEmpty())
+		Expect(got.Status.ReleaseCandidates).To(BeEmpty())
+		Expect(got.Status.GatedReleaseCandidates).To(BeEmpty())
+		Expect(got.Status.History).To(BeEmpty(), "no releases, nothing deployed")
+		for _, t := range []string{rolloutv1alpha1.RolloutReleasesUpdated, rolloutv1alpha1.RolloutReady} {
+			c := meta.FindStatusCondition(got.Status.Conditions, t)
+			Expect(c).NotTo(BeNil())
+			Expect(c.Status).To(Equal(metav1.ConditionFalse))
+			Expect(c.Reason).To(Equal("ReleaseSourceRequired"))
+			Expect(c.Message).To(Equal(messageSourceRequired))
+		}
+		Expect(rec.Events).To(HaveLen(1))
+		Expect(<-rec.Events).To(ContainSubstring("Warning ReleaseSourceRequired"))
+		reconcileOnce(r, "noref")
+		Expect(rec.Events).To(BeEmpty(), "one Warning per change, not per reconcile")
+	})
+
+	It("when both are set the ref wins and ReleasesImagePolicyIgnored is raised once", func() {
+		rels := trainRels(3, time.Hour)
+		catalogueOf("src", rels)
+		newRollout("both", true, rels, rolloutOpts{})
+		ro := get("both")
+		ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{Name: "legacy-policy"}
+		Expect(k8sClient.Update(ctx, ro)).To(Succeed())
+
+		r, rec := newRecorderR(true)
+		got := reconcileOnce(r, "both")
+		Expect(got.Status.History).NotTo(BeEmpty())
+		Expect(got.Status.History[0].Version.Tag).To(Equal("r0003"), "the catalogue decided the release")
+		Expect(got.Status.ReleaseSource).NotTo(BeNil())
+		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesImagePolicyIgnored)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Reason).To(Equal("ReleasesImagePolicyIgnored"))
+		Expect(c.Message).To(Equal(messageImagePolicyIgnored))
+		var warned int
+		for len(rec.Events) > 0 {
+			if strings.Contains(<-rec.Events, "Warning ReleasesImagePolicyIgnored") {
+				warned++
+			}
+		}
+		Expect(warned).To(Equal(1))
+		reconcileOnce(r, "both")
+		for len(rec.Events) > 0 {
+			Expect(<-rec.Events).NotTo(ContainSubstring("ReleasesImagePolicyIgnored"))
+		}
+
+		By("removing the policy removes the condition")
+		ro = get("both")
+		ro.Spec.ReleasesImagePolicy = corev1.LocalObjectReference{}
+		Expect(k8sClient.Update(ctx, ro)).To(Succeed())
+		got = reconcileOnce(r, "both")
+		Expect(meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesImagePolicyIgnored)).To(BeNil())
+	})
+
+	It("without the catalogue CRDs a ref'd Rollout gets ReleaseCatalogueUnavailable and no releases, without crashing", func() {
+		rels := trainRels(3, time.Hour)
+		newRollout("nocrd", true, rels, rolloutOpts{})
+		r, _ := newRecorderR(false)
+		var got *rolloutv1alpha1.Rollout
+		Expect(func() { got = reconcileOnce(r, "nocrd") }).NotTo(Panic())
+		Expect(got.Status.History).To(BeEmpty())
+		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Reason).To(Equal(reasonCatalogueUnavailable))
+		Expect(c.Message).To(ContainSubstring("CRDs"))
+	})
 })
 
 func contains(s, sub string) bool {

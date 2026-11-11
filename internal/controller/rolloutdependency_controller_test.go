@@ -563,7 +563,9 @@ var _ = Describe("RolloutDependency Controller", func() {
 		reconcileDependency(dependency)
 
 		status := getDependency(dependency).Status
-		Expect(status.BlockedReleases).To(HaveLen(1))
+		// The catalogue only yields releases newer than the deployed one, so the
+		// older consumer-1 is not evaluated at all.
+		Expect(status.BlockedReleases).To(BeEmpty())
 		Expect(meta.IsStatusConditionTrue(status.Conditions, kuberikcomv1alpha1.RolloutDependencySatisfied)).To(BeTrue())
 	})
 })

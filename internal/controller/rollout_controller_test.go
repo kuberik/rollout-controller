@@ -558,10 +558,8 @@ var _ = Describe("Rollout Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedRollout.Status.AvailableReleases).To(HaveLen(1))
-			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]rolloutv1alpha1.VersionInfo{
-				{Tag: version0_1_0},
-			}))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+			Expect(updatedRollout.Status.AvailableReleases).To(BeEmpty(), "the deprecated list is no longer written")
 
 			By("Setting up ImagePolicy with a release")
 			imagePolicy.Publish(version0_2_0)
@@ -576,10 +574,8 @@ var _ = Describe("Rollout Controller", func() {
 			updatedRollout = &rolloutv1alpha1.Rollout{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedRollout)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRollout.Status.AvailableReleases).To(Equal([]rolloutv1alpha1.VersionInfo{
-				{Tag: version0_1_0},
-				{Tag: version0_2_0},
-			}))
+			Expect(updatedRollout.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+			Expect(updatedRollout.Status.AvailableReleases).To(BeEmpty())
 		})
 
 		It("should update release candidates in status", func() {
@@ -628,8 +624,8 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Should have release candidates (all available releases since no history)
-			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(1))
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_1_0}))
+			Expect(updatedRollout.Status.Candidates).To(HaveLen(1))
+			Expect(tagsOfCandidates(updatedRollout.Status.Candidates)).To(ContainElement(version0_1_0))
 
 			By("Adding more releases to ImagePolicy")
 			imagePolicy.Publish(version0_2_0)
@@ -647,8 +643,8 @@ var _ = Describe("Rollout Controller", func() {
 
 			// After first reconciliation, a version was deployed, creating deployment history
 			// So getNextReleaseCandidates only returns releases newer than the deployed version
-			Expect(updatedRollout.Status.ReleaseCandidates).To(HaveLen(2))
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElements(rolloutv1alpha1.VersionInfo{Tag: version0_2_0}))
+			Expect(updatedRollout.Status.Candidates).To(HaveLen(2))
+			Expect(tagsOfCandidates(updatedRollout.Status.Candidates)).To(ContainElement(version0_2_0))
 		})
 
 		It("should allow any wanted version to be set regardless of available releases", func() {
@@ -1417,9 +1413,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusInProgress))
 
 				By("Verifying release candidates are populated in status even though rollout is in progress")
-				Expect(rollout.Status.ReleaseCandidates).NotTo(BeEmpty())
-				Expect(rollout.Status.ReleaseCandidates).To(HaveLen(1))
-				Expect(rollout.Status.ReleaseCandidates[0].Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.Candidates).NotTo(BeEmpty())
+				Expect(rollout.Status.Candidates).To(HaveLen(1))
+				Expect(rollout.Status.Candidates[0].Tag).To(Equal(version0_2_0))
 			})
 
 			It("should populate release candidates when rollout is in deploying status", func() {
@@ -1450,9 +1446,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(*rollout.Status.History[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusDeploying))
 
 				By("Verifying release candidates are populated in status even though rollout is deploying")
-				Expect(rollout.Status.ReleaseCandidates).NotTo(BeEmpty())
-				Expect(rollout.Status.ReleaseCandidates).To(HaveLen(1))
-				Expect(rollout.Status.ReleaseCandidates[0].Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.Candidates).NotTo(BeEmpty())
+				Expect(rollout.Status.Candidates).To(HaveLen(1))
+				Expect(rollout.Status.Candidates[0].Tag).To(Equal(version0_2_0))
 			})
 
 			It("should populate release candidates when bake status changes to failed", func() {
@@ -1502,9 +1498,9 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(rollout.Status.History[0].BakeEndTime).NotTo(BeNil())
 
 				By("Verifying release candidates are populated in status even though bake failed")
-				Expect(rollout.Status.ReleaseCandidates).NotTo(BeEmpty())
-				Expect(rollout.Status.ReleaseCandidates).To(HaveLen(1))
-				Expect(rollout.Status.ReleaseCandidates[0].Tag).To(Equal(version0_2_0))
+				Expect(rollout.Status.Candidates).NotTo(BeEmpty())
+				Expect(rollout.Status.Candidates).To(HaveLen(1))
+				Expect(rollout.Status.Candidates[0].Tag).To(Equal(version0_2_0))
 			})
 
 			It("should block new deployment if previous bake failed", func() {
@@ -3903,11 +3899,11 @@ var _ = Describe("Rollout Controller", func() {
 			Expect(updatedRollout.Status.History[0].BakeStatus).To(Equal(k8sptr.To(rolloutv1alpha1.BakeStatusFailed)))
 
 			// But status should be updated with release candidates and gates
-			Expect(updatedRollout.Status.ReleaseCandidates).NotTo(BeEmpty())
-			Expect(updatedRollout.Status.GatedReleaseCandidates).NotTo(BeEmpty())
+			Expect(updatedRollout.Status.Candidates).NotTo(BeEmpty())
+			Expect(updatedRollout.Status.GatedReleaseCandidates).To(BeEmpty(), "the deprecated list is no longer written")
 
 			// Verify that the new release candidate is available
-			Expect(updatedRollout.Status.ReleaseCandidates).To(ContainElement(rolloutv1alpha1.VersionInfo{Tag: "1.1.0"}))
+			Expect(tagsOfCandidates(updatedRollout.Status.Candidates)).To(ContainElement("1.1.0"))
 		})
 
 		It("should return empty release candidates when custom version is deployed", func() {
@@ -3963,7 +3959,7 @@ var _ = Describe("Rollout Controller", func() {
 				Namespace: customRollout.Namespace,
 			}, &updatedRollout)).To(Succeed())
 
-			Expect(updatedRollout.Status.ReleaseCandidates).To(BeEmpty())
+			Expect(updatedRollout.Status.Candidates).To(BeEmpty())
 			Expect(updatedRollout.Status.GatedReleaseCandidates).To(BeEmpty())
 		})
 
@@ -5388,7 +5384,9 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name: "dependency-consumer-needs-api", Namespace: namespace,
 		}, gate)).To(Succeed())
-		Expect(*gate.Spec.AllowedVersions).To(Equal([]string{"consumer-1"}))
+		// Only releases newer than the deployed consumer-1 are evaluated, and
+		// consumer-2 needs a contract the provider does not serve yet.
+		Expect(*gate.Spec.AllowedVersions).To(BeEmpty())
 
 		By("reconciling the consumer, which must refuse to advance")
 		reconcileRollout(consumerName)
@@ -5396,7 +5394,7 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 
 		consumer := &rolloutv1alpha1.Rollout{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: consumerName, Namespace: namespace}, consumer)).To(Succeed())
-		Expect(consumer.Status.ReleaseCandidates).To(HaveLen(1))
+		Expect(consumer.Status.Candidates).To(HaveLen(1))
 		Expect(consumer.Status.GatedReleaseCandidates).To(BeEmpty())
 		gatesPassing := meta.FindStatusCondition(consumer.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
 		Expect(gatesPassing).NotTo(BeNil())
@@ -5418,7 +5416,7 @@ var _ = Describe("Rollout gated by a RolloutDependency", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name: "dependency-consumer-needs-api", Namespace: namespace,
 		}, gate)).To(Succeed())
-		Expect(*gate.Spec.AllowedVersions).To(ConsistOf("consumer-1", "consumer-2"))
+		Expect(*gate.Spec.AllowedVersions).To(ConsistOf("consumer-2"))
 
 		By("reconciling the consumer, which now advances")
 		reconcileRollout(consumerName)
