@@ -501,6 +501,7 @@ release path only while they exist.
 | No `spec.releaseSourceRef` | `ReleasesUpdated=False` and `Ready=False` | `ReleaseSourceRequired` |
 | `spec.releasesImagePolicy` set | `ReleasesImagePolicyIgnored=True` | `ReleasesImagePolicyIgnored` |
 | catalogue is empty | `Ready=False` | `NoReleases` (derived from the deployment history again once releases return) |
+| the catalogue has releases but the controller selects none to deploy (no `spec.wantedVersion` or force-deploy, and no gate-passing candidate) | `Ready=False` | `NoReleaseCandidates` ("No release candidates found"); a safety net that gates and the first-deploy fallback normally pre-empt. Inspect `status.candidates` and the gates in `status.gates`, then open the blocking RolloutGate or pin a version with `spec.wantedVersion` |
 | release-controller CRDs not installed | `ReleasesUpdated=False` and `Ready=False` | `ReleaseCatalogueUnavailable` |
 | ReleaseSource missing / not Ready | `ReleaseSourceReady=False` | `ReleaseSourceNotFound` / `ReleaseSourceNotReady` |
 
