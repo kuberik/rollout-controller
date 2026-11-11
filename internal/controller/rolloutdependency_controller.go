@@ -436,9 +436,12 @@ func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.CatalogueAvailable {
 		return nil
 	}
+	watches := newWatchSet()
 	return registerWhenCatalogueServed(mgr, "rolloutdependency", r.CatalogueDiscoveryInterval, func(context.Context) error {
-		if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), &releasecatalogue.ReleaseSlice{},
-			handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice))); err != nil {
+		if err := watches.ensure("ReleaseSlice", func() error {
+			return c.Watch(source.Kind[client.Object](mgr.GetCache(), &releasecatalogue.ReleaseSlice{},
+				handler.EnqueueRequestsFromMapFunc(r.findDependenciesForReleaseSlice)))
+		}); err != nil {
 			return err
 		}
 		r.lateCatalogue.Store(true)

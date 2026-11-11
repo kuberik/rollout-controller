@@ -37,6 +37,7 @@ const (
 	reasonSourceNotReady       = "ReleaseSourceNotReady"
 	reasonImagePolicyIgnored   = "ReleasesImagePolicyIgnored"
 	reasonSourceRequired       = "ReleaseSourceRequired"
+	reasonNoReleases           = "NoReleases"
 
 	messageImagePolicyIgnored = "spec.releasesImagePolicy is deprecated and ignored; it will be removed in the next release. " +
 		"Releases are read from the ReleaseSource named by spec.releaseSourceRef"
@@ -534,6 +535,9 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonSourceRequired, messageSourceRequired)
 	}
 	if !r.catalogueOn() {
+		// Nothing is read, so nothing from an earlier read is kept.
+		rollout.Status.Candidates = nil
+		rollout.Status.ReleaseSource = nil
 		return nil, nil, true, r.blockOnRelease(ctx, rollout, reasonCatalogueUnavailable, fmt.Sprintf(
 			"spec.releaseSourceRef is %q, but the release-controller CRDs (ReleaseSource, ReleaseSlice) are not installed, "+
 				"so no releases are read; install release-controller and this Rollout will pick it up",
@@ -545,6 +549,9 @@ func (r *RolloutReconciler) resolveReleases(ctx context.Context, rollout *rollou
 		if c := meta.FindStatusCondition(rollout.Status.Conditions, t); c != nil &&
 			(c.Reason == reasonSourceRequired || c.Reason == reasonCatalogueUnavailable) {
 			meta.RemoveStatusCondition(&rollout.Status.Conditions, t)
+			if t == rolloutv1alpha1.RolloutReady {
+				deriveReadyFromHistory(rollout)
+			}
 		}
 	}
 	// A Rollout without a usable ReleaseSource does nothing else, so the source
@@ -610,4 +617,37 @@ func (r *RolloutReconciler) refreshCandidatesAfterDeploy(ctx context.Context, ro
 		return err
 	}
 	return nil
+}
+
+// restoreReadyAfterNoReleases re-derives Ready when it still carries the
+// NoReleases reason from an earlier empty catalogue. It reports whether it did.
+func restoreReadyAfterNoReleases(rollout *rolloutv1alpha1.Rollout) bool {
+	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+	if c == nil || c.Reason != reasonNoReleases {
+		return false
+	}
+	meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutReady)
+	deriveReadyFromHistory(rollout)
+	return true
+}
+
+// deriveReadyFromHistory sets Ready from the newest deployment: a finished bake
+// decides it; with no history or a bake still running the bake logic owns it.
+func deriveReadyFromHistory(rollout *rolloutv1alpha1.Rollout) {
+	if len(rollout.Status.History) == 0 || rollout.Status.History[0].BakeStatus == nil {
+		return
+	}
+	e := rollout.Status.History[0]
+	msg := ""
+	if e.BakeStatusMessage != nil {
+		msg = *e.BakeStatusMessage
+	}
+	switch *e.BakeStatus {
+	case rolloutv1alpha1.BakeStatusSucceeded:
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionTrue, Reason: "BakeTimePassed", Message: msg})
+	case rolloutv1alpha1.BakeStatusFailed:
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionFalse, Reason: "BakeTimeFailed", Message: msg})
+	}
 }

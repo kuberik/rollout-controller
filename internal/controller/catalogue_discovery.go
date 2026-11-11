@@ -65,3 +65,22 @@ func registerWhenCatalogueServed(mgr ctrl.Manager, name string, interval time.Du
 		}
 	}))
 }
+
+// watchSet remembers which watches are already registered, so a retry after a
+// partial failure registers only the missing ones (a second Watch on the same
+// kind would deliver every event twice).
+type watchSet struct{ done map[string]bool }
+
+func newWatchSet() *watchSet { return &watchSet{done: map[string]bool{}} }
+
+// ensure runs add unless name was already registered successfully.
+func (w *watchSet) ensure(name string, add func() error) error {
+	if w.done[name] {
+		return nil
+	}
+	if err := add(); err != nil {
+		return err
+	}
+	w.done[name] = true
+	return nil
+}

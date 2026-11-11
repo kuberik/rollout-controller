@@ -112,7 +112,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if len(releases) == 0 {
 		log.Info("No releases available, skipping deployment")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No releases available")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, reasonNoReleases, "No releases available")
+	}
+	// Ready=False/NoReleases was written while the catalogue was empty; releases
+	// are back, so Ready is derived from the history again, not left stuck.
+	if restoreReadyAfterNoReleases(&rollout) {
+		log.Info("Releases are available again, Ready restored from the deployment history")
 	}
 
 	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
@@ -253,7 +258,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if wantedRelease == nil {
 		log.Info("No release candidates found, skipping deployment")
-		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutSucceeded", "No release candidates found")
+		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, "NoReleaseCandidates", "No release candidates found")
 	}
 
 	if len(rollout.Status.History) == 0 || *wantedRelease != rollout.Status.History[0].Version.Tag {
@@ -381,10 +386,13 @@ func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.CatalogueAvailable {
 		return nil
 	}
+	watches := newWatchSet()
 	return registerWhenCatalogueServed(mgr, "rollout", r.CatalogueDiscoveryInterval, func(ctx context.Context) error {
 		for _, o := range []client.Object{&releasecatalogue.ReleaseSlice{}, &releasecatalogue.ReleaseSource{}} {
-			if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), o,
-				handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource))); err != nil {
+			if err := watches.ensure(fmt.Sprintf("%T", o), func() error {
+				return c.Watch(source.Kind[client.Object](mgr.GetCache(), o,
+					handler.EnqueueRequestsFromMapFunc(r.findRolloutsForReleaseSource)))
+			}); err != nil {
 				return err
 			}
 		}

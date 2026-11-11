@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -130,7 +131,8 @@ var _ = Describe("Slices mode reader", func() {
 				Name: fmt.Sprintf("%s-%05d", source, idx), Namespace: ns,
 				Labels: map[string]string{releasecatalogue.SourceLabel: source},
 			},
-			Source: source,
+			Source:   source,
+			Releases: []releasecatalogue.Release{},
 		}
 		for i, r := range rels {
 			rel := releasecatalogue.Release{
@@ -903,13 +905,106 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesImagePolicyIgnored)).To(BeNil())
 	})
 
+	// startManaged runs the real Rollout controller (its watches, no manual Reconcile)
+	// against the namespace of this test.
+	startManaged := func() {
+		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+			Scheme: k8sClient.Scheme(), Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
+			Cache:      cacheOptionsFor(ns),
+			Controller: ctrlconfig.Controller{SkipNameValidation: k8sptr.To(true)},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		r := &RolloutReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Clock: &RealClock{}, ReleaseCandidates: 3}
+		Expect(r.SetupWithManager(mgr)).To(Succeed())
+		Expect(r.CatalogueAvailable).To(BeTrue())
+		mctx, cancel := context.WithCancel(ctx)
+		DeferCleanup(cancel)
+		go func() { defer GinkgoRecover(); _ = mgr.Start(mctx) }()
+	}
+	readyOf := func(name string) (metav1.ConditionStatus, string) {
+		c := meta.FindStatusCondition(get(name).Status.Conditions, rolloutv1alpha1.RolloutReady)
+		if c == nil {
+			return "", ""
+		}
+		return c.Status, c.Reason
+	}
+
+	// The Rollout is never touched after the slices change: only the ReleaseSlice
+	// watch can bring Ready back.
+	It("Ready recovers through the ReleaseSlice watch alone when releases come back after an empty catalogue", func() {
+		createSource("src", true, 1, "r0001")
+		createSlice("src", 0, nil)
+		newRollout("flap", true, trainRels(1, time.Hour), rolloutOpts{current: "r0001"})
+		newGate("flap", nil, passing(false)) // never deploy, only observe Ready
+		ro := get("flap")
+		ro.Status.History[0].BakeStatusMessage = k8sptr.To("Bake completed (no bake time configured).")
+		meta.SetStatusCondition(&ro.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionTrue, Reason: "BakeTimePassed", Message: "ok"})
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+		startManaged()
+
+		Eventually(func() string { _, reason := readyOf("flap"); return reason }, 20*time.Second, 100*time.Millisecond).
+			Should(Equal("NoReleases"), "an empty catalogue says NoReleases, never RolloutSucceeded on a False Ready")
+		st, _ := readyOf("flap")
+		Expect(st).To(Equal(metav1.ConditionFalse))
+
+		By("the slices are restored; the Rollout itself is not touched")
+		s := &releasecatalogue.ReleaseSlice{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "src-00000"}, s)).To(Succeed())
+		now := metav1.Now()
+		s.Releases = []releasecatalogue.Release{
+			{Tag: "r0001", Sequence: 1, Created: now, FirstSeen: now},
+			{Tag: "r0002", Sequence: 2, Created: now, FirstSeen: now},
+		}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+		Eventually(func() string { st, reason := readyOf("flap"); return string(st) + "/" + reason },
+			20*time.Second, 100*time.Millisecond).Should(Equal("True/BakeTimePassed"))
+	})
+
+	It("a status-only change on a ReleaseSource enqueues its Rollouts and updates ReleaseSourceReady", func() {
+		createSource("src", true, 1, "r0001")
+		createSlice("src", 0, trainRels(1, time.Hour))
+		newRollout("watcher", true, trainRels(1, time.Hour), rolloutOpts{current: "r0001"})
+		newGate("watcher", nil, passing(false))
+		startManaged()
+		sourceReady := func() metav1.ConditionStatus {
+			c := meta.FindStatusCondition(get("watcher").Status.Conditions, rolloutv1alpha1.RolloutReleaseSourceReady)
+			if c == nil {
+				return ""
+			}
+			return c.Status
+		}
+		Eventually(sourceReady, 20*time.Second, 100*time.Millisecond).Should(Equal(metav1.ConditionTrue))
+
+		By("only the ReleaseSource status changes: Ready flips to False")
+		src := &unstructured.Unstructured{}
+		src.SetAPIVersion("kuberik.com/v1alpha1")
+		src.SetKind("ReleaseSource")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "src"}, src)).To(Succeed())
+		conds, _, _ := unstructured.NestedSlice(src.Object, "status", "conditions")
+		conds[0].(map[string]interface{})["status"] = "False"
+		Expect(unstructured.SetNestedSlice(src.Object, conds, "status", "conditions")).To(Succeed())
+		Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+		Eventually(sourceReady, 20*time.Second, 100*time.Millisecond).Should(Equal(metav1.ConditionFalse))
+		Eventually(func() bool {
+			rs := get("watcher").Status.ReleaseSource
+			return rs != nil && !rs.Ready
+		}, 20*time.Second, 100*time.Millisecond).Should(BeTrue())
+	})
+
 	It("without the catalogue CRDs a ref'd Rollout gets ReleaseCatalogueUnavailable and no releases, without crashing", func() {
 		rels := trainRels(3, time.Hour)
 		newRollout("nocrd", true, rels, rolloutOpts{})
+		ro := get("nocrd")
+		ro.Status.ReleaseSource = &rolloutv1alpha1.ReleaseSourceStatusRef{Name: "src", Ready: true}
+		ro.Status.Candidates = []rolloutv1alpha1.ReleaseCandidate{{Tag: "r0003"}}
+		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 		r, _ := newRecorderR(false)
 		var got *rolloutv1alpha1.Rollout
 		Expect(func() { got = reconcileOnce(r, "nocrd") }).NotTo(Panic())
 		Expect(got.Status.History).To(BeEmpty())
+		Expect(got.Status.Candidates).To(BeEmpty(), "nothing is read, so no earlier candidates are kept")
+		Expect(got.Status.ReleaseSource).To(BeNil())
 		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReleasesUpdated)
 		Expect(c).NotTo(BeNil())
 		Expect(c.Reason).To(Equal(reasonCatalogueUnavailable))
