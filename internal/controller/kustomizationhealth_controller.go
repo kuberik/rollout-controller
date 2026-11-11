@@ -70,7 +70,7 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	// Check if this is a kustomization health check
-	if healthCheck.Spec.Class == nil || *healthCheck.Spec.Class != "kustomization" {
+	if healthCheck.Spec.Class == nil || *healthCheck.Spec.Class != healthCheckClassKustomization {
 		return ctrl.Result{}, nil
 	}
 
@@ -101,7 +101,7 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
-		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)
+		healthStatus, message, errorTime = r.checkKustomizationHealth(ctx, kustomization)
 	}
 	if err != nil {
 		log.Error(err, "failed to check kustomization health")
@@ -156,26 +156,26 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 // checkKustomizationHealth checks the health of the kustomization itself and all resources it manages.
 // Returns the health status, a human-readable message, the latest failure condition timestamp
 // (used by the caller as LastErrorTime so the rollout controller can determine whether the failure
-// is pre- or post-retry), and any reconciliation error.
-func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
+// is pre- or post-retry).
+func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time) {
 	// First, check the kustomization resource itself
-	kustomizationHealth, kustomizationMessage, kustomizationErrorTime, err := r.checkKustomizationResourceHealth(ctx, kustomization)
+	kustomizationHealth, kustomizationMessage, kustomizationErrorTime, err := r.checkKustomizationResourceHealth(kustomization)
 	if err != nil {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil
 	}
 
 	// If kustomization itself is unhealthy, return that status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusUnhealthy {
-		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), kustomizationErrorTime, nil
+		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), kustomizationErrorTime
 	}
 
 	// Check if kustomization has inventory
 	if kustomization.Status.Inventory == nil || len(kustomization.Status.Inventory.Entries) == 0 {
 		// If kustomization is healthy but has no inventory, it might be pending
 		if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil, nil
+			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
 		}
-		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil, nil
+		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil
 	}
 
 	var unhealthyResources []string
@@ -239,23 +239,23 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 
 	// Determine overall health status based on both kustomization and managed resources
 	if len(errorResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), latestErrorTime, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), latestErrorTime
 	}
 
 	if len(unhealthyResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime, nil
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime
 	}
 
 	if len(pendingResources) > 0 {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil, nil
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil
 	}
 
 	// All resources are healthy, but check if kustomization itself has any pending status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil, nil
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
 	}
 
-	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil, nil
+	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil
 }
 
 // checkKustomizationReadyHealth derives health from the Kustomization's Ready condition alone.
@@ -290,7 +290,7 @@ func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (ro
 
 // checkKustomizationResourceHealth checks the health of the kustomization resource itself using kstatus.
 // Returns status, message, the failure condition timestamp (nil when not unhealthy), and any error.
-func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
+func (r *KustomizationHealthReconciler) checkKustomizationResourceHealth(kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, error) {
 	// Convert the kustomization to unstructured for kstatus
 	obj := &unstructured.Unstructured{}
 	err := r.Scheme.Convert(kustomization, obj, nil)
@@ -457,7 +457,7 @@ func (r *KustomizationHealthReconciler) findHealthChecksForKustomization(ctx con
 
 	for _, healthCheck := range healthCheckList.Items {
 		// Check if this is a kustomization health check
-		if healthCheck.Spec.Class == nil || *healthCheck.Spec.Class != "kustomization" {
+		if healthCheck.Spec.Class == nil || *healthCheck.Spec.Class != healthCheckClassKustomization {
 			continue
 		}
 

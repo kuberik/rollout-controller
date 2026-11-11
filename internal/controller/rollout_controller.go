@@ -214,7 +214,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				// Check if user has requested to unblock failed deployment via annotation
 				unblockRequested := false
 				if rollout.Annotations != nil {
-					if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+					if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == annotationTrue {
 						unblockRequested = true
 						log.Info("User requested to unblock failed deployment via annotation")
 					}
@@ -282,12 +282,12 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				"currentVersion", rollout.Status.History[0].Version.Tag,
 				"bakeStatus", *rollout.Status.History[0].BakeStatus,
 				"wantedVersion", rollout.Spec.WantedVersion,
-				"hasUnblockAnnotation", rollout.Annotations != nil && rollout.Annotations["rollout.kuberik.com/unblock-failed"] == "true")
+				"hasUnblockAnnotation", rollout.Annotations != nil && rollout.Annotations["rollout.kuberik.com/unblock-failed"] == annotationTrue)
 
 			// Check if user has requested to unblock failed deployment via annotation
 			unblockRequested := false
 			if rollout.Annotations != nil {
-				if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+				if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == annotationTrue {
 					unblockRequested = true
 				}
 			}
@@ -363,7 +363,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // SetupWithManager sets up the controller with the Manager.
 func (r *RolloutReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize the EventRecorder
-	r.Recorder = mgr.GetEventRecorderFor("rollout-controller")
+	r.Recorder = mgr.GetEventRecorderFor("rollout-controller") //nolint:staticcheck // SA1019
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&rolloutv1alpha1.Rollout{}).
@@ -508,6 +508,8 @@ func (r *RolloutReconciler) parseVersionInfoFromOCI(ctx context.Context, rollout
 // A contract name is a service name and a value is a SemVer constraint; neither is
 // ever long.
 const (
+	annotationTrue = "true"
+
 	maxRequiresAnnotations = 32
 	maxRequiresKeyLength   = 64
 	maxRequiresValueLength = 256
@@ -839,7 +841,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	}
 	rollout.Status.Gates = nil
 	gatedReleaseCandidates := releaseCandidates
-	gatesPassing := true
+	var gatesPassing bool
 
 	// If bypass is enabled for a specific version, check if that version is in the candidates
 	bypassEnabled := false
@@ -929,7 +931,7 @@ func buildGateSummaries(
 	bypassEnabled bool,
 	bypassVersion string,
 ) ([]rolloutv1alpha1.RolloutGateStatusSummary, []rolloutv1alpha1.VersionInfo, bool) {
-	var summaries []rolloutv1alpha1.RolloutGateStatusSummary
+	summaries := make([]rolloutv1alpha1.RolloutGateStatusSummary, 0, len(gates))
 	gatesPassing := true
 
 	for _, gate := range gates {
@@ -1313,7 +1315,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Check if this deployment was done with failed bake unblock
 	unblockUsed := false
 	if rollout.Annotations != nil {
-		if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == "true" {
+		if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == annotationTrue {
 			unblockUsed = true
 			log.Info("Deployment using failed bake unblock")
 		}
@@ -1380,7 +1382,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	// Generate deployment message
-	deploymentMessage := r.generateDeploymentMessage(rollout, wantedRelease, bypassUsed, forceDeployUsed, unblockUsed)
+	deploymentMessage := r.generateDeploymentMessage(rollout, bypassUsed, forceDeployUsed, unblockUsed)
 
 	// Extract triggered by information
 	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
@@ -1713,7 +1715,7 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 			return fmt.Errorf("failed to construct patch for OCIRepository %s: %w", ociRepo.Name, err)
 		}
 
-		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil {
+		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: server-side apply of unstructured; typed Apply() needs ApplyConfigurations
 			return fmt.Errorf("failed to apply OCIRepository %s: %w", ociRepo.Name, err)
 		}
 
@@ -1797,7 +1799,7 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 			return fmt.Errorf("failed to construct patch for Kustomization %s: %w", kustomization.Name, err)
 		}
 
-		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil {
+		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: server-side apply of unstructured; typed Apply() needs ApplyConfigurations
 			return fmt.Errorf("failed to apply Kustomization %s: %w", kustomization.Name, err)
 		}
 
@@ -2214,7 +2216,7 @@ func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Roll
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
-func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, wantedRelease string, bypassUsed, forceDeployUsed, unblockUsed bool) string {
+func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, bypassUsed, forceDeployUsed, unblockUsed bool) string {
 	var messageParts []string
 
 	// Determine deployment type
@@ -2396,7 +2398,7 @@ func (r *RolloutReconciler) findRolloutsForHealthCheck(ctx context.Context, obj 
 			// Check if the HealthCheck matches the selector
 			if selector.Matches(labels.Set(healthCheck.Labels)) {
 				// Check if the HealthCheck's namespace matches the namespace selector
-				namespaceMatches := true
+				var namespaceMatches bool
 				if rollout.Spec.HealthCheckSelector.GetNamespaceSelector() != nil {
 					namespaceSelector, err := metav1.LabelSelectorAsSelector(rollout.Spec.HealthCheckSelector.GetNamespaceSelector())
 					if err != nil {

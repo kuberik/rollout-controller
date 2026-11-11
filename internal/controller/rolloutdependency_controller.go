@@ -382,7 +382,7 @@ func orNone(value string) string {
 // because it may have just discovered new releases to admit or block.
 func (r *RolloutDependencyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("rolloutdependency-controller")
+		r.Recorder = mgr.GetEventRecorderFor("rolloutdependency-controller") //nolint:staticcheck // SA1019
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kuberikcomv1alpha1.RolloutDependency{}).

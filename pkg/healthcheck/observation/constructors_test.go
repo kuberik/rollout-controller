@@ -14,7 +14,8 @@ func TestCount(t *testing.T) {
 	for n, healthy := range map[int]bool{0: true, 1: false, 7: false} {
 		o := Count("incidents", n, now)
 		if o.Kind != kuberikv1alpha1.ObservationKindCount || o.Healthy == nil || *o.Healthy != healthy ||
-			o.Value != map[int]string{0: "0", 1: "1", 7: "7"}[n] || o.ObservedTime == nil || !DecimalPattern.MatchString(o.Value) {
+			o.Value != map[int]string{0: "0", 1: "1", 7: "7"}[n] || o.ObservedTime == nil ||
+			!DecimalPattern.MatchString(o.Value) {
 			t.Errorf("Count(%d) = %+v", n, o)
 		}
 	}
@@ -23,7 +24,8 @@ func TestCount(t *testing.T) {
 func TestState(t *testing.T) {
 	now := metav1.Now()
 	o := State("monitor", false, now)
-	if o.Kind != kuberikv1alpha1.ObservationKindState || o.Healthy == nil || *o.Healthy || o.Value != "" || o.Limit != "" || o.ObservedTime == nil {
+	if o.Kind != kuberikv1alpha1.ObservationKindState || o.Healthy == nil || *o.Healthy ||
+		o.Value != "" || o.Limit != "" || o.ObservedTime == nil {
 		t.Errorf("State = %+v", o)
 	}
 }
