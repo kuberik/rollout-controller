@@ -54,8 +54,8 @@ metadata:
   labels:
     tier: frontend  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: web-frontend-policy
+  releaseSourceRef:
+    name: web-frontend-source
   versionHistoryLimit: 15
   bakeTime: "20m"
   healthCheckSelector:

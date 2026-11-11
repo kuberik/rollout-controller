@@ -6,14 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Release catalogue reader: a Rollout with `spec.releaseSourceRef` reads releases from the release-controller `ReleaseSource` and its `ReleaseSlice` catalogue instead of an ImagePolicy (no flag; Rollouts without the ref keep using `spec.releasesImagePolicy`). Without the release-controller CRDs installed the controller still starts and such Rollouts get condition `RolloutReleasesUpdated=False`, reason `ReleaseCatalogueUnavailable`; restart the controller after installing the CRDs, and publishes `status.candidates` and `status.releaseSource`.
-- `--dual-write-release-lists` (default on): for Rollouts with `spec.releaseSourceRef`, keep writing `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` so existing readers keep working.
+- **Upgrade note**: Create a ReleaseSource per app; an existing Flux ImagePolicy can be referenced via `oci.imagePolicyRef`. `spec.releasesImagePolicy` and the status release lists are ignored and will be removed in the next release.
+- The ReleaseSource catalogue is the only release path. A Rollout reads releases from the `ReleaseSource` named by `spec.releaseSourceRef` and its `ReleaseSlice` catalogue; the ImagePolicy path, its watch and its RBAC (`imagepolicies`, `imagerepositories`, `secrets`) are removed, along with the Flux image-reflector API dependency.
+- A Rollout without `spec.releaseSourceRef` gets no releases: `ReleasesUpdated=False` and `Ready=False` with reason `ReleaseSourceRequired`, and one Warning Event per change.
+- Without the release-controller CRDs installed the controller still starts and Rollouts get `ReleasesUpdated=False` and `Ready=False` with reason `ReleaseCatalogueUnavailable`; there is no ImagePolicy fallback any more.
+- `status.candidates` and `status.releaseSource` are the only release status. `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are never written and are cleared on reconcile.
+- `spec.releaseSourceRef` is no longer required to be accompanied by `spec.releasesImagePolicy`; the CRD rule requiring one of them is removed (a Rollout without a ref reports `ReleaseSourceRequired` instead of being rejected).
 
 ### Deprecated
 
-- `spec.releasesImagePolicy`, `spec.availableReleasesRetentionDays`, `spec.availableReleasesMinCount`, `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are deprecated in favour of `spec.releaseSourceRef`, `ReleaseSource.spec.retention` and `status.candidates`. They keep working and will be removed in a later release.
+- `spec.releasesImagePolicy`, `spec.availableReleasesRetentionDays`, `spec.availableReleasesMinCount`, `status.availableReleases`, `status.releaseCandidates` and `status.gatedReleaseCandidates` are ignored and will be removed in the next release. A Rollout that sets `spec.releasesImagePolicy` reports condition `ReleasesImagePolicyIgnored=True`.
+
+### Removed
+
+- `--dual-write-release-lists` and `--release-slices`.
 
 ## [0.11.0] - 2026-11-09
 

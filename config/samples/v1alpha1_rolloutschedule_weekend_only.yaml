@@ -30,7 +30,7 @@ metadata:
   labels:
     schedule: weekend  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: experimental-policy
+  releaseSourceRef:
+    name: experimental-source
   versionHistoryLimit: 5
   releaseUpdateInterval: "10m"

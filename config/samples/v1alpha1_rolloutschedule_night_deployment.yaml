@@ -36,7 +36,7 @@ metadata:
   labels:
     schedule: night  # Matches the schedule selector
 spec:
-  releasesImagePolicy:
-    name: batch-processor-policy
+  releaseSourceRef:
+    name: batch-processor-source
   versionHistoryLimit: 10
   bakeTime: "30m"

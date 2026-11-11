@@ -27,7 +27,7 @@ A Kubernetes controller for managing application rollouts with support for healt
 
 ## Key Features
 
-- **Flux ImagePolicy Integration**: Reads available releases from Flux ImagePolicy
+- **Release catalogue**: Reads releases from a release-controller ReleaseSource (`spec.releaseSourceRef`); the only release path
 - **Multiple Rollout Support**: Kustomizations can be managed by multiple rollouts using rollout-specific annotations
 - **Health Check Integration**: Monitor application health during rollouts
 - **Rollout Gates**: Control deployment progression with custom gates
@@ -99,13 +99,12 @@ spec:
       VERSION: "2.0.0"    # Managed by backend-rollout
 ```
 
-### ImagePolicy Workflow
+### Release Workflow
 
-1. Flux ImageRepository scans OCI registry
-2. Flux ImagePolicy filters releases with semver/regex
-3. Rollout Controller reads `latestRef` from ImagePolicy status
-4. Controller patches OCIRepository/Kustomization resources
-5. Flux reconciles changes and deploys
+1. release-controller's ReleaseSource lists tags of an OCI repository (or reads a Flux ImagePolicy via `oci.imagePolicyRef`) into ReleaseSlices
+2. Rollout Controller reads the ReleaseSlice catalogue of `spec.releaseSourceRef`, writes `status.candidates` and `status.releaseSource`
+3. Controller patches OCIRepository/Kustomization resources
+4. Flux reconciles changes and deploys
 
 ## CRDs Managed
 
@@ -152,7 +151,7 @@ like `2024-01-15` into `2024.0.0`, which would satisfy every constraint ever
 written; an unparseable version blocks instead.
 
 The controller reads each consumer release's `requires` values from
-`Rollout.status.availableReleases` (populated by `parseOCIManifest`), compares
+the ReleaseSlice catalogue of the consumer's `spec.releaseSourceRef`, compares
 them against the contract version of the provider's successfully baked release,
 and publishes the verdict as a managed `RolloutGate` named
 `dependency-<name>` whose `allowedVersions` holds exactly the admitted
@@ -188,9 +187,8 @@ spec:
 - **Apply the CRDs before rolling the controller.** `requires` is a new property
   on the existing Rollout CRD; if the schema is not updated first the API server
   prunes it on every status write and releases read back as declaring nothing.
-- Releases already in `status.availableReleases` from before this change carry no
-  `requires`, and are only re-resolved when the image policy points at them
-  again. A dependency added to an existing Rollout does not retroactively gate
+- Releases published before this change carry no
+  `requires` until release-controller re-resolves them. A dependency added to an existing Rollout does not retroactively gate
   that backlog.
 
 Worked example: `../rollout-dashboard/example/hello-dep`.
@@ -203,8 +201,8 @@ kind: Rollout
 metadata:
   name: my-app-rollout
 spec:
-  releasesImagePolicy:
-    name: my-app-policy
+  releaseSourceRef:
+    name: my-app-source
 
   versionHistoryLimit: 10
   releaseUpdateInterval: "5m"
@@ -293,7 +291,6 @@ r.Client.Update(ctx, resource)           // Update spec/metadata
 ## Dependencies
 
 Key dependencies:
-- `github.com/fluxcd/image-reflector-controller/api` - ImagePolicy
 - `github.com/fluxcd/kustomize-controller/api` - Kustomization
 - `github.com/fluxcd/source-controller/api` - OCIRepository
 - `github.com/google/go-containerregistry` - OCI image operations

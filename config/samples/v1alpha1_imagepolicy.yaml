@@ -1,3 +1,6 @@
+# A Flux ImagePolicy is no longer read by Rollouts (spec.releasesImagePolicy is ignored).
+# Reference it from a ReleaseSource with spec.oci.imagePolicyRef instead:
+# see v1alpha1_releasesource_from_imagepolicy.yaml.
 apiVersion: image.toolkit.fluxcd.io/v1beta2
 kind: ImagePolicy
 metadata:
