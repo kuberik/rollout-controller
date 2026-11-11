@@ -88,8 +88,8 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releasesources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to

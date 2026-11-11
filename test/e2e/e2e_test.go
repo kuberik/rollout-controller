@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -69,9 +70,9 @@ var _ = Describe("Manager", Ordered, func() {
 		// Flux image-reflector kinds (ImagePolicy, ImageRepository), so those are
 		// deliberately NOT installed: the controller must start without them.
 		By("installing the Flux Kustomization CRD only (no image-reflector CRDs)")
-		cmd = exec.Command("kubectl", "apply", "-f", "vendir/kustomizations")
+		cmd = exec.Command("kubectl", "apply", "-f", "vendir/kustomizations", "-f", "vendir/ocirepositories")
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install the Kustomization CRD")
+		Expect(err).NotTo(HaveOccurred(), "Failed to install the Flux CRDs")
 
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
@@ -180,6 +181,79 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
+		})
+
+		It("patches the substitute of an annotated Kustomization (RBAC covers kustomizations)", func() {
+			apply := func(manifest string) {
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(manifest)
+				_, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			const ns = "e2e-substitute"
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", ns))
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { _, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--ignore-not-found")) })
+
+			By("installing the release-controller CRDs and a ReleaseSource with one release")
+			_, err = utils.Run(exec.Command("kubectl", "apply", "-f", "internal/controller/testdata/release-catalogue-crds"))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error {
+				_, err := utils.Run(exec.Command("kubectl", "get", "crd", "releasesources.kuberik.com", "releaseslices.kuberik.com"))
+				return err
+			}).Should(Succeed())
+			apply(`apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSource
+metadata: {name: app, namespace: e2e-substitute}
+spec:
+  oci:
+    image: ghcr.io/example/app
+    policy: {alphabetical: {order: asc}}
+`)
+			now := time.Now().UTC().Format(time.RFC3339)
+			_, err = utils.Run(exec.Command("kubectl", "patch", "releasesource", "app", "-n", ns, "--subresource=status",
+				"--type=merge", "-p", `{"status":{"count":1,"newest":{"tag":"1.0.0"},"conditions":[{"type":"Ready","status":"True",`+
+					`"reason":"Test","message":"test","lastTransitionTime":"`+now+`"}]}}`))
+			Expect(err).NotTo(HaveOccurred())
+			apply(fmt.Sprintf(`apiVersion: kuberik.com/v1alpha1
+kind: ReleaseSlice
+metadata:
+  name: app-00000
+  namespace: e2e-substitute
+  labels: {kuberik.com/release-source: app}
+source: app
+sealed: false
+releases:
+  - {tag: "1.0.0", sequence: 1, created: "%[1]s", firstSeen: "%[1]s"}
+`, now))
+
+			By("creating an annotated Kustomization and a Rollout that references the source")
+			apply(`apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app
+  namespace: e2e-substitute
+  annotations:
+    rollout.kuberik.com/substitute.IMAGE_TAG.from: app
+spec:
+  interval: 10m
+  path: ./
+  prune: true
+  suspend: true
+  sourceRef: {kind: OCIRepository, name: app}
+`)
+			apply(`apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata: {name: app, namespace: e2e-substitute}
+spec:
+  releaseSourceRef: {name: app}
+`)
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "kustomization", "app", "-n", ns,
+					"-o", "jsonpath={.spec.postBuild.substitute.IMAGE_TAG}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("1.0.0"))
+			}).Should(Succeed())
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
