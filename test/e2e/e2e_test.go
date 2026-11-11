@@ -199,7 +199,8 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(exec.Command("kubectl", "apply", "-f", "internal/controller/testdata/release-catalogue-crds"))
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(func() error {
-				_, err := utils.Run(exec.Command("kubectl", "get", "crd", "releasesources.kuberik.com", "releaseslices.kuberik.com"))
+				_, err := utils.Run(exec.Command("kubectl", "get", "crd",
+					"releasesources.kuberik.com", "releaseslices.kuberik.com"))
 				return err
 			}).Should(Succeed())
 			apply(`apiVersion: kuberik.com/v1alpha1
@@ -212,7 +213,8 @@ spec:
 `)
 			now := time.Now().UTC().Format(time.RFC3339)
 			_, err = utils.Run(exec.Command("kubectl", "patch", "releasesource", "app", "-n", ns, "--subresource=status",
-				"--type=merge", "-p", `{"status":{"count":1,"newest":{"tag":"1.0.0"},"conditions":[{"type":"Ready","status":"True",`+
+				"--type=merge", "-p",
+				`{"status":{"count":1,"newest":{"tag":"1.0.0"},"conditions":[{"type":"Ready","status":"True",`+
 					`"reason":"Test","message":"test","lastTransitionTime":"`+now+`"}]}}`))
 			Expect(err).NotTo(HaveOccurred())
 			apply(fmt.Sprintf(`apiVersion: kuberik.com/v1alpha1

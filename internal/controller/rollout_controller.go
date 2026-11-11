@@ -114,11 +114,6 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("No releases available, skipping deployment")
 		return ctrl.Result{}, r.updateRolloutStatusOnError(ctx, &rollout, reasonNoReleases, "No releases available")
 	}
-	// Ready=False/NoReleases was written while the catalogue was empty; releases
-	// are back, so Ready is derived from the history again, not left stuck.
-	if restoreReadyAfterNoReleases(&rollout) {
-		log.Info("Releases are available again, Ready restored from the deployment history")
-	}
 
 	// Calculate release candidates and evaluate gates early so they can be updated in status even when rollout is in progress
 	releaseCandidates, sliceGates, err := r.nextReleaseCandidates(ctx, &rollout, cat)
