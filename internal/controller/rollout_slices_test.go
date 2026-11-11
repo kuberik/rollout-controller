@@ -961,6 +961,28 @@ var _ = Describe("Slices mode reader", func() {
 			20*time.Second, 100*time.Millisecond).Should(Equal("True/BakeTimePassed"))
 	})
 
+	It("clears status.candidates when the catalogue is emptied and keeps Ready=False/NoReleases", func() {
+		createSource("src", true, 3, "r0003")
+		createSlice("src", 0, trainRels(3, time.Hour))
+		newRollout("emptied", true, trainRels(3, time.Hour), rolloutOpts{current: "r0001"})
+		newGate("emptied", nil, passing(false))
+		r, _ := newRecorderR(true)
+		got := reconcileOnce(r, "emptied")
+		Expect(got.Status.Candidates).NotTo(BeEmpty(), "precondition: candidates exist while the catalogue has releases")
+
+		s := &releasecatalogue.ReleaseSlice{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "src-00000"}, s)).To(Succeed())
+		s.Releases = []releasecatalogue.Release{}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+
+		got = reconcileOnce(r, "emptied")
+		Expect(got.Status.Candidates).To(BeEmpty(), "candidates name releases no longer in the catalogue")
+		c := meta.FindStatusCondition(got.Status.Conditions, rolloutv1alpha1.RolloutReady)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("NoReleases"))
+	})
+
 	It("a status-only change on a ReleaseSource enqueues its Rollouts and updates ReleaseSourceReady", func() {
 		createSource("src", true, 1, "r0001")
 		createSlice("src", 0, trainRels(1, time.Hour))
