@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -84,6 +85,10 @@ func (r *ClusterApprovalPolicyReconciler) Reconcile(ctx context.Context, req ctr
 		rolloutSelector:   rolloutSelector,
 		namespaceSelector: nsSelector,
 	})
+
+	if onlyConflicts(syncErr) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 
 	if setApprovalPolicyStatus(&policy.Status.Rollouts, &policy.Status.Conditions, policy.Generation, matched, syncErr) {
 		if err := r.Status().Update(ctx, policy); err != nil {

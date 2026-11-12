@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,6 +79,10 @@ func (r *ApprovalPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		namespace:       policy.Namespace,
 		rolloutSelector: selector,
 	})
+
+	if onlyConflicts(syncErr) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 
 	if setApprovalPolicyStatus(&policy.Status.Rollouts, &policy.Status.Conditions, policy.Generation, matched, syncErr) {
 		if err := r.Status().Update(ctx, policy); err != nil {

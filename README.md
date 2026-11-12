@@ -630,6 +630,7 @@ kubectl apply -k config/default/
   kubectl create rolebinding shop-approvers -n shop \
     --clusterrole=kuberik-rollout-approver --group=shop-oncall
   ```
+- **The first deploy is not gated.** A Rollout with no deployment history deploys its newest candidate even when no gate allows it, so a new Rollout always reaches an initial version. This applies to approval gates like any other gate. From the second deploy on, every build needs its own RolloutApproval.
 
 ## Usage Examples
 

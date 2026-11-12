@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -345,11 +346,16 @@ func applyApprovalGateSpec(gate *rolloutv1alpha1.RolloutGate, rolloutName string
 }
 
 // setControllerOwnerRef makes ref the gate's only reference with its UID and
-// keeps any others untouched.
+// its only controller reference, and keeps any other references untouched.
 func setControllerOwnerRef(gate *rolloutv1alpha1.RolloutGate, ref metav1.OwnerReference) {
 	refs := make([]metav1.OwnerReference, 0, len(gate.OwnerReferences)+1)
 	found := false
 	for _, r := range gate.OwnerReferences {
+		if r.Controller != nil && *r.Controller && r.UID != ref.UID {
+			// A controller reference to a deleted policy of the same name
+			// (recreated before GC ran) would make every Update fail.
+			continue
+		}
 		if r.UID == ref.UID {
 			if !found {
 				refs = append(refs, ref)
@@ -428,7 +434,9 @@ func approvalPoliciesForNamespace(ctx context.Context, c client.Reader, namespac
 	var reqs []reconcile.Request
 	if namespaced {
 		list := &rolloutv1alpha1.ApprovalPolicyList{}
-		if err := c.List(ctx, list, client.InNamespace(namespace)); err == nil {
+		if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to list ApprovalPolicies for watch event", "namespace", namespace)
+		} else {
 			for i := range list.Items {
 				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 			}
@@ -436,11 +444,31 @@ func approvalPoliciesForNamespace(ctx context.Context, c client.Reader, namespac
 	}
 	if cluster {
 		list := &rolloutv1alpha1.ClusterApprovalPolicyList{}
-		if err := c.List(ctx, list); err == nil {
+		if err := c.List(ctx, list); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to list ClusterApprovalPolicies for watch event")
+		} else {
 			for i := range list.Items {
 				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 			}
 		}
 	}
 	return reqs
+}
+
+// onlyConflicts reports whether err is non-nil and every error it joins is an
+// optimistic-concurrency conflict. Those come from a stale cache and resolve on
+// the next reconcile, so they requeue without flipping Ready to False.
+func onlyConflicts(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			if !onlyConflicts(e) {
+				return false
+			}
+		}
+		return true
+	}
+	return apierrors.IsConflict(err)
 }
