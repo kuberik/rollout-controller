@@ -81,6 +81,7 @@ rules:
   resources:
   - releaseslices
   - releasesources
+  - rolloutapprovals
   verbs:
   - get
   - list
