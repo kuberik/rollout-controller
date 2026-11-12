@@ -444,6 +444,22 @@ type DeploymentHistoryEntry struct {
 	// ignored as they reflect the pre-retry state.
 	// +optional
 	LastRetryTimestamp *metav1.Time `json:"lastRetryTimestamp,omitempty"`
+
+	// Approval names the RolloutApproval that let this build through an
+	// approval gate. Nil when no approval gate applied, or when gates were bypassed.
+	// +optional
+	Approval *ApprovalRecord `json:"approval,omitempty"`
+}
+
+// ApprovalRecord is a copy of the RolloutApproval that allowed a deployment,
+// taken when the history entry was written.
+type ApprovalRecord struct {
+	// Name of the RolloutApproval, in the Rollout's namespace.
+	// +required
+	Name string `json:"name"`
+	// By is the approval.kuberik.com/by annotation at deploy time, if set.
+	// +optional
+	By string `json:"by,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -85,6 +85,7 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=rolloutapprovals,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releasesources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releaseslices,verbs=get;list;watch
@@ -1025,6 +1026,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// (about-to-become-previous) entry's BakeStatus. Persists for the entry's lifetime.
 	r.setBakeFailureDisabledForNewDeploy(ctx, rollout, log)
 
+	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed)
+
 	nextID := r.getNextHistoryID(rollout)
 	now := metav1.Time{Time: r.now()}
 	rollout.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{{
@@ -1033,6 +1036,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Timestamp:         now,
 		Message:           &deploymentMessage,
 		TriggeredBy:       triggeredBy,
+		Approval:          approval,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     nil, // Will be set when healthchecks become healthy
@@ -1680,6 +1684,59 @@ func (r *RolloutReconciler) getNextHistoryID(rollout *rolloutv1alpha1.Rollout) i
 		return *lastEntry.ID + 1
 	}
 	return 1
+}
+
+// approvalRecordForDeploy returns the record of the RolloutApproval that let the
+// deployed tag through an approval gate, or nil. It is nil when gates were bypassed,
+// when no gate on the Rollout is owned by an ApprovalPolicy or ClusterApprovalPolicy,
+// and when no approval exists. With several approvals for the tag, the oldest wins
+// (creationTimestamp, then name). Lookup failures are logged and leave the record
+// empty: history must not block a deploy.
+func (r *RolloutReconciler) approvalRecordForDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, tag string, bypassUsed bool) *rolloutv1alpha1.ApprovalRecord {
+	if bypassUsed {
+		return nil
+	}
+	log := logf.FromContext(ctx)
+	gates := &rolloutv1alpha1.RolloutGateList{}
+	if err := r.List(ctx, gates, client.InNamespace(rollout.Namespace)); err != nil {
+		log.Error(err, "Failed to list RolloutGates for approval record")
+		return nil
+	}
+	policyOwned := false
+	for i := range gates.Items {
+		g := &gates.Items[i]
+		if g.Spec.RolloutRef == nil || g.Spec.RolloutRef.Name != rollout.Name {
+			continue
+		}
+		for _, o := range g.OwnerReferences {
+			if (o.Kind == "ApprovalPolicy" || o.Kind == "ClusterApprovalPolicy") && o.APIVersion == rolloutv1alpha1.GroupVersion.String() {
+				policyOwned = true
+			}
+		}
+	}
+	if !policyOwned {
+		return nil
+	}
+	approvals := &rolloutv1alpha1.RolloutApprovalList{}
+	if err := r.List(ctx, approvals, client.InNamespace(rollout.Namespace)); err != nil {
+		log.Error(err, "Failed to list RolloutApprovals for approval record")
+		return nil
+	}
+	var oldest *rolloutv1alpha1.RolloutApproval
+	for i := range approvals.Items {
+		a := &approvals.Items[i]
+		if a.Spec.RolloutRef.Name != rollout.Name || a.Spec.Version != tag {
+			continue
+		}
+		if oldest == nil || a.CreationTimestamp.Before(&oldest.CreationTimestamp) ||
+			(a.CreationTimestamp.Equal(&oldest.CreationTimestamp) && a.Name < oldest.Name) {
+			oldest = a
+		}
+	}
+	if oldest == nil {
+		return nil
+	}
+	return &rolloutv1alpha1.ApprovalRecord{Name: oldest.Name, By: oldest.Annotations["approval.kuberik.com/by"]}
 }
 
 // extractTriggeredByInfo extracts triggered by information from annotations.

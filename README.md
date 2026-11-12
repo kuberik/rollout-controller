@@ -67,6 +67,10 @@ spec:
 
 Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
 
+## Approval gates
+
+Approvals are RolloutApproval objects, and an ApprovalPolicy owns the gate. To move from the old ownerless manual-approval gates, follow [docs/migrate-approval-gates.md](docs/migrate-approval-gates.md).
+
 ## HealthCheck observations (for provider authors)
 
 A provider that writes a `HealthCheck` may also publish typed facts in `status.observations`, most important first. Consumers such as the dashboard choose how to draw a failure from the first observation's `kind`, so they do not need to know the provider. The field is optional; `status.message` stays the human sentence. The controller does not act on observations, but when a rollout records a failed health check in its history it copies the check's observations as they were at that moment (`FailedHealthCheck.observations`), so the figure survives the check recovering.
@@ -614,6 +618,19 @@ kubectl apply -f config/crd/bases/
 # Install the controller
 kubectl apply -k config/default/
 ```
+
+### Approvals: Kubernetes 1.30 and the approver role
+
+`kubectl apply -k config/default/` also installs two ValidatingAdmissionPolicies and the `kuberik-rollout-approver` ClusterRole.
+
+- **Kubernetes 1.30 is the minimum for a trusted `approval.kuberik.com/by`.** The policies use ValidatingAdmissionPolicy, which is GA in 1.30. `kuberik-rolloutapproval-by` makes `by` on a RolloutApproval equal the requesting user and immutable. `kuberik-approval-gate-guard` lets only the controller change a gate owned by an ApprovalPolicy. On an older cluster, apply only the rest of the install. Approvals and policies still work, but `by` cannot be trusted and policy-owned gates can be edited by anyone who may update RolloutGates.
+- **Approving is an explicit grant.** `kuberik-rollout-approver` may get, list, watch, create and delete `rolloutapprovals`. It is not aggregated into `edit` or `admin`, so bind it yourself, for example per namespace:
+
+  ```bash
+  kubectl create rolebinding shop-approvers -n shop \
+    --clusterrole=kuberik-rollout-approver --group=shop-oncall
+  ```
+- **The first deploy is not gated.** A Rollout with no deployment history deploys its newest candidate even when no gate allows it, so a new Rollout always reaches an initial version. This applies to approval gates like any other gate. From the second deploy on, every build needs its own RolloutApproval.
 
 ## Usage Examples
 

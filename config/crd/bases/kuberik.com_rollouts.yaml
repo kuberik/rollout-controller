@@ -526,6 +526,22 @@ spec:
                   description: DeploymentHistoryEntry represents a single entry in
                     the deployment history.
                   properties:
+                    approval:
+                      description: |-
+                        Approval names the RolloutApproval that let this build through an
+                        approval gate. Nil when no approval gate applied, or when gates were bypassed.
+                      properties:
+                        by:
+                          description: By is the approval.kuberik.com/by annotation
+                            at deploy time, if set.
+                          type: string
+                        name:
+                          description: Name of the RolloutApproval, in the Rollout's
+                            namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
                     bakeEndTime:
                       description: |-
                         BakeEndTime is the time when the bake period ended for this deployment

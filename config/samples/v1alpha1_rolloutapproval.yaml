@@ -1,0 +1,10 @@
+apiVersion: kuberik.com/v1alpha1
+kind: RolloutApproval
+metadata:
+  name: example-rollout-v1-0-0
+  annotations:
+    approval.kuberik.com/by: "luka"
+spec:
+  rolloutRef:
+    name: example-rollout
+  version: v1.0.0

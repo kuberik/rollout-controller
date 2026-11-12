@@ -31,6 +31,46 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - approvalpolicies
+  - clusterapprovalpolicies
+  - releaseslices
+  - releasesources
+  - rolloutapprovals
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kuberik.com
+  resources:
+  - approvalpolicies/finalizers
+  - clusterapprovalpolicies/finalizers
+  - clusterrolloutschedules/finalizers
+  - healthchecks/finalizers
+  - kustomizationhealths/finalizers
+  - rolloutdependencies/finalizers
+  - rollouts/finalizers
+  - rolloutschedules/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - kuberik.com
+  resources:
+  - approvalpolicies/status
+  - clusterapprovalpolicies/status
+  - clusterrolloutschedules/status
+  - healthchecks/status
+  - kustomizationhealths/status
+  - rolloutdependencies/status
+  - rollouts/status
+  - rolloutschedules/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - kuberik.com
+  resources:
   - clusterrolloutschedules
   - healthchecks
   - kustomizationhealths
@@ -45,39 +85,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - kuberik.com
-  resources:
-  - clusterrolloutschedules/finalizers
-  - healthchecks/finalizers
-  - kustomizationhealths/finalizers
-  - rolloutdependencies/finalizers
-  - rollouts/finalizers
-  - rolloutschedules/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - clusterrolloutschedules/status
-  - healthchecks/status
-  - kustomizationhealths/status
-  - rolloutdependencies/status
-  - rollouts/status
-  - rolloutschedules/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - kuberik.com
-  resources:
-  - releaseslices
-  - releasesources
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - kustomize.toolkit.fluxcd.io

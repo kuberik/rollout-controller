@@ -1,0 +1,9 @@
+# Cluster-scoped objects that keep their exact names (no namePrefix): include
+# this directory from a kustomization that does not set one (see ../default).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - rolloutapproval-by.yaml
+  - approval-gate-guard.yaml
+  - rollout_approver_role.yaml

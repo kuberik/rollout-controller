@@ -1,0 +1,11 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ClusterApprovalPolicy
+metadata:
+  name: prod-everywhere
+spec:
+  rolloutSelector:
+    matchLabels:
+      kuberik.com/tier: prod
+  namespaceSelector:
+    matchLabels:
+      kuberik.com/team: shop

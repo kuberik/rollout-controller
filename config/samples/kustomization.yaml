@@ -20,4 +20,7 @@ resources:
   - v1alpha1_clusterrolloutschedule_holiday_freeze.yaml
   - v1alpha1_clusterrolloutschedule_peak_hours_deny.yaml
   - v1alpha1_rolloutdependency.yaml
+  - v1alpha1_approvalpolicy.yaml
+  - v1alpha1_clusterapprovalpolicy.yaml
+  - v1alpha1_rolloutapproval.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

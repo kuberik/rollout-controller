@@ -42,6 +42,15 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the rollout-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+  - rolloutapproval_admin_role.yaml
+  - rolloutapproval_editor_role.yaml
+  - rolloutapproval_viewer_role.yaml
+  - clusterapprovalpolicy_admin_role.yaml
+  - clusterapprovalpolicy_editor_role.yaml
+  - clusterapprovalpolicy_viewer_role.yaml
+  - approvalpolicy_admin_role.yaml
+  - approvalpolicy_editor_role.yaml
+  - approvalpolicy_viewer_role.yaml
   - rolloutdependency_admin_role.yaml
   - rolloutdependency_editor_role.yaml
   - rolloutdependency_viewer_role.yaml
