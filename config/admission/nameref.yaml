@@ -1,9 +1,0 @@
-# kustomize does not know that a binding's policyName refers to a policy, so
-# namePrefix would leave it pointing at the unprefixed name.
-nameReference:
-  - kind: ValidatingAdmissionPolicy
-    group: admissionregistration.k8s.io
-    fieldSpecs:
-      - kind: ValidatingAdmissionPolicyBinding
-        group: admissionregistration.k8s.io
-        path: spec/policyName

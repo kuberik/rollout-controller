@@ -54,4 +54,3 @@ resources:
   - rolloutdependency_admin_role.yaml
   - rolloutdependency_editor_role.yaml
   - rolloutdependency_viewer_role.yaml
-  - rollout_approver_role.yaml

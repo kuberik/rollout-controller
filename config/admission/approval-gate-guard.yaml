@@ -2,9 +2,9 @@
 # or delete a RolloutGate owned by an ApprovalPolicy / ClusterApprovalPolicy.
 # Requires Kubernetes 1.30+.
 #
-# The controller username below is the service account of config/default:
-# namespace kuberik-system, namePrefix rollout-controller-, SA controller-manager.
-# If you change the namespace or namePrefix, change it here too.
+# The controller username below is the service account that config/default/controller
+# produces: namespace kuberik-system, namePrefix rollout-controller-, SA controller-manager.
+# If you change that namespace or namePrefix, change it here too.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
