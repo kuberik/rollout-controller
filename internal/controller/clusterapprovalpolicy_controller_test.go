@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"sort"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -96,7 +97,8 @@ var _ = Describe("ClusterApprovalPolicy Controller", func() {
 
 		Expect(gates(a, "checkout")).To(HaveLen(1))
 		Expect(gates(b, "payments")).To(HaveLen(1))
-		Expect(status().Status.Rollouts).To(Equal([]string{a + "/checkout", b + "/payments"}))
+		Expect(status().Status.Rollouts).To(ConsistOf(a+"/checkout", b+"/payments"))
+		Expect(sort.StringsAreSorted(status().Status.Rollouts)).To(BeTrue())
 	})
 
 	It("creates a gate with a cluster-scoped controller owner and no namespace label", func() {

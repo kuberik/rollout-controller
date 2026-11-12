@@ -158,7 +158,9 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		approvalTestRollout(ctx, ns, "a", nil)
 		approvalTestRollout(ctx, ns, "b", map[string]string{"x": "y"})
 		other := approvalTestNamespace(ctx, nil)
-		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: other}})).To(Succeed()) })
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: other}})).To(Succeed())
+		})
 		approvalTestRollout(ctx, other, "c", nil)
 		_, key := newPolicy("all", metav1.LabelSelector{})
 		reconcileApprovalPolicy(ctx, key)
