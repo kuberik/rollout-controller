@@ -67,6 +67,10 @@ spec:
 
 Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
 
+## Approval gates
+
+Approvals are RolloutApproval objects, and an ApprovalPolicy owns the gate. To move from the old ownerless manual-approval gates, follow [docs/migrate-approval-gates.md](docs/migrate-approval-gates.md).
+
 ## HealthCheck observations (for provider authors)
 
 A provider that writes a `HealthCheck` may also publish typed facts in `status.observations`, most important first. Consumers such as the dashboard choose how to draw a failure from the first observation's `kind`, so they do not need to know the provider. The field is optional; `status.message` stays the human sentence. The controller does not act on observations, but when a rollout records a failed health check in its history it copies the check's observations as they were at that moment (`FailedHealthCheck.observations`), so the figure survives the check recovering.
