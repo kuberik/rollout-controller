@@ -33,20 +33,12 @@ rules:
   resources:
   - approvalpolicies
   - clusterapprovalpolicies
-  - clusterrolloutschedules
-  - healthchecks
-  - kustomizationhealths
-  - rolloutdependencies
-  - rolloutgates
-  - rollouts
-  - rolloutschedules
+  - releaseslices
+  - releasesources
+  - rolloutapprovals
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - kuberik.com
@@ -79,11 +71,20 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
-  - releaseslices
-  - releasesources
+  - clusterrolloutschedules
+  - healthchecks
+  - kustomizationhealths
+  - rolloutdependencies
+  - rolloutgates
+  - rollouts
+  - rolloutschedules
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - kustomize.toolkit.fluxcd.io

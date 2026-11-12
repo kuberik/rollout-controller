@@ -19,10 +19,18 @@ package controller
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
@@ -33,31 +41,89 @@ type ClusterApprovalPolicyReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=kuberik.com,resources=clusterapprovalpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kuberik.com,resources=clusterapprovalpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=clusterapprovalpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=clusterapprovalpolicies/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kuberik.com,resources=rolloutapprovals,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=rollouts,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the ClusterApprovalPolicy object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.4/pkg/reconcile
+// Reconcile keeps one approval RolloutGate per Rollout the policy selects, in
+// every namespace its namespaceSelector admits. The reconciler never writes a
+// RolloutApproval.
 func (r *ClusterApprovalPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	logger := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	policy := &kuberikcomv1alpha1.ClusterApprovalPolicy{}
+	if err := r.Get(ctx, req.NamespacedName, policy); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !policy.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
 
-	return ctrl.Result{}, nil
+	rolloutSelector, err := metav1.LabelSelectorAsSelector(&policy.Spec.RolloutSelector)
+	nsSelector, nsErr := namespaceSelectorAsSelector(policy.Spec.NamespaceSelector)
+	if err == nil {
+		err = nsErr
+	}
+	if err != nil {
+		logger.Error(err, "Invalid selector")
+		if invalidSelectorStatus(&policy.Status.Conditions, policy.Generation, err) {
+			if err := r.Status().Update(ctx, policy); err != nil {
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	matched, syncErr := syncApprovalGates(ctx, r.Client, r.Scheme, &approvalPolicyTarget{
+		obj:               policy,
+		kind:              clusterApprovalPolicyKind,
+		rolloutSelector:   rolloutSelector,
+		namespaceSelector: nsSelector,
+	})
+
+	if setApprovalPolicyStatus(&policy.Status.Rollouts, &policy.Status.Conditions, policy.Generation, matched, syncErr) {
+		if err := r.Status().Update(ctx, policy); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, syncErr
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterApprovalPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kuberikcomv1alpha1.ClusterApprovalPolicy{}).
+		Owns(&kuberikcomv1alpha1.RolloutGate{}).
+		Watches(&kuberikcomv1alpha1.Rollout{},
+			handler.EnqueueRequestsFromMapFunc(r.allPolicies),
+			builder.WithPredicates(rolloutMatchInputsChanged)).
+		Watches(&kuberikcomv1alpha1.RolloutApproval{},
+			handler.EnqueueRequestsFromMapFunc(r.allPolicies),
+			builder.WithPredicates(approvalSetChanged)).
+		Watches(&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.allPolicies),
+			builder.WithPredicates(namespaceLabelsChanged)).
 		Named("clusterapprovalpolicy").
 		Complete(r)
+}
+
+// allPolicies maps any watched object to every ClusterApprovalPolicy.
+func (r *ClusterApprovalPolicyReconciler) allPolicies(ctx context.Context, _ client.Object) []reconcile.Request {
+	return approvalPoliciesForNamespace(ctx, r.Client, "", false, true)
+}
+
+// namespaceLabelsChanged lets Namespace creates, deletes and label changes
+// through; those are what namespaceSelector reads.
+var namespaceLabelsChanged = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		return !mapsEqual(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) ||
+			e.ObjectOld.GetDeletionTimestamp().IsZero() != e.ObjectNew.GetDeletionTimestamp().IsZero()
+	},
 }
