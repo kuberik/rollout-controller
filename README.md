@@ -615,6 +615,18 @@ kubectl apply -f config/crd/bases/
 kubectl apply -k config/default/
 ```
 
+### Approvals: Kubernetes 1.30 and the approver role
+
+`kubectl apply -k config/default/` also installs two ValidatingAdmissionPolicies and the `kuberik-rollout-approver` ClusterRole.
+
+- **Kubernetes 1.30 is the minimum for a trusted `approval.kuberik.com/by`.** The policies use ValidatingAdmissionPolicy, which is GA in 1.30. `kuberik-rolloutapproval-by` makes `by` on a RolloutApproval equal the requesting user and immutable. `kuberik-approval-gate-guard` lets only the controller change a gate owned by an ApprovalPolicy. On an older cluster, apply only the rest of the install. Approvals and policies still work, but `by` cannot be trusted and policy-owned gates can be edited by anyone who may update RolloutGates.
+- **Approving is an explicit grant.** `kuberik-rollout-approver` may get, list, watch, create and delete `rolloutapprovals`. It is not aggregated into `edit` or `admin`, so bind it yourself, for example per namespace:
+
+  ```bash
+  kubectl create rolebinding shop-approvers -n shop \
+    --clusterrole=kuberik-rollout-approver --group=shop-oncall
+  ```
+
 ## Usage Examples
 
 See the `config/samples/` directory for complete examples including:
