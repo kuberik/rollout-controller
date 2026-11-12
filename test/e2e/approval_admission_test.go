@@ -69,7 +69,7 @@ func kubectlAs(id *identity, stdin string, args ...string) (string, error) {
 	return utils.Run(cmd)
 }
 
-func approvalYAML(name, rollout, version, by string) string {
+func approvalYAML(name, version, by string) string {
 	ann := ""
 	if by != "" {
 		ann = fmt.Sprintf("\n  annotations:\n    approval.kuberik.com/by: %q", by)
@@ -81,9 +81,9 @@ metadata:
   namespace: %s%s
 spec:
   rolloutRef:
-    name: %s
+    name: web
   version: %s
-`, name, approvalNS, ann, rollout, version)
+`, name, approvalNS, ann, version)
 }
 
 // gateYAML renders a RolloutGate. A non-empty policyUID makes it owned by the ApprovalPolicy
@@ -275,7 +275,8 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 		})
 
 		It("guards the service account the deployment actually runs as", func() {
-			got := strings.TrimSpace(mustAdmin("", "get", "deployment", "-n", namespace, "-l", "control-plane=controller-manager",
+			got := strings.TrimSpace(mustAdmin("", "get", "deployment", "-n", namespace,
+				"-l", "control-plane=controller-manager",
 				"-o", "jsonpath={.items[0].spec.template.spec.serviceAccountName}"))
 			Expect(got).To(Equal(serviceAccountName))
 			guard := mustAdmin("", "get", "validatingadmissionpolicy", gateGuardName, "-o", "yaml")
@@ -290,15 +291,15 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 
 	Context("approval.kuberik.com/by", func() {
 		It("allows a user to set by to their own name", func() {
-			createEventually(&alice, approvalYAML("by-own", "web", "v1.0.0", "alice"))
+			createEventually(&alice, approvalYAML("by-own", "v1.0.0", "alice"))
 		})
 
 		It("denies by set to somebody else", func() {
-			expectDenied(byPolicyName, &alice, approvalYAML("by-other", "web", "v1.0.1", "bob"), "create", "-f", "-")
+			expectDenied(byPolicyName, &alice, approvalYAML("by-other", "v1.0.1", "bob"), "create", "-f", "-")
 		})
 
 		It("allows an approval with no by", func() {
-			createEventually(&alice, approvalYAML("by-none", "web", "v1.0.2", ""))
+			createEventually(&alice, approvalYAML("by-none", "v1.0.2", ""))
 		})
 
 		It("denies changing, removing or adding by afterwards, and still allows other metadata changes", func() {
@@ -319,9 +320,9 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 
 		It("does not let a service account set by for a user", func() {
 			sa := &identity{user: "system:serviceaccount:" + approvalNS + ":ci"}
-			expectDenied(byPolicyName, sa, approvalYAML("by-sa-forged", "web", "v1.0.3", "alice"), "create", "-f", "-")
+			expectDenied(byPolicyName, sa, approvalYAML("by-sa-forged", "v1.0.3", "alice"), "create", "-f", "-")
 			By("a service account may only record itself")
-			createEventually(sa, approvalYAML("by-sa-own", "web", "v1.0.4", sa.user))
+			createEventually(sa, approvalYAML("by-sa-own", "v1.0.4", sa.user))
 		})
 	})
 
@@ -380,9 +381,12 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 	Context("gates that no policy owns", func() {
 		It("denies adopting an ownerless gate into a policy", func() {
 			mustAdmin(gateYAML("legacy-adopt", "", false), "apply", "-f", "-")
-			expectDenied(gateGuardName, &carol, "", "label", "rolloutgate", "legacy-adopt", "-n", approvalNS, policyLabel+"=policy-owner")
-			expectDenied(gateGuardName, &carol, "", "patch", "rolloutgate", "legacy-adopt", "-n", approvalNS, "--type=merge", "-p",
-				fmt.Sprintf(`{"metadata":{"ownerReferences":[{"apiVersion":"kuberik.com/v1alpha1","kind":"ApprovalPolicy","name":"policy-owner","uid":%q}]}}`, policyUID))
+			expectDenied(gateGuardName, &carol, "", "label", "rolloutgate", "legacy-adopt",
+				"-n", approvalNS, policyLabel+"=policy-owner")
+			ownerPatch := fmt.Sprintf(`{"metadata":{"ownerReferences":[{"apiVersion":"kuberik.com/v1alpha1",`+
+				`"kind":"ApprovalPolicy","name":"policy-owner","uid":%q}]}}`, policyUID)
+			expectDenied(gateGuardName, &carol, "", "patch", "rolloutgate", "legacy-adopt",
+				"-n", approvalNS, "--type=merge", "-p", ownerPatch)
 		})
 
 		It("still lets a user patch and delete a legacy ownerless gate", func() {
@@ -398,7 +402,8 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 			mustAdmin(policyYAML("policy-gc"), "apply", "-f", "-")
 			uid := strings.TrimSpace(mustAdmin("", "get", "approvalpolicy", "policy-gc", "-n", approvalNS,
 				"-o", "jsonpath={.metadata.uid}"))
-			gate := strings.ReplaceAll(strings.ReplaceAll(gateYAML("gc-gate", uid, true), "policy-owner", "policy-gc"), "some-rollout", "gc")
+			gate := strings.ReplaceAll(gateYAML("gc-gate", uid, true), "policy-owner", "policy-gc")
+			gate = strings.ReplaceAll(gate, "some-rollout", "gc")
 			createEventually(&controllerID, gate)
 
 			By("a user cannot delete it, which proves the guard is on")
@@ -406,13 +411,14 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 
 			By("deleting the policy")
 			mustAdmin("", "delete", "approvalpolicy", "policy-gc", "-n", approvalNS)
-			Eventually(gateGone("gc-gate")).Should(BeTrue(), "the garbage collector must be able to delete the policy-owned gate")
+			Eventually(gateGone("gc-gate")).Should(BeTrue(),
+				"the garbage collector must be able to delete the policy-owned gate")
 		})
 	})
 
 	Context("the approver role", func() {
 		It("lets a bound user create and delete approvals", func() {
-			createEventually(&alice, approvalYAML("approver-1", "web", "v2.0.0", "alice"))
+			createEventually(&alice, approvalYAML("approver-1", "v2.0.0", "alice"))
 			_, err := kubectlAs(&alice, "", "delete", "rolloutapproval", "approver-1", "-n", approvalNS)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -433,7 +439,7 @@ subjects: [{kind: ServiceAccount, name: ci, namespace: %[1]s}]
 		})
 
 		It("is not granted by edit: a user with only edit cannot create approvals", func() {
-			expectForbidden(&bob, approvalYAML("bob-approval", "web", "v2.0.1", ""), "create", "-f", "-")
+			expectForbidden(&bob, approvalYAML("bob-approval", "v2.0.1", ""), "create", "-f", "-")
 		})
 	})
 })
