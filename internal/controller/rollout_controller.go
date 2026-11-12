@@ -457,52 +457,31 @@ func (r *RolloutReconciler) updateRolloutStatusOnError(ctx context.Context, roll
 
 // evaluateGates lists and evaluates gates, updates rollout status, and returns filtered candidates and gatesPassing.
 func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout, releaseCandidates []rolloutv1alpha1.VersionInfo) ([]rolloutv1alpha1.VersionInfo, bool, error) {
-	// Check for gate bypass annotation
-	bypassVersion := ""
-	if rollout.Annotations != nil {
-		if bypass, exists := rollout.Annotations["rollout.kuberik.com/bypass-gates"]; exists && bypass != "" {
-			bypassVersion = bypass
-		}
-	}
-
 	gateList := &rolloutv1alpha1.RolloutGateList{}
 	if err := r.List(ctx, gateList, client.InNamespace(namespace)); err != nil {
 		log := logf.FromContext(ctx)
 		log.Error(err, "Failed to list RolloutGates")
 		return nil, false, errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "GateListFailed", err.Error()))
 	}
-	rollout.Status.Gates = nil
-	gatedReleaseCandidates := releaseCandidates
+
+	requested := gateBypassOf(rollout)
+	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
 	var gatesPassing bool
-
-	// If bypass is enabled for a specific version, check if that version is in the candidates
-	bypassEnabled := false
-	if bypassVersion != "" {
-		if slices.IndexFunc(releaseCandidates, func(r rolloutv1alpha1.VersionInfo) bool {
-			return r.Tag == bypassVersion
-		}) != -1 {
-			bypassEnabled = true
-			log := logf.FromContext(ctx)
-			log.Info("Gate bypass enabled for version", "bypassVersion", bypassVersion)
-		} else {
-			log := logf.FromContext(ctx)
-			log.Info("Gate bypass requested for version not in candidates, ignoring bypass", "bypassVersion", bypassVersion, "candidates", releaseCandidates)
+	var bypass *gateBypass
+	rollout.Status.Gates, gatedReleaseCandidates, gatesPassing, bypass = applyGates(
+		gateList.Items, rollout.Name, releaseCandidates, requested)
+	bypassEnabled := bypass != nil
+	if requested != nil {
+		log := logf.FromContext(ctx)
+		switch {
+		case bypassEnabled:
+			log.Info("Gate bypass enabled for version", "bypassVersion", requested.version,
+				"gates", bypassedGateNames(gateList.Items, rollout.Name, requested))
+		case !slices.ContainsFunc(releaseCandidates, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == requested.version }):
+			log.Info("Gate bypass requested for version not in candidates, ignoring bypass", "bypassVersion", requested.version, "candidates", releaseCandidates)
+		default:
+			log.Info("Partial gate bypass requested but other gates hold the version", "bypassVersion", requested.version)
 		}
-	}
-
-	rollout.Status.Gates, gatedReleaseCandidates, gatesPassing = buildGateSummaries(
-		gateList.Items, rollout.Name, releaseCandidates, gatedReleaseCandidates, bypassEnabled, bypassVersion)
-
-	// If bypass is enabled, allow the bypassed version through
-	if bypassEnabled {
-		// Find the bypassed version in the original release candidates
-		for _, candidate := range releaseCandidates {
-			if candidate.Tag == bypassVersion {
-				gatedReleaseCandidates = []rolloutv1alpha1.VersionInfo{candidate}
-				break
-			}
-		}
-		gatesPassing = true
 	}
 
 	condStatus := metav1.ConditionTrue
@@ -511,7 +490,10 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 
 	if bypassEnabled {
 		condReason = "GatesBypassed"
-		condMsg = fmt.Sprintf("Gates bypassed for version %s", bypassVersion)
+		condMsg = fmt.Sprintf("Gates bypassed for version %s", bypass.version)
+		if names := bypassedGateNames(gateList.Items, rollout.Name, bypass); !bypass.all() && len(names) > 0 {
+			condMsg = fmt.Sprintf("Gates %s bypassed for version %s", strings.Join(names, ", "), bypass.version)
+		}
 	} else if !gatesPassing {
 		condStatus = metav1.ConditionFalse
 		condReason = "SomeGatesBlocking"
@@ -560,8 +542,7 @@ func buildGateSummaries(
 	rolloutName string,
 	releaseCandidates []rolloutv1alpha1.VersionInfo,
 	gatedReleaseCandidates []rolloutv1alpha1.VersionInfo,
-	bypassEnabled bool,
-	bypassVersion string,
+	bypass *gateBypass,
 ) ([]rolloutv1alpha1.RolloutGateStatusSummary, []rolloutv1alpha1.VersionInfo, bool) {
 	summaries := make([]rolloutv1alpha1.RolloutGateStatusSummary, 0, len(gates))
 	gatesPassing := true
@@ -575,23 +556,22 @@ func buildGateSummaries(
 			Passing: gate.Spec.Passing,
 		}
 
-		// If bypass is enabled, mark gates as bypassed but still evaluate them for status reporting
-		if bypassEnabled {
-			summary.Message = "Gate bypassed for version " + bypassVersion
+		// A bypassed gate is still reported, but neither blocks nor filters.
+		bypassed := bypass.skips(gate.Name)
+		if bypassed {
+			summary.Message = "Gate bypassed for version " + bypass.version
 			summary.BypassGates = true
-		} else {
-			summary.BypassGates = false
 		}
 
 		if gate.Spec.Passing != nil && !*gate.Spec.Passing {
-			if !bypassEnabled {
+			if !bypassed {
 				summary.Message = "Gate is not passing"
 				gatesPassing = false
 			}
 		} else if gate.Spec.AllowedVersions != nil {
 			summary.AllowedVersions = *gate.Spec.AllowedVersions
 
-			if !bypassEnabled {
+			if !bypassed {
 				// Filter gatedReleaseCandidates to only those in allowedVersions
 				var filtered []rolloutv1alpha1.VersionInfo
 				for _, r := range gatedReleaseCandidates {
@@ -615,7 +595,7 @@ func buildGateSummaries(
 				}
 			}
 		} else {
-			if !bypassEnabled {
+			if !bypassed {
 				summary.Message = "Gate is passing"
 			}
 		}
@@ -926,11 +906,13 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Check if this deployment was done with gate bypass
 	bypassUsed := false
 	if rollout.Annotations != nil {
-		if bypass, exists := rollout.Annotations["rollout.kuberik.com/bypass-gates"]; exists && bypass != "" {
+		if bypass, exists := rollout.Annotations[annotationBypassGates]; exists && bypass != "" {
 			bypassUsed = true
 			log.Info("Deployment using gate bypass", "bypassVersion", bypass)
 		}
 	}
+	// Read before the annotations are cleared below; nil unless partial.
+	partialGates := partialBypassGates(rollout)
 
 	// Check if this deployment was done with force deploy
 	forceDeployUsed := false
@@ -989,8 +971,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		if rollout.Annotations == nil {
 			rollout.Annotations = make(map[string]string)
 		}
-		delete(rollout.Annotations, "rollout.kuberik.com/bypass-gates")
-		log.Info("Cleared gate bypass annotation after deployment")
+		clearGateBypass(rollout)
+		log.Info("Cleared gate bypass annotations after deployment")
 	}
 
 	// Always set bake status and start time
@@ -1014,7 +996,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	// Generate deployment message
-	deploymentMessage := r.generateDeploymentMessage(rollout, bypassUsed, forceDeployUsed, unblockUsed)
+	deploymentMessage := r.generateDeploymentMessage(rollout, bypassUsed, partialGates, forceDeployUsed, unblockUsed)
 
 	// Extract triggered by information
 	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
@@ -1026,7 +1008,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// (about-to-become-previous) entry's BakeStatus. Persists for the entry's lifetime.
 	r.setBakeFailureDisabledForNewDeploy(ctx, rollout, log)
 
-	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed)
+	// A partial bypass (bypass-gates-only) leaves the other gates, approval
+	// gates included, in force, so their approval is still recorded.
+	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed && partialGates == nil)
 
 	nextID := r.getNextHistoryID(rollout)
 	now := metav1.Time{Time: r.now()}
@@ -1099,8 +1083,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if bypassUsed {
 		// Create a patch to only update the annotations
 		patch := client.MergeFrom(rollout.DeepCopy())
-		rollout.Annotations["rollout.kuberik.com/bypass-gates"] = ""
-		delete(rollout.Annotations, "rollout.kuberik.com/bypass-gates")
+		rollout.Annotations[annotationBypassGates] = ""
+		clearGateBypass(rollout)
 
 		if err := r.Client.Patch(ctx, rollout, patch); err != nil {
 			log.Error(err, "Failed to patch rollout to clear bypass annotation")
@@ -1764,7 +1748,8 @@ func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Roll
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
-func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, bypassUsed, forceDeployUsed, unblockUsed bool) string {
+// partialGates names the gates a partial bypass skipped (nil for a full bypass).
+func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, bypassUsed bool, partialGates []string, forceDeployUsed, unblockUsed bool) string {
 	var messageParts []string
 
 	// Determine deployment type
@@ -1787,7 +1772,11 @@ func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.R
 
 	// Add gate bypass information
 	if bypassUsed {
-		messageParts = append(messageParts, "with gate bypass")
+		if len(partialGates) > 0 {
+			messageParts = append(messageParts, "with gate bypass of "+strings.Join(partialGates, ", "))
+		} else {
+			messageParts = append(messageParts, "with gate bypass")
+		}
 	}
 
 	// Add failed bake unblock information

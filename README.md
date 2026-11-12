@@ -562,6 +562,48 @@ spec:
       IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
 ```
 
+#### Gate bypass
+
+Two annotations on a Rollout let one build past its gates once:
+
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: Rollout
+metadata:
+  name: my-app-rollout
+  annotations:
+    # The build allowed past the gates. Must be a release candidate.
+    rollout.kuberik.com/bypass-gates: "1.4.2"
+    # Optional: only these RolloutGates are skipped (comma-separated names).
+    rollout.kuberik.com/bypass-gates-only: "business-hours-my-app-rollout"
+```
+
+- **`bypass-gates` alone** skips every gate for that build.
+- **With `bypass-gates-only`**, only the listed gates are skipped for that build.
+  The other gates still apply: the build deploys only when every gate that is
+  not listed passes and allows it. Until then it is held, and the listed gates
+  keep holding every other build. An empty list counts as absent (every gate).
+  `bypass-gates-only` without `bypass-gates` does nothing.
+- A bypass for a build that is not a release candidate is ignored.
+- After the next deploy the controller removes **both** annotations, so a
+  bypass is never reused for a later build.
+- `status.gates[].bypassGates` is true, and the message reads
+  `Gate bypassed for version <build>`, only on the gates actually skipped. The
+  history entry's message names the skipped gates
+  (`with gate bypass of <gate>, <gate>`); it does not record who set the
+  annotations.
+
+Use the RolloutGate names as they exist on the cluster. Managed gates are
+generated per Rollout: a schedule's gate is `{schedule-name}-{rollout-name}`
+and carries the label `gate.kuberik.com/schedule-name`; a dependency's gate is
+`dependency-<name>`. To skip one schedule across many Rollouts, set both
+annotations on each Rollout, each with that Rollout's own gate name:
+
+```bash
+kubectl get rolloutgates -A -l gate.kuberik.com/schedule-name=business-hours \
+  -o custom-columns=NS:.metadata.namespace,GATE:.metadata.name,ROLLOUT:.spec.rolloutRef.name
+```
+
 ### Kustomization Health Checks
 
 A `HealthCheck` with `class: kustomization` and the `healthcheck.kuberik.com/kustomization: [namespace/]name` annotation tracks the health of a Flux Kustomization.

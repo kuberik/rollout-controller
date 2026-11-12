@@ -385,35 +385,26 @@ func buildWorkingSet(cat *catalogue, status *rolloutv1alpha1.RolloutStatus, k in
 	return all, working, nil
 }
 
-func bypassVersionOf(rollout *rolloutv1alpha1.Rollout) string {
-	return rollout.Annotations["rollout.kuberik.com/bypass-gates"]
-}
-
 // gateOutcome is the pure part of evaluateGates: the candidates every gate lets
-// through and whether all gates pass.
-func gateOutcome(gates []rolloutv1alpha1.RolloutGate, rolloutName, bypassVersion string, cands []rolloutv1alpha1.VersionInfo) (gated []rolloutv1alpha1.VersionInfo, passing, bypass bool) {
-	bypass = bypassVersion != "" && slices.ContainsFunc(cands, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == bypassVersion })
-	_, gated, passing = buildGateSummaries(gates, rolloutName, cands, cands, bypass, bypassVersion)
-	if bypass {
-		for _, c := range cands {
-			if c.Tag == bypassVersion {
-				gated = []rolloutv1alpha1.VersionInfo{c}
-				break
-			}
-		}
-		passing = true
-	}
+// through, whether all gates pass, and the bypass when it took effect.
+func gateOutcome(gates []rolloutv1alpha1.RolloutGate, rolloutName string, requested *gateBypass, cands []rolloutv1alpha1.VersionInfo) (gated []rolloutv1alpha1.VersionInfo, passing bool, bypass *gateBypass) {
+	_, gated, passing, bypass = applyGates(gates, rolloutName, cands, requested)
 	return gated, passing, bypass
 }
 
-// blockedByGates names the gates that do not let tag through.
-func blockedByGates(gates []rolloutv1alpha1.RolloutGate, rolloutName, tag string, bypass bool) []string {
-	if bypass {
+// blockedByGates names the gates that do not let tag through. A full bypass
+// clears every candidate's list; a partial one clears the gates it skips for
+// the bypassed build only.
+func blockedByGates(gates []rolloutv1alpha1.RolloutGate, rolloutName, tag string, bypass *gateBypass) []string {
+	if bypass.all() {
 		return nil
 	}
 	var out []string
 	for _, g := range gates {
 		if g.Spec.RolloutRef == nil || g.Spec.RolloutRef.Name != rolloutName {
+			continue
+		}
+		if bypass != nil && bypass.version == tag && bypass.skips(g.Name) {
 			continue
 		}
 		if g.Spec.Passing != nil && !*g.Spec.Passing {
@@ -437,11 +428,17 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 	if err != nil {
 		return err
 	}
-	bypassVersion := bypassVersionOf(rollout)
 	// Gates, bypass and the release about to be deployed are decided over every
 	// release newer than the deployed one, as list mode does; K and the cap only
 	// shape what is written to status.
-	gatedAll, _, bypass := gateOutcome(gates, rollout.Name, bypassVersion, all)
+	requested := gateBypassOf(rollout)
+	gatedAll, _, bypass := gateOutcome(gates, rollout.Name, requested, all)
+	// blockedBy drops the gates a partial bypass skips for its build even
+	// while other gates still hold it, so the remaining blockers are named.
+	blockBypass := bypass
+	if blockBypass == nil && requested != nil && !requested.all() {
+		blockBypass = requested
+	}
 	first := pinnedVersions(rollout)
 	if len(gatedAll) > 0 {
 		first = append(first, gatedAll[0].Tag)
@@ -458,8 +455,8 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 			fs := fs
 			c.FirstSeen = &fs
 		}
-		c.BlockedBy = blockedByGates(gates, rollout.Name, v.Tag, bypass)
-		c.Gated = len(c.BlockedBy) == 0 && (!bypass || v.Tag == bypassVersion)
+		c.BlockedBy = blockedByGates(gates, rollout.Name, v.Tag, blockBypass)
+		c.Gated = len(c.BlockedBy) == 0 && (bypass == nil || v.Tag == bypass.version)
 		cands = append(cands, c)
 	}
 	rollout.Status.Candidates = cands

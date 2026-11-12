@@ -58,9 +58,9 @@ func TestBuildGateSummariesOrderIndependent(t *testing.T) {
 
 	releaseCandidates := []rolloutv1alpha1.VersionInfo{{Tag: "v1.0.0"}}
 
-	summariesA, gatedA, passingA := buildGateSummaries(orderA, rolloutName, releaseCandidates, releaseCandidates, false, "")
-	summariesB, gatedB, passingB := buildGateSummaries(orderB, rolloutName, releaseCandidates, releaseCandidates, false, "")
-	summariesC, gatedC, passingC := buildGateSummaries(orderC, rolloutName, releaseCandidates, releaseCandidates, false, "")
+	summariesA, gatedA, passingA := buildGateSummaries(orderA, rolloutName, releaseCandidates, releaseCandidates, nil)
+	summariesB, gatedB, passingB := buildGateSummaries(orderB, rolloutName, releaseCandidates, releaseCandidates, nil)
+	summariesC, gatedC, passingC := buildGateSummaries(orderC, rolloutName, releaseCandidates, releaseCandidates, nil)
 
 	if !reflect.DeepEqual(summariesA, summariesB) {
 		t.Fatalf("Status.Gates differs between orderings A and B:\nA=%+v\nB=%+v", summariesA, summariesB)

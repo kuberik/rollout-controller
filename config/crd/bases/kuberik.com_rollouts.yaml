@@ -500,8 +500,10 @@ spec:
                         type: string
                       type: array
                     bypassGates:
-                      description: BypassGates indicates whether this gate was bypassed
-                        for the current deployment.
+                      description: |-
+                        BypassGates indicates whether this gate was bypassed for the current deployment.
+                        With the rollout.kuberik.com/bypass-gates-only annotation, only the listed
+                        gates are marked.
                       type: boolean
                     message:
                       description: Message is a message describing the status of the

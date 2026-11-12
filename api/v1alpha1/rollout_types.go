@@ -218,6 +218,8 @@ type RolloutGateStatusSummary struct {
 	Message string `json:"message,omitempty"`
 
 	// BypassGates indicates whether this gate was bypassed for the current deployment.
+	// With the rollout.kuberik.com/bypass-gates-only annotation, only the listed
+	// gates are marked.
 	// +kubebuilder:validation:Optional
 	// +optional
 	BypassGates bool `json:"bypassGates,omitempty"`
