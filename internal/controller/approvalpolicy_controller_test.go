@@ -53,7 +53,7 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 	prodSelector := metav1.LabelSelector{MatchLabels: prod}
 
 	allowed := func(policy, rollout string) []string {
-		g := oneApprovalGate(ctx, ns, "ApprovalPolicy", policy, rollout)
+		g := oneApprovalGate(ctx, ns, policy, rollout)
 		Expect(g.Spec.AllowedVersions).NotTo(BeNil())
 		return *g.Spec.AllowedVersions
 	}
@@ -68,7 +68,7 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		_, key := newPolicy("needs-approval", prodSelector)
 		reconcileApprovalPolicy(ctx, key)
 
-		g := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		g := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		Expect(g.Spec.AllowedVersions).NotTo(BeNil())
 		Expect(*g.Spec.AllowedVersions).To(BeEmpty())
 		Expect(g.Spec.Passing).To(Equal(ptr.To(true)))
@@ -123,8 +123,8 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		reconcileApprovalPolicy(ctx, keyA)
 		reconcileApprovalPolicy(ctx, keyB)
 
-		ga := oneApprovalGate(ctx, ns, "ApprovalPolicy", "policy-a", "checkout")
-		gb := oneApprovalGate(ctx, ns, "ApprovalPolicy", "policy-b", "checkout")
+		ga := oneApprovalGate(ctx, ns, "policy-a", "checkout")
+		gb := oneApprovalGate(ctx, ns, "policy-b", "checkout")
 		Expect(ga.Name).NotTo(Equal(gb.Name))
 		Expect(*ga.Spec.AllowedVersions).To(Equal([]string{"v1.42.0"}))
 		Expect(*gb.Spec.AllowedVersions).To(Equal(*ga.Spec.AllowedVersions))
@@ -136,14 +136,14 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		_, key := newPolicy("needs-approval", prodSelector)
 		approvalTestApproval(ctx, ns, "a-142", "checkout", "v1.42.0")
 		reconcileApprovalPolicy(ctx, key)
-		oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 
 		ro.Labels = map[string]string{"tier": "dev"}
 		Expect(k8sClient.Update(ctx, ro)).To(Succeed())
 		reconcileApprovalPolicy(ctx, key)
 
 		Expect(approvalGates(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")).To(BeEmpty())
-		oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "payments")
+		oneApprovalGate(ctx, ns, "needs-approval", "payments")
 
 		By("never deleting the approval")
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "a-142", Namespace: ns}, &rolloutv1alpha1.RolloutApproval{})).To(Succeed())
@@ -177,14 +177,14 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		approvalTestApproval(ctx, ns, "a-142", "checkout", "v1.42.0")
 		reconcileApprovalPolicy(ctx, key)
 
-		g := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		g := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		g.Spec.AllowedVersions = &[]string{"v1.42.0", "v6.6.6"}
 		g.Spec.Passing = ptr.To(false)
 		g.Annotations["gate.kuberik.com/pretty-name"] = "hacked"
 		Expect(k8sClient.Update(ctx, &g)).To(Succeed())
 		reconcileApprovalPolicy(ctx, key)
 
-		got := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		got := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		Expect(got.Name).To(Equal(g.Name))
 		Expect(*got.Spec.AllowedVersions).To(Equal([]string{"v1.42.0"}))
 		Expect(got.Spec.Passing).To(Equal(ptr.To(true)))
@@ -197,7 +197,7 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		approvalTestApproval(ctx, ns, "a-142", "checkout", "v1.42.0")
 		reconcileApprovalPolicy(ctx, key)
 
-		g1 := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		g1 := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		p1 := &rolloutv1alpha1.ApprovalPolicy{}
 		Expect(k8sClient.Get(ctx, key, p1)).To(Succeed())
 		a1 := &rolloutv1alpha1.RolloutApproval{}
@@ -206,7 +206,7 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		reconcileApprovalPolicy(ctx, key)
 		reconcileApprovalPolicy(ctx, key)
 
-		g2 := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		g2 := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		Expect(g2.ResourceVersion).To(Equal(g1.ResourceVersion))
 		p2 := &rolloutv1alpha1.ApprovalPolicy{}
 		Expect(k8sClient.Get(ctx, key, p2)).To(Succeed())
@@ -221,7 +221,7 @@ var _ = Describe("ApprovalPolicy Controller", func() {
 		p, key := newPolicy("needs-approval", prodSelector)
 		reconcileApprovalPolicy(ctx, key)
 
-		g := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", "checkout")
+		g := oneApprovalGate(ctx, ns, "needs-approval", "checkout")
 		Expect(g.GenerateName).To(Equal("approval-gate-"))
 		Expect(g.Name).To(HavePrefix("approval-gate-"))
 		Expect(g.Labels).To(Equal(map[string]string{

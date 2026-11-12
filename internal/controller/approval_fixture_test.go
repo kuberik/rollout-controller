@@ -74,9 +74,9 @@ func approvalGates(ctx context.Context, ns, kind, policy, rollout string) []roll
 	return list.Items
 }
 
-func oneApprovalGate(ctx context.Context, ns, kind, policy, rollout string) rolloutv1alpha1.RolloutGate {
-	gates := approvalGates(ctx, ns, kind, policy, rollout)
-	ExpectWithOffset(1, gates).To(HaveLen(1), "gates of %s/%s for rollout %s", kind, policy, rollout)
+func oneApprovalGate(ctx context.Context, ns, policy, rollout string) rolloutv1alpha1.RolloutGate {
+	gates := approvalGates(ctx, ns, approvalPolicyKind, policy, rollout)
+	ExpectWithOffset(1, gates).To(HaveLen(1), "gates of %s/%s for rollout %s", approvalPolicyKind, policy, rollout)
 	return gates[0]
 }
 

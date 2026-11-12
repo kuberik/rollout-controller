@@ -118,7 +118,7 @@ var _ = Describe("Rollout gated by an ApprovalPolicy", func() {
 		Expect(gatesCondition(ro).Reason).To(Equal("NoAllowedVersions"))
 
 		By("the old approval stays inert: it is still in the list and approves nothing else")
-		g := oneApprovalGate(ctx, ns, "ApprovalPolicy", "needs-approval", rollout)
+		g := oneApprovalGate(ctx, ns, "needs-approval", rollout)
 		Expect(*g.Spec.AllowedVersions).To(Equal([]string{"v1.42.0"}))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rollout + "-v1.42.0", Namespace: ns}, &rolloutv1alpha1.RolloutApproval{})).To(Succeed())
 	})
