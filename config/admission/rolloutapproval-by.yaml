@@ -1,0 +1,32 @@
+# Validates approval.kuberik.com/by on RolloutApprovals: when present it must
+# equal the requesting user, and it is immutable. Requires Kubernetes 1.30+.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kuberik-rolloutapproval-by
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [kuberik.com]
+        apiVersions: ["*"]
+        resources: [rolloutapprovals]
+        operations: [CREATE, UPDATE]
+  variables:
+    - name: by
+      expression: "has(object.metadata.annotations) && 'approval.kuberik.com/by' in object.metadata.annotations ? object.metadata.annotations['approval.kuberik.com/by'] : ''"
+    - name: oldBy
+      expression: "oldObject != null && has(oldObject.metadata.annotations) && 'approval.kuberik.com/by' in oldObject.metadata.annotations ? oldObject.metadata.annotations['approval.kuberik.com/by'] : ''"
+  validations:
+    - expression: "request.operation != 'CREATE' || variables.by == '' || variables.by == request.userInfo.username"
+      messageExpression: "'approval.kuberik.com/by must be your own username (' + request.userInfo.username + ')'"
+    - expression: "request.operation != 'UPDATE' || variables.by == variables.oldBy"
+      message: "approval.kuberik.com/by is immutable"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kuberik-rolloutapproval-by
+spec:
+  policyName: kuberik-rolloutapproval-by
+  validationActions: [Deny]

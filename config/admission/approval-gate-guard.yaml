@@ -1,0 +1,44 @@
+# Only the rollout-controller (and the garbage collectors) may create, change
+# or delete a RolloutGate owned by an ApprovalPolicy / ClusterApprovalPolicy.
+# Requires Kubernetes 1.30+.
+#
+# The controller username below is the service account of config/default:
+# namespace kuberik-system, namePrefix rollout-controller-, SA controller-manager.
+# If you change the namespace or namePrefix, change it here too.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kuberik-approval-gate-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [kuberik.com]
+        apiVersions: ["*"]
+        resources: [rolloutgates]
+        operations: [CREATE, UPDATE, DELETE]
+  matchConditions:
+    - name: policy-owned
+      expression: >-
+        [object, oldObject].exists(o, o != null && (
+          (has(o.metadata.labels) && 'gate.kuberik.com/approval-policy-name' in o.metadata.labels) ||
+          (has(o.metadata.ownerReferences) && o.metadata.ownerReferences.exists(r,
+            r.apiVersion.startsWith('kuberik.com/') && r.kind in ['ApprovalPolicy', 'ClusterApprovalPolicy']))))
+    - name: not-controller-or-gc
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:kuberik-system:rollout-controller-controller-manager',
+          'system:serviceaccount:kube-system:generic-garbage-collector',
+          'system:serviceaccount:kube-system:namespace-controller',
+          'system:kube-controller-manager'])
+  validations:
+    - expression: "request.operation == 'UPDATE' && object.spec == oldObject.spec && (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) && (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : [])"
+      messageExpression: "'only the rollout-controller may ' + request.operation + ' a gate owned by an approval policy; create a RolloutApproval to approve a build'"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kuberik-approval-gate-guard
+spec:
+  policyName: kuberik-approval-gate-guard
+  validationActions: [Deny]
