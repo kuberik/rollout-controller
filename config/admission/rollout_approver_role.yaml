@@ -1,0 +1,10 @@
+# Right to approve builds. Deliberately NOT aggregated into edit/admin: teams
+# bind it explicitly (RoleBinding per namespace).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kuberik-rollout-approver
+rules:
+  - apiGroups: [kuberik.com]
+    resources: [rolloutapprovals]
+    verbs: [get, list, watch, create, delete]
