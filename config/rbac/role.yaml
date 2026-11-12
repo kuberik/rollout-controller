@@ -31,6 +31,8 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - approvalpolicies
+  - clusterapprovalpolicies
   - clusterrolloutschedules
   - healthchecks
   - kustomizationhealths
@@ -49,6 +51,8 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - approvalpolicies/finalizers
+  - clusterapprovalpolicies/finalizers
   - clusterrolloutschedules/finalizers
   - healthchecks/finalizers
   - kustomizationhealths/finalizers
@@ -60,6 +64,8 @@ rules:
 - apiGroups:
   - kuberik.com
   resources:
+  - approvalpolicies/status
+  - clusterapprovalpolicies/status
   - clusterrolloutschedules/status
   - healthchecks/status
   - kustomizationhealths/status

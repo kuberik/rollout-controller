@@ -1,0 +1,11 @@
+apiVersion: kuberik.com/v1alpha1
+kind: ApprovalPolicy
+metadata:
+  name: prod-needs-approval
+  annotations:
+    gate.kuberik.com/pretty-name: "Manual approval"
+    gate.kuberik.com/description: "A person approves each build before it reaches prod."
+spec:
+  rolloutSelector:
+    matchLabels:
+      kuberik.com/tier: prod

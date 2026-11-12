@@ -289,6 +289,20 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "RolloutDependency")
 		os.Exit(1)
 	}
+	if err := (&controller.ApprovalPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ApprovalPolicy")
+		os.Exit(1)
+	}
+	if err := (&controller.ClusterApprovalPolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterApprovalPolicy")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

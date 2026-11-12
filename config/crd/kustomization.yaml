@@ -8,6 +8,9 @@ resources:
   - bases/kuberik.com_rolloutschedules.yaml
   - bases/kuberik.com_clusterrolloutschedules.yaml
   - bases/kuberik.com_rolloutdependencies.yaml
+  - bases/kuberik.com_approvalpolicies.yaml
+  - bases/kuberik.com_clusterapprovalpolicies.yaml
+  - bases/kuberik.com_rolloutapprovals.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
