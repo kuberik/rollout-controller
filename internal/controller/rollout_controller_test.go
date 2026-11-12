@@ -2545,6 +2545,150 @@ var _ = Describe("Rollout Controller", func() {
 			})
 		})
 
+		When("recording the approval in deployment history", func() {
+			var policy *rolloutv1alpha1.ApprovalPolicy
+
+			// reconcile runs one reconcile and returns the newest history entry.
+			reconcileOnce := func() rolloutv1alpha1.DeploymentHistoryEntry {
+				r := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				updated := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.History).To(HaveLen(1))
+				Expect(updated.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				return updated.Status.History[0]
+			}
+
+			newApproval := func(name, by string) *rolloutv1alpha1.RolloutApproval {
+				a := &rolloutv1alpha1.RolloutApproval{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+					Spec: rolloutv1alpha1.RolloutApprovalSpec{
+						RolloutRef: corev1.LocalObjectReference{Name: rollout.Name},
+						Version:    version0_2_0,
+					},
+				}
+				if by != "" {
+					a.Annotations = map[string]string{"approval.kuberik.com/by": by}
+				}
+				Expect(k8sClient.Create(ctx, a)).To(Succeed())
+				return a
+			}
+
+			// policyGate builds the gate the policy reconciler would create (design 5.1).
+			policyGate := func() {
+				policy = &rolloutv1alpha1.ApprovalPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: "prod-needs-approval", Namespace: namespace},
+					Spec: rolloutv1alpha1.ApprovalPolicySpec{
+						RolloutSelector: metav1.LabelSelector{MatchLabels: map[string]string{"a": "b"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+				gate := &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "approval-gate-",
+						Namespace:    namespace,
+						Labels: map[string]string{
+							"gate.kuberik.com/approval-policy-name":      policy.Name,
+							"gate.kuberik.com/approval-policy-namespace": namespace,
+							"gate.kuberik.com/approval-policy-kind":      "ApprovalPolicy",
+							"gate.kuberik.com/rollout-name":              rollout.Name,
+						},
+						OwnerReferences: []metav1.OwnerReference{{
+							APIVersion: rolloutv1alpha1.GroupVersion.String(),
+							Kind:       "ApprovalPolicy",
+							Name:       policy.Name,
+							UID:        policy.UID,
+							Controller: k8sptr.To(true),
+						}},
+					},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: rollout.Name},
+						Passing:         k8sptr.To(true),
+						AllowedVersions: &[]string{version0_2_0},
+					},
+				}
+				Expect(k8sClient.Create(ctx, gate)).To(Succeed())
+			}
+
+			JustBeforeEach(func() {
+				imagePolicy.Publish(version0_2_0)
+			})
+
+			It("records name and by for a deploy through an approval gate", func() {
+				policyGate()
+				newApproval("checkout-0-2-0", "oidc:luka")
+				entry := reconcileOnce()
+				Expect(entry.Approval).To(Equal(&rolloutv1alpha1.ApprovalRecord{Name: "checkout-0-2-0", By: "oidc:luka"}))
+				Expect(entry.TriggeredBy.Kind).To(Equal("System"))
+			})
+
+			It("records the oldest of two approvals for the version", func() {
+				policyGate()
+				// The older object has the later name, so a name-only tie-break would pick wrong.
+				newApproval("z-first", "oidc:first")
+				time.Sleep(1100 * time.Millisecond) // creationTimestamp has 1s resolution
+				newApproval("a-second", "oidc:second")
+				entry := reconcileOnce()
+				Expect(entry.Approval).To(Equal(&rolloutv1alpha1.ApprovalRecord{Name: "z-first", By: "oidc:first"}))
+			})
+
+			It("breaks a creationTimestamp tie by name", func() {
+				policyGate()
+				// Created back to back: normally the same second. Either way the name
+				// order only matters on a tie, so assert on whichever the API server gave.
+				a := newApproval("b-one", "")
+				b := newApproval("a-two", "")
+				want := "a-two"
+				if a.CreationTimestamp.Before(&b.CreationTimestamp) {
+					want = "b-one"
+				}
+				entry := reconcileOnce()
+				Expect(entry.Approval).NotTo(BeNil())
+				Expect(entry.Approval.Name).To(Equal(want))
+				Expect(entry.Approval.By).To(BeEmpty())
+			})
+
+			It("records nothing when gates are bypassed", func() {
+				policyGate()
+				newApproval("checkout-0-2-0", "oidc:luka")
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Annotations = map[string]string{"rollout.kuberik.com/bypass-gates": version0_2_0}
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+				Expect(reconcileOnce().Approval).To(BeNil())
+			})
+
+			It("records nothing when no gate is owned by an approval policy", func() {
+				newApproval("checkout-0-2-0", "oidc:luka")
+				Expect(reconcileOnce().Approval).To(BeNil())
+			})
+
+			It("records nothing for a legacy ownerless gate", func() {
+				newApproval("checkout-0-2-0", "oidc:luka")
+				Expect(k8sClient.Create(ctx, &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: "manual-approval", Namespace: namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: rollout.Name},
+						AllowedVersions: &[]string{version0_2_0},
+					},
+				})).To(Succeed())
+				Expect(reconcileOnce().Approval).To(BeNil())
+			})
+
+			It("keeps the record when the approval is deleted after the deploy", func() {
+				policyGate()
+				a := newApproval("checkout-0-2-0", "oidc:luka")
+				reconcileOnce()
+				Expect(k8sClient.Delete(ctx, a)).To(Succeed())
+				r := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+				updated := &rolloutv1alpha1.Rollout{}
+				Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.History[0].Approval).To(Equal(&rolloutv1alpha1.ApprovalRecord{Name: "checkout-0-2-0", By: "oidc:luka"}))
+			})
+		})
+
 		When("using health checks to block deployments", func() {
 			var healthCheck *rolloutv1alpha1.HealthCheck
 			var fakeClock *FakeClock
