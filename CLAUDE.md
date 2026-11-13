@@ -223,8 +223,11 @@ rollout.kuberik.com/rollout: "rollout-name"
 # Kustomization
 rollout.kuberik.com/substitute.<VAR>.from: "rollout-name"
 
-# Gate bypass for emergency deployments
+# Gate bypass for emergency deployments (one build, once; cleared after deploy)
 rollout.kuberik.com/bypass-gates: "v1.2.3"
+# Optional: skip only these RolloutGates for that build (comma-separated);
+# absent = every gate. Cleared with bypass-gates. Logic: internal/controller/gate_bypass.go
+rollout.kuberik.com/bypass-gates-only: "gate-a,gate-b"
 ```
 
 ## Common Patterns
