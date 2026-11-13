@@ -85,9 +85,11 @@ func bypassedGateNames(gates []rolloutv1alpha1.RolloutGate, rolloutName string, 
 // A bypass takes effect only for a build that is a release candidate. A full
 // bypass (no bypass-gates-only) then lets that build through regardless of the
 // gates. A partial bypass skips the listed gates for that build only: it lets
-// the build through when every other gate passes and allows it; otherwise the
-// gates are evaluated as without a bypass (the listed gates still apply to
-// every other build), and the summaries still mark the listed gates bypassed.
+// the build through when every other gate passes and allows it. Otherwise the
+// gates are evaluated exactly as without a bypass: the listed gates still hold
+// every build, and no summary is marked bypassed. Summaries are marked
+// bypassGates only when the bypass takes effect, i.e. on the reconcile that
+// deploys the build.
 func applyGates(
 	gates []rolloutv1alpha1.RolloutGate,
 	rolloutName string,
@@ -97,37 +99,70 @@ func applyGates(
 	if b != nil && !slices.ContainsFunc(cands, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == b.version }) {
 		b = nil
 	}
-	summaries, gated, passing = buildGateSummaries(gates, rolloutName, cands, cands, b)
-	if b == nil {
-		return summaries, gated, passing, nil
-	}
-	if b.all() || (passing && slices.ContainsFunc(gated, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == b.version })) {
-		for _, c := range cands {
-			if c.Tag == b.version {
-				return summaries, []rolloutv1alpha1.VersionInfo{c}, true, b
+	if b != nil {
+		summaries, gated, passing = buildGateSummaries(gates, rolloutName, cands, cands, b)
+		if b.all() || (passing && slices.ContainsFunc(gated, func(v rolloutv1alpha1.VersionInfo) bool { return v.Tag == b.version })) {
+			for _, c := range cands {
+				if c.Tag == b.version {
+					return summaries, []rolloutv1alpha1.VersionInfo{c}, true, b
+				}
 			}
 		}
 	}
-	// Partial bypass that does not get the build through: the skipped gates
-	// still hold every other build.
-	_, gated, passing = buildGateSummaries(gates, rolloutName, cands, cands, nil)
+	summaries, gated, passing = buildGateSummaries(gates, rolloutName, cands, cands, nil)
 	return summaries, gated, passing, nil
 }
 
-// partialBypassGates names, sorted, the gates a partial bypass skipped in the
-// current reconcile (status.gates entries marked bypassGates), or nil when no
-// partial bypass is requested.
-func partialBypassGates(rollout *rolloutv1alpha1.Rollout) []string {
-	b := gateBypassOf(rollout)
+// unknownBypassGates lists, sorted, the names in a partial bypass that match no
+// gate of rolloutName.
+func unknownBypassGates(gates []rolloutv1alpha1.RolloutGate, rolloutName string, b *gateBypass) []string {
 	if b == nil || b.all() {
 		return nil
 	}
-	out := []string{}
-	for _, g := range rollout.Status.Gates {
-		if g.BypassGates {
-			out = append(out, g.Name)
+	known := map[string]bool{}
+	for _, g := range gates {
+		if g.Spec.RolloutRef != nil && g.Spec.RolloutRef.Name == rolloutName {
+			known[g.Name] = true
+		}
+	}
+	var out []string
+	for n := range b.only {
+		if !known[n] {
+			out = append(out, n)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// bypassDescription is the "with gate bypass…" phrase for conditions and
+// history: every gate for a full bypass, else the matched gate names and any
+// names that matched no gate.
+func bypassDescription(gates []rolloutv1alpha1.RolloutGate, rolloutName string, b *gateBypass) string {
+	if b.all() {
+		return "gate bypass"
+	}
+	desc := "gate bypass of no gate"
+	if names := bypassedGateNames(gates, rolloutName, b); len(names) > 0 {
+		desc = "gate bypass of " + strings.Join(names, ", ")
+	}
+	if unknown := unknownBypassGates(gates, rolloutName, b); len(unknown) > 0 {
+		desc += " (unknown: " + strings.Join(unknown, ", ") + ")"
+	}
+	return desc
+}
+
+// bypassOnDeploy decides, for a deploy of wanted, whether the requested
+// bypass was used (it names wanted) and whether to clear the annotations. A
+// partial bypass is used and cleared only by a deploy of its own build, so a
+// held partial bypass survives another build deploying. A full bypass is
+// cleared by any deploy, as before bypass-gates-only existed (this keeps a
+// full bypass naming a build that never became a candidate from lingering).
+func bypassOnDeploy(rollout *rolloutv1alpha1.Rollout, wanted string) (b *gateBypass, used, clear bool) {
+	b = gateBypassOf(rollout)
+	if b == nil {
+		return nil, false, false
+	}
+	used = b.version == wanted
+	return b, used, used || b.all()
 }

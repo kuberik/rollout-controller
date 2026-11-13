@@ -3012,7 +3012,7 @@ var _ = Describe("Rollout Controller", func() {
 				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
 				Expect(cond).NotTo(BeNil())
 				Expect(cond.Reason).To(Equal("GatesBypassed"))
-				Expect(cond.Message).To(ContainSubstring("schedule-business-hours, schedule-freeze"))
+				Expect(cond.Message).To(ContainSubstring("gate bypass of schedule-business-hours, schedule-freeze"))
 
 				By("clearing both annotations after the deploy")
 				Expect(ro.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
@@ -3028,7 +3028,8 @@ var _ = Describe("Rollout Controller", func() {
 				ro := reconcileOnce()
 				Expect(ro.Status.History).To(HaveLen(1))
 				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_1_0))
-				Expect(bypassedNames(ro)).To(ConsistOf("schedule-business-hours"))
+				By("marking no gate bypassed while the build is held")
+				Expect(bypassedNames(ro)).To(BeEmpty())
 
 				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
 				Expect(cond).NotTo(BeNil())
@@ -3057,6 +3058,126 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_2_0))
 				Expect(bypassedNames(ro)).To(ConsistOf("schedule-business-hours", "approval"))
 				Expect(ro.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates-only"))
+			})
+
+			allowGate := func(name string, versions ...string) *rolloutv1alpha1.RolloutGate {
+				g := &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: rollout.Namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: rollout.Name},
+						AllowedVersions: &versions,
+					},
+				}
+				Expect(k8sClient.Create(ctx, g)).To(Succeed())
+				return g
+			}
+
+			It("skips a listed allowedVersions gate and obeys an unlisted one", func() {
+				seed()
+				allowGate("contract-skip", version0_1_0)               // excludes 0.2.0, listed
+				allowGate("contract-keep", version0_1_0, version0_2_0) // allows 0.2.0, not listed
+				annotate("contract-skip")
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(bypassedNames(ro)).To(ConsistOf("contract-skip"))
+			})
+
+			It("holds when an unlisted allowedVersions gate excludes the build", func() {
+				seed()
+				gate("schedule-business-hours", false)
+				allowGate("contract", version0_1_0)
+				annotate("schedule-business-hours")
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History).To(HaveLen(1))
+				Expect(ro.Annotations).To(HaveKey("rollout.kuberik.com/bypass-gates-only"))
+			})
+
+			It("survives another build deploying while it is held", func() {
+				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_1_0}, Timestamp: metav1.Now()},
+				}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{
+					{Tag: version0_1_0}, {Tag: version0_2_0}, {Tag: version0_3_0},
+				}...)
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+				gate("freeze", true)
+				allowGate("approval", version0_1_0, version0_2_0) // holds 0.3.0, not listed
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Annotations = map[string]string{
+					"rollout.kuberik.com/bypass-gates":      version0_3_0,
+					"rollout.kuberik.com/bypass-gates-only": "freeze",
+				}
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				ro := reconcileOnce()
+				By("deploying 0.2.0 normally")
+				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(*ro.Status.History[0].Message).NotTo(ContainSubstring("bypass"))
+				Expect(bypassedNames(ro)).To(BeEmpty())
+				By("keeping the bypass for 0.3.0")
+				Expect(ro.Annotations).To(HaveKeyWithValue("rollout.kuberik.com/bypass-gates", version0_3_0))
+				Expect(ro.Annotations).To(HaveKeyWithValue("rollout.kuberik.com/bypass-gates-only", "freeze"))
+			})
+
+			It("records the approval of an approval gate it does not skip", func() {
+				seed()
+				gate("schedule-business-hours", false)
+				approvalGate := allowGate("approval-gate-x", version0_2_0)
+				approvalGate.OwnerReferences = []metav1.OwnerReference{{
+					APIVersion: rolloutv1alpha1.GroupVersion.String(), Kind: "ApprovalPolicy", Name: "prod-approvals", UID: "uid-1",
+				}}
+				Expect(k8sClient.Update(ctx, approvalGate)).To(Succeed())
+				Expect(k8sClient.Create(ctx, &rolloutv1alpha1.RolloutApproval{
+					ObjectMeta: metav1.ObjectMeta{Name: "approve-020", Namespace: rollout.Namespace,
+						Annotations: map[string]string{"approval.kuberik.com/by": "alice@example.com"}},
+					Spec: rolloutv1alpha1.RolloutApprovalSpec{RolloutRef: corev1.LocalObjectReference{Name: rollout.Name}, Version: version0_2_0},
+				})).To(Succeed())
+				annotate("schedule-business-hours")
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(ro.Status.History[0].Approval).NotTo(BeNil())
+				Expect(ro.Status.History[0].Approval.Name).To(Equal("approve-020"))
+			})
+
+			It("deploys the named build on a first deploy and clears", func() {
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}, {Tag: version0_2_0}}...)
+				gate("schedule-business-hours", false)
+				Expect(k8sClient.Get(ctx, typeNamespacedName, rollout)).To(Succeed())
+				rollout.Annotations = map[string]string{
+					"rollout.kuberik.com/bypass-gates":      version0_1_0,
+					"rollout.kuberik.com/bypass-gates-only": "schedule-business-hours",
+				}
+				Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History).To(HaveLen(1))
+				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_1_0))
+				Expect(*ro.Status.History[0].Message).To(ContainSubstring("with gate bypass of schedule-business-hours"))
+				Expect(ro.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates"))
+				Expect(ro.Annotations).NotTo(HaveKey("rollout.kuberik.com/bypass-gates-only"))
+			})
+
+			It("names unknown gates instead of reading as a full bypass", func() {
+				seed()
+				gate("schedule-business-hours", false)
+				annotate("schedule-business-hours,no-such-gate")
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History[0].Version.Tag).To(Equal(version0_2_0))
+				Expect(*ro.Status.History[0].Message).To(ContainSubstring("with gate bypass of schedule-business-hours (unknown: no-such-gate)"))
+			})
+
+			It("bypasses no gate when no listed name matches", func() {
+				seed()
+				gate("schedule-business-hours", false)
+				annotate("no-such-gate")
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History).To(HaveLen(1))
+				Expect(bypassedNames(ro)).To(BeEmpty())
 			})
 
 			It("is ignored without bypass-gates", func() {

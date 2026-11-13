@@ -471,6 +471,10 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	rollout.Status.Gates, gatedReleaseCandidates, gatesPassing, bypass = applyGates(
 		gateList.Items, rollout.Name, releaseCandidates, requested)
 	bypassEnabled := bypass != nil
+	if unknown := unknownBypassGates(gateList.Items, rollout.Name, requested); len(unknown) > 0 && r.Recorder != nil {
+		r.Recorder.Event(rollout, corev1.EventTypeWarning, "BypassGatesUnknown",
+			fmt.Sprintf("bypass-gates-only names gates this rollout does not have: %s", strings.Join(unknown, ", ")))
+	}
 	if requested != nil {
 		log := logf.FromContext(ctx)
 		switch {
@@ -491,8 +495,8 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	if bypassEnabled {
 		condReason = "GatesBypassed"
 		condMsg = fmt.Sprintf("Gates bypassed for version %s", bypass.version)
-		if names := bypassedGateNames(gateList.Items, rollout.Name, bypass); !bypass.all() && len(names) > 0 {
-			condMsg = fmt.Sprintf("Gates %s bypassed for version %s", strings.Join(names, ", "), bypass.version)
+		if !bypass.all() {
+			condMsg = fmt.Sprintf("Version %s allowed by %s", bypass.version, bypassDescription(gateList.Items, rollout.Name, bypass))
 		}
 	} else if !gatesPassing {
 		condStatus = metav1.ConditionFalse
@@ -903,16 +907,20 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, cat *catalogue) error {
 	log := logf.FromContext(ctx)
 
-	// Check if this deployment was done with gate bypass
-	bypassUsed := false
-	if rollout.Annotations != nil {
-		if bypass, exists := rollout.Annotations[annotationBypassGates]; exists && bypass != "" {
-			bypassUsed = true
-			log.Info("Deployment using gate bypass", "bypassVersion", bypass)
+	// Check if this deployment was done with gate bypass. A bypass is used only
+	// by a deploy of the build it names; see bypassOnDeploy for clearing.
+	bypass, bypassUsed, clearBypass := bypassOnDeploy(rollout, wantedRelease)
+	bypassDesc := ""
+	if bypassUsed {
+		bypassDesc = "gate bypass"
+		gates := &rolloutv1alpha1.RolloutGateList{}
+		if err := r.List(ctx, gates, client.InNamespace(rollout.Namespace)); err != nil {
+			log.Error(err, "Failed to list RolloutGates for the bypass record")
+		} else {
+			bypassDesc = bypassDescription(gates.Items, rollout.Name, bypass)
 		}
+		log.Info("Deployment using gate bypass", "bypassVersion", bypass.version, "bypass", bypassDesc)
 	}
-	// Read before the annotations are cleared below; nil unless partial.
-	partialGates := partialBypassGates(rollout)
 
 	// Check if this deployment was done with force deploy
 	forceDeployUsed := false
@@ -966,8 +974,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		return err
 	}
 
-	// Clear the bypass annotation after deployment
-	if bypassUsed {
+	// Clear the bypass annotations after deployment
+	if clearBypass {
 		if rollout.Annotations == nil {
 			rollout.Annotations = make(map[string]string)
 		}
@@ -996,7 +1004,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	}
 
 	// Generate deployment message
-	deploymentMessage := r.generateDeploymentMessage(rollout, bypassUsed, partialGates, forceDeployUsed, unblockUsed)
+	deploymentMessage := r.generateDeploymentMessage(rollout, bypassDesc, forceDeployUsed, unblockUsed)
 
 	// Extract triggered by information
 	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
@@ -1010,7 +1018,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// A partial bypass (bypass-gates-only) leaves the other gates, approval
 	// gates included, in force, so their approval is still recorded.
-	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed && partialGates == nil)
+	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed && bypass.all())
 
 	nextID := r.getNextHistoryID(rollout)
 	now := metav1.Time{Time: r.now()}
@@ -1038,14 +1046,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Update the condition message to reflect if gates were bypassed
 	conditionMessage := fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout))
 	if bypassUsed {
-		conditionMessage = fmt.Sprintf("Release deployed successfully with gate bypass. %s", r.getBakeStatusSummary(rollout))
+		conditionMessage = fmt.Sprintf("Release deployed successfully with %s. %s", bypassDesc, r.getBakeStatusSummary(rollout))
 	}
 	if unblockUsed {
 		conditionMessage = fmt.Sprintf("Release deployed successfully with failed bake unblock. %s", r.getBakeStatusSummary(rollout))
 	}
 	// If both were used, combine the messages
 	if bypassUsed && unblockUsed {
-		conditionMessage = fmt.Sprintf("Release deployed successfully with gate bypass and failed bake unblock. %s", r.getBakeStatusSummary(rollout))
+		conditionMessage = fmt.Sprintf("Release deployed successfully with %s and failed bake unblock. %s", bypassDesc, r.getBakeStatusSummary(rollout))
 	}
 
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
@@ -1061,7 +1069,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	eventReason := "DeploymentSucceeded"
 	eventMessage := fmt.Sprintf("Successfully deployed version %s", wantedRelease)
 	if bypassUsed {
-		eventMessage += " (with gate bypass)"
+		eventMessage += " (with " + bypassDesc + ")"
 	}
 	if unblockUsed {
 		eventMessage += " (with failed bake unblock)"
@@ -1079,8 +1087,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		return err
 	}
 
-	// If bypass was used, also update the metadata to clear the annotation
-	if bypassUsed {
+	// Clear the bypass annotations on the object too
+	if clearBypass {
 		// Create a patch to only update the annotations
 		patch := client.MergeFrom(rollout.DeepCopy())
 		rollout.Annotations[annotationBypassGates] = ""
@@ -1748,8 +1756,8 @@ func (r *RolloutReconciler) extractTriggeredByInfo(rollout *rolloutv1alpha1.Roll
 }
 
 // generateDeploymentMessage creates a descriptive message for a deployment history entry
-// partialGates names the gates a partial bypass skipped (nil for a full bypass).
-func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, bypassUsed bool, partialGates []string, forceDeployUsed, unblockUsed bool) string {
+// bypassDesc is the bypassDescription of a used bypass, empty when none was used.
+func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.Rollout, bypassDesc string, forceDeployUsed, unblockUsed bool) string {
 	var messageParts []string
 
 	// Determine deployment type
@@ -1771,12 +1779,8 @@ func (r *RolloutReconciler) generateDeploymentMessage(rollout *rolloutv1alpha1.R
 	}
 
 	// Add gate bypass information
-	if bypassUsed {
-		if len(partialGates) > 0 {
-			messageParts = append(messageParts, "with gate bypass of "+strings.Join(partialGates, ", "))
-		} else {
-			messageParts = append(messageParts, "with gate bypass")
-		}
+	if bypassDesc != "" {
+		messageParts = append(messageParts, "with "+bypassDesc)
 	}
 
 	// Add failed bake unblock information

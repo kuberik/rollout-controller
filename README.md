@@ -380,7 +380,7 @@ This schedule allows deployments:
 
 ### Integration with RolloutGate
 
-Schedules work by automatically creating and managing RolloutGate resources. Each managed gate is named: `{schedule-name}-{rollout-name}`.
+Schedules work by automatically creating and managing RolloutGate resources, one per matching rollout, with generated names (`schedule-gate-<random>`) and the labels `gate.kuberik.com/schedule-name` and `gate.kuberik.com/rollout-name`.
 
 You can view the gates created by schedules:
 
@@ -575,34 +575,43 @@ metadata:
     # The build allowed past the gates. Must be a release candidate.
     rollout.kuberik.com/bypass-gates: "1.4.2"
     # Optional: only these RolloutGates are skipped (comma-separated names).
-    rollout.kuberik.com/bypass-gates-only: "business-hours-my-app-rollout"
+    rollout.kuberik.com/bypass-gates-only: "schedule-gate-x7k2p"
 ```
 
-- **`bypass-gates` alone** skips every gate for that build.
-- **With `bypass-gates-only`**, only the listed gates are skipped for that build.
-  The other gates still apply: the build deploys only when every gate that is
-  not listed passes and allows it. Until then it is held, and the listed gates
-  keep holding every other build. An empty list counts as absent (every gate).
-  `bypass-gates-only` without `bypass-gates` does nothing.
+- **`bypass-gates` alone** skips every gate for that build. It is cleared by
+  the next deploy of any build, as it always was.
+- **With `bypass-gates-only`**, only the listed gates are skipped, and only for
+  that build. Every other gate still applies: the build deploys once all the
+  unlisted gates pass and allow it. Until then nothing is bypassed: the listed
+  gates keep holding every build, other builds can deploy normally, and both
+  annotations stay in place. They are cleared by the deploy of the named build.
+- An empty list counts as absent (every gate). `bypass-gates-only` without
+  `bypass-gates` does nothing. Names that match no gate of the Rollout are
+  ignored, reported in a `BypassGatesUnknown` warning event and named in the
+  history message; a list where no name matches skips no gate.
 - A bypass for a build that is not a release candidate is ignored.
-- After the next deploy the controller removes **both** annotations, so a
-  bypass is never reused for a later build.
-- `status.gates[].bypassGates` is true, and the message reads
-  `Gate bypassed for version <build>`, only on the gates actually skipped. The
-  history entry's message names the skipped gates
-  (`with gate bypass of <gate>, <gate>`); it does not record who set the
-  annotations.
+- `status.gates[].bypassGates` is true (message `Gate bypassed for version
+  <build>`) only on the gates actually skipped, in the reconcile that lets the
+  build through. While a partial bypass waits on other gates,
+  `status.candidates[].blockedBy` for that build already leaves the listed gates
+  out, so it names only what still holds it.
+- The history entry's message says `with gate bypass` (every gate) or
+  `with gate bypass of <gate>, <gate>`. It does not record who set the
+  annotations. An approval gate that was not skipped still records its approval.
 
-Use the RolloutGate names as they exist on the cluster. Managed gates are
-generated per Rollout: a schedule's gate is `{schedule-name}-{rollout-name}`
-and carries the label `gate.kuberik.com/schedule-name`; a dependency's gate is
-`dependency-<name>`. To skip one schedule across many Rollouts, set both
-annotations on each Rollout, each with that Rollout's own gate name:
+Use the RolloutGate names as they exist on the cluster. Managed gates have
+generated names (`schedule-gate-<random>`, `approval-gate-<random>`,
+`dependency-<name>`), so find them by label, per Rollout:
 
 ```bash
-kubectl get rolloutgates -A -l gate.kuberik.com/schedule-name=business-hours \
-  -o custom-columns=NS:.metadata.namespace,GATE:.metadata.name,ROLLOUT:.spec.rolloutRef.name
+kubectl get rolloutgates -n my-app -l gate.kuberik.com/schedule-name=business-hours \
+  -o custom-columns=GATE:.metadata.name,ROLLOUT:.spec.rolloutRef.name
 ```
+
+Other labels: `gate.kuberik.com/approval-policy-name`,
+`gate.kuberik.com/dependency-name`. One schedule or policy creates one gate per
+Rollout, so skipping it across many Rollouts means setting both annotations on
+each Rollout with that Rollout's own gate name.
 
 ### Kustomization Health Checks
 

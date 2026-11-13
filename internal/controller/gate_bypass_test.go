@@ -73,9 +73,9 @@ func TestApplyGatesPartialBypass(t *testing.T) {
 		t.Fatalf("effective partial: eff=%v passing=%v gated=%v bypassed=%v", eff, passing, tags(gated), bypassed(s))
 	}
 
-	// An unlisted allowedVersions gate excludes the build: no bypass, the listed gate still holds the rest.
+	// An unlisted allowedVersions gate excludes the build: no bypass, nothing marked, the listed gate still holds every build.
 	s, gated, passing, eff = applyGates([]rolloutv1alpha1.RolloutGate{g("sched", false), g("dep", true, "2")}, name, cands, partial)
-	if eff != nil || passing || !reflect.DeepEqual(bypassed(s), []string{"sched"}) {
+	if eff != nil || passing || len(bypassed(s)) != 0 {
 		t.Fatalf("held partial: eff=%v passing=%v gated=%v bypassed=%v", eff, passing, tags(gated), bypassed(s))
 	}
 
@@ -98,5 +98,29 @@ func TestApplyGatesPartialBypass(t *testing.T) {
 	}
 	if got := blockedByGates(gates, name, "2", partial); !reflect.DeepEqual(got, []string{"dep", "sched"}) {
 		t.Fatalf("blockedBy other build: %v", got)
+	}
+}
+
+func TestBypassOnDeploy(t *testing.T) {
+	ro := func(only string) *rolloutv1alpha1.Rollout {
+		ann := map[string]string{annotationBypassGates: "2"}
+		if only != "" {
+			ann[annotationBypassGatesOnly] = only
+		}
+		return &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{Annotations: ann}}
+	}
+	for _, tc := range []struct {
+		only, wanted string
+		used, clear  bool
+	}{
+		{"a", "2", true, true},
+		{"a", "1", false, false}, // held partial survives another build
+		{"", "2", true, true},
+		{"", "1", false, true}, // full bypass clears on any deploy, as before
+	} {
+		_, used, clear := bypassOnDeploy(ro(tc.only), tc.wanted)
+		if used != tc.used || clear != tc.clear {
+			t.Errorf("only=%q wanted=%q: used=%v clear=%v", tc.only, tc.wanted, used, clear)
+		}
 	}
 }
