@@ -3020,6 +3020,27 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(cond.Reason).To(Equal("AllGatesPassing"))
 			})
 
+			It("does not report SomeGatesBlocking for an up-to-date rollout behind a closed gate", func() {
+				// 0.2.0 is deployed and is the newest release: no candidate waits.
+				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_2_0}, Timestamp: metav1.Now()},
+				}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}, {Tag: version0_2_0}}...)
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+				// A closed schedule publishes passing: false.
+				gate("schedule-business-hours", false)
+
+				ro := reconcileOnce()
+				Expect(ro.Status.Candidates).To(BeEmpty())
+				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+				Expect(cond).NotTo(BeNil())
+				Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				Expect(cond.Reason).To(Equal("AllGatesPassing"))
+				By("still listing the closed gate in status.gates")
+				Expect(ro.Status.Gates).To(HaveLen(1))
+				Expect(ro.Status.Gates[0].Passing).To(HaveValue(BeFalse()))
+			})
+
 			It("reports NoAllowedVersions when a gate allows none of the waiting candidates", func() {
 				seed()
 				Expect(k8sClient.Create(ctx, &rolloutv1alpha1.RolloutGate{
