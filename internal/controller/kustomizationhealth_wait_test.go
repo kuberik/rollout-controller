@@ -166,14 +166,17 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 	})
 
-	It("reports pending, not applied, while the Kustomization is suspended", func() {
+	It("reports pending right after suspend is set, while the Ready condition is stale", func() {
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
 		kustomization.Spec.Suspend = true
 		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
 		// Flux does not observe the generation bump while suspended, so the condition is
-		// stale and the existing generation rule already reads Pending.
+		// stale and the existing generation rule already reads Pending. The suspend rule
+		// itself (and its "Suspended" message) is asserted by the next spec, where the
+		// condition generation matches.
 		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("not yet observed"))
 		Expect(hc.Status.LastErrorTime).To(BeNil())
 	})
 
