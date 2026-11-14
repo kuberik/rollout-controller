@@ -160,6 +160,53 @@ func evaluateDependency(
 	contract string,
 	providedVersion string,
 ) (admitted []string, blocked []rolloutv1alpha1.BlockedRelease) {
+	return evaluateDependencyRunning(releases, contract, providedVersion, nil)
+}
+
+// runningRelease returns the provider's newest history entry — what the
+// provider is actually running — when it is NOT the entry deployedRelease
+// returns, i.e. when the provider has moved on to a release that is still
+// baking, failed, or was cancelled. It returns nil when History[0] is itself the
+// newest succeeded entry (nothing extra to check) or the history is empty.
+//
+// The second return value is that entry's contract version, "" when it carries
+// no parseable one.
+func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.DeploymentHistoryEntry, string) {
+	if len(rollout.Status.History) == 0 {
+		return nil, ""
+	}
+	newestEntry := &rollout.Status.History[0]
+	if deployed := deployedRelease(rollout); deployed == newestEntry {
+		return nil, ""
+	}
+	if newestEntry.Version.Version != nil {
+		if triple, err := contractTriple(*newestEntry.Version.Version); err == nil {
+			return newestEntry, triple.String()
+		}
+	}
+	return newestEntry, ""
+}
+
+// evaluateDependencyRunning is evaluateDependency with an additional check
+// against what the provider is running right now.
+//
+// A consumer is admitted only when its constraint holds for BOTH the newest
+// succeeded provider entry (providedVersion) and, when it differs, the
+// provider's History[0] (runningVersion). Otherwise a provider that deployed a
+// newer, still-baking (or rolled-back) version would admit consumers against a
+// contract version that is not what is serving traffic. runningVersion is nil
+// when History[0] is the succeeded entry; a pointer to "" when History[0] is a
+// different entry whose contract version is unknown (blocked: unknown is not
+// evidence).
+//
+// This only narrows the admitted list; it never touches the consumer's image
+// stream or candidate resolution.
+func evaluateDependencyRunning(
+	releases []rolloutv1alpha1.VersionInfo,
+	contract string,
+	providedVersion string,
+	runningVersion *string,
+) (admitted []string, blocked []rolloutv1alpha1.BlockedRelease) {
 	for _, release := range releases {
 		// A release whose manifest could not be read has no annotations to
 		// consult, which would otherwise read as "declares no requirement" and
@@ -196,6 +243,26 @@ func evaluateDependency(
 				Reason:          "InvalidVersion",
 			})
 			continue
+		}
+
+		if satisfied && runningVersion != nil {
+			if *runningVersion == "" {
+				blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
+					Tag:             release.Tag,
+					RequiredVersion: &required,
+					Reason:          "RunningVersionUnknown",
+				})
+				continue
+			}
+			runningOK, rerr := providerSatisfies(*runningVersion, required)
+			if rerr != nil || !runningOK {
+				blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
+					Tag:             release.Tag,
+					RequiredVersion: &required,
+					Reason:          "RunningVersionNotSatisfied",
+				})
+				continue
+			}
 		}
 
 		if satisfied {

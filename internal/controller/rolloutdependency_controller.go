@@ -136,7 +136,16 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	admitted, blocked := evaluateDependency(consumer.Status.AvailableReleases, contract, providedVersion)
+	// The provider may have moved past its newest succeeded release (still
+	// baking, failed, rolled back). Consumers must also satisfy what runs now.
+	var runningVersion *string
+	runningTag := ""
+	if running, version := runningRelease(provider); running != nil {
+		runningTag = running.Version.Tag
+		runningVersion = &version
+	}
+
+	admitted, blocked := evaluateDependencyRunning(consumer.Status.AvailableReleases, contract, providedVersion, runningVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -185,6 +194,10 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			satisfied.Message = fmt.Sprintf(
 				"Waiting for %s to serve contract %q at a version satisfying release(s) %s (deployed: %s)",
 				providerKey, contract, summarizeTags(blocking), orNone(providedVersion))
+			if runningVersion != nil {
+				satisfied.Message += fmt.Sprintf("; the provider's running release %s (contract version %s) is not a succeeded release; blocked by it: %s",
+					runningTag, orNone(*runningVersion), runningBlockers(blocked, blocking))
+			}
 		}
 	}
 	meta.SetStatusCondition(&dependency.Status.Conditions, satisfied)
@@ -423,4 +436,19 @@ func (r *RolloutDependencyReconciler) findDependenciesForRollout(ctx context.Con
 		}
 	}
 	return requests
+}
+
+// runningBlockers names the blocking releases held back specifically because
+// the provider's running (not yet succeeded) release fails their constraint.
+func runningBlockers(blocked []kuberikcomv1alpha1.BlockedRelease, blocking []string) string {
+	var tags []string
+	for _, release := range blocked {
+		if (release.Reason == "RunningVersionNotSatisfied" || release.Reason == "RunningVersionUnknown") && slices.Contains(blocking, release.Tag) {
+			tags = append(tags, release.Tag)
+		}
+	}
+	if len(tags) == 0 {
+		return "none"
+	}
+	return summarizeTags(tags)
 }

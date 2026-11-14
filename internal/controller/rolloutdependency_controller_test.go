@@ -265,6 +265,93 @@ var _ = Describe("RolloutDependency helpers", func() {
 		})
 	})
 
+	Describe("running provider release", func() {
+		ver := func(v string) *string { return &v }
+		entry := func(tag, version string, bake string) kuberikcomv1alpha1.DeploymentHistoryEntry {
+			e := kuberikcomv1alpha1.DeploymentHistoryEntry{Version: kuberikcomv1alpha1.VersionInfo{Tag: tag}}
+			if version != "" {
+				e.Version.Version = ver(version)
+			}
+			if bake != "" {
+				e.BakeStatus = &bake
+			}
+			return e
+		}
+		rollout := func(entries ...kuberikcomv1alpha1.DeploymentHistoryEntry) *kuberikcomv1alpha1.Rollout {
+			return &kuberikcomv1alpha1.Rollout{Status: kuberikcomv1alpha1.RolloutStatus{History: entries}}
+		}
+		consumers := []kuberikcomv1alpha1.VersionInfo{
+			{Tag: "c-old", Requires: map[string]string{"db": "^1.0.0"}},
+			{Tag: "c-new", Requires: map[string]string{"db": "^2.0.0"}},
+			{Tag: "c-free"},
+		}
+		// evaluate mirrors what the reconciler does with a provider Rollout.
+		evaluate := func(p *kuberikcomv1alpha1.Rollout) ([]string, []kuberikcomv1alpha1.BlockedRelease) {
+			provided := ""
+			if d := deployedRelease(p); d != nil && d.Version.Version != nil {
+				provided = *d.Version.Version
+			}
+			var running *string
+			if r, v := runningRelease(p); r != nil {
+				running = &v
+			}
+			return evaluateDependencyRunning(consumers, "db", provided, running)
+		}
+
+		It("has no running release for an empty history or when History[0] succeeded", func() {
+			r, _ := runningRelease(rollout())
+			Expect(r).To(BeNil())
+			r, _ = runningRelease(rollout(entry("v2", "2.0.0", "Succeeded"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(r).To(BeNil())
+		})
+
+		It("reports History[0] when it is still baking", func() {
+			r, v := runningRelease(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(r.Version.Tag).To(Equal("v2"))
+			Expect(v).To(Equal("2.0.0"))
+		})
+
+		It("does not admit a consumer that only the old succeeded version satisfies while v2 bakes", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked).To(HaveLen(2))
+			Expect(blocked[0].Tag).To(Equal("c-old"))
+			Expect(blocked[0].Reason).To(Equal("RunningVersionNotSatisfied"))
+			Expect(blocked[1].Tag).To(Equal("c-new"))
+			Expect(blocked[1].Reason).To(Equal("ConstraintNotSatisfied"))
+		})
+
+		It("does not admit a consumer that only the baking version satisfies", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).NotTo(ContainElement("c-new"))
+			Expect(blocked[1].Tag).To(Equal("c-new"))
+		})
+
+		It("admits when both the running and the succeeded entry satisfy", func() {
+			admitted, blocked := evaluate(rollout(entry("v1b", "1.5.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(ConsistOf("c-old", "c-free"))
+			Expect(blocked).To(HaveLen(1))
+			Expect(blocked[0].Tag).To(Equal("c-new"))
+		})
+
+		It("blocks against a failed (rolled-back) History[0] that fails the constraint", func() {
+			admitted, _ := evaluate(rollout(entry("v2", "2.0.0", "Failed"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+		})
+
+		It("blocks consumers when the running entry has no readable contract version", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked[0].Reason).To(Equal("RunningVersionUnknown"))
+		})
+
+		It("keeps blocking everything requiring the contract when nothing ever succeeded", func() {
+			admitted, blocked := evaluate(rollout(entry("v1", "1.0.0", "InProgress")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked[0].Reason).To(Equal("ProviderVersionUnknown"))
+		})
+	})
+
 	Describe("evaluateDependency", func() {
 		release := func(tag string, requires map[string]string) kuberikcomv1alpha1.VersionInfo {
 			return kuberikcomv1alpha1.VersionInfo{Tag: tag, Requires: requires}
