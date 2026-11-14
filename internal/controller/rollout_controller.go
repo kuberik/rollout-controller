@@ -491,6 +491,9 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 	condStatus := metav1.ConditionTrue
 	condReason := "AllGatesPassing"
 	condMsg := "All gates are passing"
+	if len(releaseCandidates) == 0 {
+		condMsg = "No release candidates are waiting; nothing to gate"
+	}
 
 	if bypassEnabled {
 		condReason = "GatesBypassed"
@@ -504,7 +507,10 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		condMsg = "Some gates are blocking deployment"
 	}
 
-	if len(gatedReleaseCandidates) == 0 && gatesPassing && !bypassEnabled {
+	// Gates only fail a rollout when they hold something back. With no release
+	// candidate waiting (the deployed build is already the newest) there is
+	// nothing to gate, and an up-to-date rollout must not read GatesPassing=False.
+	if len(releaseCandidates) > 0 && len(gatedReleaseCandidates) == 0 && gatesPassing && !bypassEnabled {
 		condStatus = metav1.ConditionFalse
 		condReason = "NoAllowedVersions"
 		condMsg = "No release candidates are allowed by all gates"
