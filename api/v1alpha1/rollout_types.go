@@ -403,7 +403,7 @@ type DeploymentHistoryEntry struct {
 	// This field contains human-readable information about the deployment context.
 	// For automatic deployments, it includes information about gate bypass and failed bake unblock.
 	// For manual deployments (when wantedVersion is specified), it can contain a custom message
-	// provided via the "rollout.kuberik.com/deployment-message" annotation, or defaults to "Manual deployment".
+	// provided via the "rollout.kuberik.com/deploy-message" annotation, or defaults to "Manual deployment".
 	// +optional
 	Message *string `json:"message,omitempty"`
 
