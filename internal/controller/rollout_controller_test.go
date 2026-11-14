@@ -2996,6 +2996,60 @@ var _ = Describe("Rollout Controller", func() {
 				return out
 			}
 
+			It("does not report GatesPassing=False for an up-to-date rollout", func() {
+				// 0.2.0 is deployed and is the newest release: no candidate waits.
+				rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{
+					{Version: rolloutv1alpha1.VersionInfo{Tag: version0_2_0}, Timestamp: metav1.Now()},
+				}
+				imagePolicy.PublishInfo([]rolloutv1alpha1.VersionInfo{{Tag: version0_1_0}, {Tag: version0_2_0}}...)
+				Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+				// A gate allowing nothing must not matter when nothing is waiting.
+				Expect(k8sClient.Create(ctx, &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: "allow-none", Namespace: rollout.Namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: rollout.Name},
+						AllowedVersions: &[]string{},
+					},
+				})).To(Succeed())
+
+				ro := reconcileOnce()
+				Expect(ro.Status.Candidates).To(BeEmpty())
+				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+				Expect(cond).NotTo(BeNil())
+				Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				Expect(cond.Reason).To(Equal("AllGatesPassing"))
+			})
+
+			It("reports NoAllowedVersions when a gate allows none of the waiting candidates", func() {
+				seed()
+				Expect(k8sClient.Create(ctx, &rolloutv1alpha1.RolloutGate{
+					ObjectMeta: metav1.ObjectMeta{Name: "allow-none", Namespace: rollout.Namespace},
+					Spec: rolloutv1alpha1.RolloutGateSpec{
+						RolloutRef:      &corev1.LocalObjectReference{Name: rollout.Name},
+						AllowedVersions: &[]string{},
+					},
+				})).To(Succeed())
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History).To(HaveLen(1))
+				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+				Expect(cond).NotTo(BeNil())
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				Expect(cond.Reason).To(Equal("NoAllowedVersions"))
+			})
+
+			It("reports SomeGatesBlocking when a failing gate holds a waiting candidate", func() {
+				seed()
+				gate("approval", false)
+
+				ro := reconcileOnce()
+				Expect(ro.Status.History).To(HaveLen(1))
+				cond := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutGatesPassing)
+				Expect(cond).NotTo(BeNil())
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				Expect(cond.Reason).To(Equal("SomeGatesBlocking"))
+			})
+
 			It("skips only the listed gates and deploys when the rest pass", func() {
 				seed()
 				gate("schedule-business-hours", false)
