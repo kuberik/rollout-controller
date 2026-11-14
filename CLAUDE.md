@@ -153,8 +153,12 @@ written; an unparseable version blocks instead.
 
 The controller reads each consumer release's `requires` values from
 `Rollout.status.availableReleases` (populated by `parseOCIManifest`), compares
-them against the contract version of the provider's successfully baked release,
-and publishes the verdict as a managed `RolloutGate` named
+them against the provider's contract versions, and admits a release only if its
+constraint holds for both the provider's running entry (`History[0]`) and its
+newest successfully baked entry. While a provider bakes a new version, or runs a
+failed one, consumers are checked against both; an unreadable running version
+blocks consumers that require the contract (`RunningVersionUnknown`). It
+publishes the verdict as a managed `RolloutGate` named
 `dependency-<name>` whose `allowedVersions` holds exactly the admitted
 releases. Rollout admission logic is untouched.
 
