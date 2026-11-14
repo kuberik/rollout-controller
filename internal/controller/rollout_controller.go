@@ -312,6 +312,14 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			"wantedVersion", *wantedRelease,
 			"currentVersion", rollout.Status.History[0].Version,
 			"bakeStatus", rollout.Status.History[0].BakeStatus)
+
+		// A force-deploy to the version that is already running has nothing to deploy, so
+		// deployRelease never runs and never consumes the one-shot annotations. Clear them
+		// here, otherwise the rollout stays in manual mode and skips health checks forever.
+		if err := r.clearConsumedForceDeploy(ctx, &rollout, *wantedRelease); err != nil {
+			log.Error(err, "Failed to clear force deploy annotations for already deployed version")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// If this is a manual deployment with bake time configuration, ensure we requeue to monitor bake time
@@ -1248,6 +1256,19 @@ func (r *RolloutReconciler) hasManualDeployment(rollout *rolloutv1alpha1.Rollout
 	return false
 }
 
+// clearConsumedForceDeploy removes the one-shot force-deploy, deploy-message and deploy-user
+// annotations when the force-deploy target equals the given (already deployed) version.
+func (r *RolloutReconciler) clearConsumedForceDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, version string) error {
+	if rollout.Annotations == nil || rollout.Annotations["rollout.kuberik.com/force-deploy"] != version {
+		return nil
+	}
+	patch := client.MergeFrom(rollout.DeepCopy())
+	delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
+	delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+	delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
+	return r.Client.Patch(ctx, rollout, patch)
+}
+
 // selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
 func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []rolloutv1alpha1.VersionInfo) (*string, error) {
 	// Check for WantedVersion in spec first (highest priority)
@@ -1482,6 +1503,22 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		return err
 	}
 	rollout.Status.ReleaseCandidates = releaseCandidates
+
+	// GatedReleaseCandidates was computed before this deploy and may still contain the
+	// version just deployed (or older ones). Keep only entries that are still candidates.
+	if len(rollout.Status.GatedReleaseCandidates) > 0 {
+		still := make(map[string]struct{}, len(releaseCandidates))
+		for _, c := range releaseCandidates {
+			still[c.Tag] = struct{}{}
+		}
+		filtered := make([]rolloutv1alpha1.VersionInfo, 0, len(rollout.Status.GatedReleaseCandidates))
+		for _, c := range rollout.Status.GatedReleaseCandidates {
+			if _, ok := still[c.Tag]; ok {
+				filtered = append(filtered, c)
+			}
+		}
+		rollout.Status.GatedReleaseCandidates = filtered
+	}
 
 	// Update the status first
 	if err := r.Status().Update(ctx, rollout); err != nil {

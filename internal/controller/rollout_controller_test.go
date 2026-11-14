@@ -3510,6 +3510,63 @@ var _ = Describe("Rollout Controller", func() {
 				Expect(updatedRollout.Annotations).NotTo(HaveKey("rollout.kuberik.com/force-deploy"))
 			})
 
+			deployInitial := func(name string) (*RolloutReconciler, reconcile.Request, rolloutv1alpha1.Rollout) {
+				r := &rolloutv1alpha1.Rollout{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+					Spec: rolloutv1alpha1.RolloutSpec{
+						ReleasesImagePolicy: corev1.LocalObjectReference{Name: "test-image-policy"},
+						BakeTime:            &metav1.Duration{Duration: 5 * time.Minute},
+					},
+				}
+				Expect(k8sClient.Create(ctx, r)).To(Succeed())
+				r.Status.AvailableReleases = []rolloutv1alpha1.VersionInfo{{Tag: "3.0.0"}, {Tag: "2.0.0"}, {Tag: "1.0.0"}}
+				Expect(k8sClient.Status().Update(ctx, r)).To(Succeed())
+
+				rec := &RolloutReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}}
+				_, err := rec.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+
+				var got rolloutv1alpha1.Rollout
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &got)).To(Succeed())
+				Expect(got.Status.History).NotTo(BeEmpty())
+				return rec, req, got
+			}
+
+			It("should not keep the just-deployed version in gated release candidates", func() {
+				_, _, got := deployInitial("gated-stale-rollout")
+				current := got.Status.History[0].Version.Tag
+				for _, c := range got.Status.GatedReleaseCandidates {
+					Expect(c.Tag).NotTo(Equal(current))
+				}
+			})
+
+			It("should clear force-deploy annotations when the forced version is already deployed", func() {
+				rec, req, got := deployInitial("force-deploy-current-rollout")
+				current := got.Status.History[0].Version.Tag
+
+				By("Force-deploying the version that is already running")
+				if got.Annotations == nil {
+					got.Annotations = map[string]string{}
+				}
+				got.Annotations["rollout.kuberik.com/force-deploy"] = current
+				got.Annotations["rollout.kuberik.com/deploy-message"] = "redeploy"
+				got.Annotations["rollout.kuberik.com/deploy-user"] = "alice"
+				Expect(k8sClient.Update(ctx, &got)).To(Succeed())
+
+				_, err := rec.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+
+				var after rolloutv1alpha1.Rollout
+				Expect(k8sClient.Get(ctx, req.NamespacedName, &after)).To(Succeed())
+				Expect(after.Annotations).NotTo(HaveKey("rollout.kuberik.com/force-deploy"))
+				Expect(after.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-message"))
+				Expect(after.Annotations).NotTo(HaveKey("rollout.kuberik.com/deploy-user"))
+				Expect(rec.hasManualDeployment(&after)).To(BeFalse())
+				Expect(after.Status.History[0].Version.Tag).To(Equal(current))
+				Expect(after.Status.History).To(HaveLen(len(got.Status.History)))
+			})
+
 			It("should use custom deploy message when deploy-message annotation is provided", func() {
 				By("Setting up a rollout with force-deploy and custom message annotations")
 				customMessageRollout := &rolloutv1alpha1.Rollout{
