@@ -1262,7 +1262,8 @@ func (r *RolloutReconciler) clearConsumedForceDeploy(ctx context.Context, rollou
 	if rollout.Annotations == nil || rollout.Annotations["rollout.kuberik.com/force-deploy"] != version {
 		return nil
 	}
-	patch := client.MergeFrom(rollout.DeepCopy())
+	// Optimistic lock: a concurrent user edit of force-deploy must not be silently dropped.
+	patch := client.MergeFromWithOptions(rollout.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
 	delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
 	delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
@@ -1553,7 +1554,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Clear annotations based on deployment type
 	if forceDeployUsed {
 		// Clear both force-deploy, deploy-message, and deploy-user annotations when force deploy was used
-		patch := client.MergeFrom(rollout.DeepCopy())
+		// Optimistic lock: a concurrent user edit of force-deploy must not be silently dropped.
+		// On conflict the reconcile requeues and the already-deployed branch clears it.
+		patch := client.MergeFromWithOptions(rollout.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
