@@ -501,7 +501,9 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		if !bypass.all() {
 			condMsg = fmt.Sprintf("Version %s allowed by %s", bypass.version, bypassDescription(gateList.Items, rollout.Name, bypass))
 		}
-	} else if !gatesPassing {
+	} else if !gatesPassing && len(releaseCandidates) > 0 {
+		// A failing gate (closed schedule, passing: false) only matters while a
+		// candidate waits behind it. Idle rollouts keep True/AllGatesPassing.
 		condStatus = metav1.ConditionFalse
 		condReason = "SomeGatesBlocking"
 		condMsg = "Some gates are blocking deployment"
