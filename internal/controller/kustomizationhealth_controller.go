@@ -98,7 +98,12 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
-	if kustomization.Spec.Wait {
+	if kustomization.Spec.Suspend {
+		// A suspended Kustomization keeps its last Ready=True, but nothing new is being
+		// applied. That is pending, not a failure: no error time is recorded.
+		healthStatus = rolloutv1alpha1.HealthStatusPending
+		message = fmt.Sprintf("Kustomization pending (Suspended): %s/%s is suspended, so new revisions are not applied", kustomization.Namespace, kustomization.Name)
+	} else if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
 		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)
@@ -267,7 +272,7 @@ func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (ro
 	if ready == nil {
 		return rolloutv1alpha1.HealthStatusPending, "Kustomization pending: no Ready condition", nil
 	}
-	if ready.ObservedGeneration != 0 && ready.ObservedGeneration < kustomization.Generation {
+	if ready.ObservedGeneration < kustomization.Generation {
 		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: generation %d not yet observed", kustomization.Generation), nil
 	}
 

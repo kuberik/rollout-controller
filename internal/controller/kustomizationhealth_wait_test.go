@@ -136,6 +136,41 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 	})
 
+	It("reports pending, not applied, while the Kustomization is suspended", func() {
+		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
+		kustomization.Spec.Suspend = true
+		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+		// Mirror the generation bump: Flux does not observe it while suspended, so the
+		// condition keeps its old generation; also verify with a matching one below.
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("Suspended"))
+		Expect(*hc.Status.Message).To(ContainSubstring("ks"))
+		Expect(hc.Status.LastErrorTime).To(BeNil())
+	})
+
+	It("reports pending when suspended even if the condition generation matches", func() {
+		kustomization.Spec.Suspend = true
+		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
+		Expect(kustomization.Status.Conditions[0].ObservedGeneration).To(Equal(kustomization.Generation))
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("Suspended"))
+	})
+
+	It("reports pending when the Ready condition's own observedGeneration is behind", func() {
+		kustomization.Spec.Path = "./other"
+		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v2"})
+		// status.observedGeneration is current but the condition itself is stale.
+		kustomization.Status.Conditions[0].ObservedGeneration = kustomization.Generation - 1
+		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("not yet observed"))
+	})
+
 	It("keeps checking managed resources when wait is false", func() {
 		kustomization.Spec.Wait = false
 		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
