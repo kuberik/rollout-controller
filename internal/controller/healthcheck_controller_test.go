@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -806,5 +807,77 @@ var _ = Describe("HealthCheck retry reset", func() {
 		updated := &rolloutv1alpha1.HealthCheck{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: healthCheck.Name, Namespace: namespace}, updated)).To(Succeed())
 		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+	})
+})
+
+var _ = Describe("HealthCheck reset across namespaces (namespaceSelector)", func() {
+	ctx := context.Background()
+	var rolloutNS, checkNS string
+	var reconciler *HealthCheckReconciler
+	var rollout *rolloutv1alpha1.Rollout
+	var healthCheck *rolloutv1alpha1.HealthCheck
+
+	BeforeEach(func() {
+		rns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "xns-rollout-"}}
+		Expect(k8sClient.Create(ctx, rns)).To(Succeed())
+		rolloutNS = rns.Name
+		cns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "xns-checks-",
+			Labels:       map[string]string{"kuberik-test/xns": "yes"},
+		}}
+		Expect(k8sClient.Create(ctx, cns)).To(Succeed())
+		checkNS = cns.Name
+
+		rollout = &rolloutv1alpha1.Rollout{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: rolloutNS},
+			Spec: rolloutv1alpha1.RolloutSpec{
+				HealthCheckSelector: &rolloutv1alpha1.HealthCheckSelectorConfig{
+					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kuberik-test/xns": "yes"}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rollout)).To(Succeed())
+
+		// A check that stays Healthy and has not changed since long before the deploy.
+		healthCheck = &rolloutv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: checkNS},
+			Spec:       rolloutv1alpha1.HealthCheckSpec{Class: stringPtr("kustomization")},
+		}
+		Expect(k8sClient.Create(ctx, healthCheck)).To(Succeed())
+		old := metav1.NewTime(time.Now().Add(-3 * time.Hour))
+		healthCheck.Status = rolloutv1alpha1.HealthCheckStatus{
+			Status:         rolloutv1alpha1.HealthStatusHealthy,
+			LastChangeTime: &old,
+		}
+		Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rollout), rollout)).To(Succeed())
+		rollout.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+			Version:   rolloutv1alpha1.VersionInfo{Tag: "v2"},
+			Timestamp: metav1.NewTime(time.Now().Add(-1 * time.Minute)),
+		}}
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+
+		reconciler = &HealthCheckReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: rolloutNS}})).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: checkNS}})).To(Succeed())
+	})
+
+	It("resets a check in a selected namespace after the rollout deploys", func() {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(healthCheck)})
+		Expect(err).NotTo(HaveOccurred())
+
+		updated := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(healthCheck), updated)).To(Succeed())
+		Expect(updated.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(updated.Status.LastChangeTime.Time).To(BeTemporally(">", rollout.Status.History[0].Timestamp.Time))
+	})
+
+	It("enqueues checks in selected namespaces when the rollout changes", func() {
+		reqs := reconciler.findHealthChecksForRollout(ctx, rollout)
+		Expect(reqs).To(ContainElement(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(healthCheck)}))
 	})
 })
