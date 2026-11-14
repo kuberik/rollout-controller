@@ -93,7 +93,10 @@ rules:
 - apiGroups:
   - source.toolkit.fluxcd.io
   resources:
+  - buckets
+  - externalartifacts
   - gitrepositories
+  - helmcharts
   verbs:
   - get
   - list

@@ -81,6 +81,8 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "crd", "bases"),
 			filepath.Join("..", "..", "vendir", "ocirepositories"),
+			filepath.Join("..", "..", "vendir", "gitrepositories"),
+			filepath.Join("..", "..", "vendir", "buckets"),
 			filepath.Join("..", "..", "vendir", "kustomizations"),
 			filepath.Join("..", "..", "vendir", "imagepolicies"),
 			filepath.Join("..", "..", "vendir", "imagerepositories"),

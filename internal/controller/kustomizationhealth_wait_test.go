@@ -24,9 +24,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
@@ -233,6 +238,97 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 			hc := reconcileHealthCheck()
 			Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 			Expect(*hc.Status.Message).To(ContainSubstring("not found"))
+		})
+
+		It("reports pending, not healthy, when the source cannot be read (forbidden)", func() {
+			setConditions(ready)
+			wc, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			r := &KustomizationHealthReconciler{
+				Client: interceptor.NewClient(wc, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if obj.GetObjectKind().GroupVersionKind().Kind == "OCIRepository" {
+							return apierrors.NewForbidden(schema.GroupResource{Group: "source.toolkit.fluxcd.io", Resource: "ocirepositories"}, key.Name, nil)
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}),
+				Scheme: k8sClient.Scheme(),
+				Clock:  &RealClock{},
+			}
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: healthCheckKey})
+			Expect(err).NotTo(HaveOccurred())
+			hc := &rolloutv1alpha1.HealthCheck{}
+			Expect(k8sClient.Get(ctx, healthCheckKey, hc)).To(Succeed())
+			Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(*hc.Status.Message).To(ContainSubstring("cannot read source OCIRepository"))
+			Expect(*hc.Status.Message).To(ContainSubstring("forbidden"))
+			Expect(hc.Status.LastErrorTime).To(BeNil())
+		})
+
+		It("reports pending when the source kind is not installed", func() {
+			setConditions(ready)
+			wc, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			r := &KustomizationHealthReconciler{
+				Client: interceptor.NewClient(wc, interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if obj.GetObjectKind().GroupVersionKind().Kind == "OCIRepository" {
+							return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "source.toolkit.fluxcd.io", Kind: "OCIRepository"}, SearchedVersions: []string{"v1"}}
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}),
+				Scheme: k8sClient.Scheme(),
+				Clock:  &RealClock{},
+			}
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: healthCheckKey})
+			Expect(err).NotTo(HaveOccurred())
+			hc := &rolloutv1alpha1.HealthCheck{}
+			Expect(k8sClient.Get(ctx, healthCheckKey, hc)).To(Succeed())
+			Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(*hc.Status.Message).To(ContainSubstring("cannot read source OCIRepository"))
+			Expect(*hc.Status.Message).To(ContainSubstring("not installed"))
+			Expect(hc.Status.LastErrorTime).To(BeNil())
+		})
+
+		Describe("a source kind without a typed client (Bucket)", func() {
+			setBucket := func(revision string) {
+				b := &unstructured.Unstructured{}
+				b.SetGroupVersionKind(schema.GroupVersionKind{Group: "source.toolkit.fluxcd.io", Version: "v1", Kind: "Bucket"})
+				b.SetName("bkt")
+				b.SetNamespace(namespace)
+				b.Object["spec"] = map[string]interface{}{"bucketName": "b", "endpoint": "s3.example.com", "interval": "1m"}
+				Expect(k8sClient.Create(ctx, b)).To(Succeed())
+				b.Object["status"] = map[string]interface{}{
+					"artifact": map[string]interface{}{"path": "p", "url": "http://x/p", "revision": revision, "digest": "sha256:abc", "lastUpdateTime": metav1.Now().UTC().Format(time.RFC3339)},
+					"conditions": []interface{}{map[string]interface{}{
+						"type": "Ready", "status": "True", "reason": "Succeeded", "message": "ok",
+						"observedGeneration": b.GetGeneration(), "lastTransitionTime": metav1.Now().UTC().Format(time.RFC3339),
+					}},
+				}
+				Expect(k8sClient.Status().Update(ctx, b)).To(Succeed())
+			}
+			useBucket := func() {
+				kustomization.Spec.SourceRef = kustomizev1.CrossNamespaceSourceReference{Kind: "Bucket", Name: "bkt"}
+				Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+				setConditions(ready)
+			}
+
+			It("reports pending on a revision mismatch", func() {
+				setBucket("v2")
+				useBucket()
+				hc := reconcileHealthCheck()
+				Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+				Expect(*hc.Status.Message).To(ContainSubstring("has not applied source revision v2 yet (last applied v1)"))
+			})
+
+			It("reports healthy when the revision matches", func() {
+				setBucket("v1")
+				useBucket()
+				hc := reconcileHealthCheck()
+				Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
+			})
 		})
 
 		It("reports healthy when everything matches", func() {

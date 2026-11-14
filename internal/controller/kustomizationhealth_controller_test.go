@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"sigs.k8s.io/cli-utils/pkg/object"
 )
@@ -78,6 +79,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+			createReadyGitSource(ctx, namespace, "test-source", "rev1")
 
 			By("creating the HealthCheck")
 			healthCheck = &rolloutv1alpha1.HealthCheck{
@@ -219,6 +221,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating a pending deployment")
@@ -306,6 +309,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating an unhealthy deployment")
@@ -409,6 +413,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					LastTransitionTime: metav1.Now(),
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("reconciling the resource")
@@ -498,6 +503,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating a healthy deployment")
@@ -585,6 +591,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating a healthy deployment")
@@ -676,6 +683,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating a healthy deployment")
@@ -767,6 +775,7 @@ var _ = Describe("KustomizationHealth Controller", func() {
 					},
 				},
 			}
+			kustomization.Status.LastAppliedRevision = "rev1"
 			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 
 			By("creating a healthy deployment")
@@ -997,6 +1006,7 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+		createReadyGitSource(ctx, namespace, "src", "rev1")
 
 		healthCheck = &rolloutv1alpha1.HealthCheck{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1078,6 +1088,7 @@ var _ = Describe("KustomizationHealth stale-failure guard", func() {
 		kustomization.Status.Inventory = &kustomizev1.ResourceInventory{
 			Entries: []kustomizev1.ResourceRef{{ID: objMeta.String(), Version: "v1"}},
 		}
+		kustomization.Status.LastAppliedRevision = "rev1"
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 	}
 
@@ -1273,3 +1284,19 @@ var _ = Describe("KustomizationHealth updateHealthCheckStatus nil errorTime", fu
 			"when errorTime is provided it must be used verbatim — not overridden by now")
 	})
 })
+
+// createReadyGitSource creates a GitRepository that source-controller would report as Ready
+// and serving the given artifact revision.
+func createReadyGitSource(ctx context.Context, namespace, name, revision string) {
+	src := &sourcev1.GitRepository{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec:       sourcev1.GitRepositorySpec{URL: "https://example.com/repo.git", Interval: metav1.Duration{Duration: time.Minute}},
+	}
+	Expect(k8sClient.Create(ctx, src)).To(Succeed())
+	src.Status.Artifact = &sourcev1.Artifact{Path: "p", URL: "http://x/p", Revision: revision, Digest: "sha256:abc", LastUpdateTime: metav1.Now()}
+	src.Status.Conditions = []metav1.Condition{{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Succeeded",
+		ObservedGeneration: src.Generation, LastTransitionTime: metav1.Now(),
+	}}
+	Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+}
