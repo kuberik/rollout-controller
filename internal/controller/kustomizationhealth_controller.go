@@ -24,7 +24,9 @@ import (
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -51,6 +53,7 @@ type KustomizationHealthReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories;gitrepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=*,verbs=get;list;watch
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
 
@@ -103,6 +106,10 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		// applied. That is pending, not a failure: no error time is recorded.
 		healthStatus = rolloutv1alpha1.HealthStatusPending
 		message = fmt.Sprintf("Kustomization pending (Suspended): %s/%s is suspended, so new revisions are not applied", kustomization.Namespace, kustomization.Name)
+	} else if pending, msg := r.checkSourceRevisionApplied(ctx, kustomization); pending {
+		// The Kustomization has not applied the revision its source currently serves.
+		healthStatus = rolloutv1alpha1.HealthStatusPending
+		message = msg
 	} else if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
@@ -116,6 +123,63 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// Update the health check status
 	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime)
+}
+
+// checkSourceRevisionApplied reports whether the Kustomization is still behind the revision
+// its source currently serves. The rollout controller deploys by changing the source's
+// spec.ref.tag, so the source artifact is the witness for what was deployed. Only
+// OCIRepository and GitRepository sources are checked; for other kinds, or when the source
+// cannot be read (RBAC, CRD missing), it returns false and the existing behaviour applies.
+// A pending result never carries an error time.
+func (r *KustomizationHealthReconciler) checkSourceRevisionApplied(ctx context.Context, ks *kustomizev1.Kustomization) (bool, string) {
+	log := logf.FromContext(ctx)
+	ref := ks.Spec.SourceRef
+	ns := ref.Namespace
+	if ns == "" {
+		ns = ks.Namespace
+	}
+	key := client.ObjectKey{Namespace: ns, Name: ref.Name}
+
+	var (
+		generation int64
+		conditions []metav1.Condition
+		artifact   *sourcev1.Artifact
+	)
+	switch ref.Kind {
+	case sourcev1.OCIRepositoryKind:
+		src := &sourcev1.OCIRepository{}
+		if err := r.Get(ctx, key, src); err != nil {
+			return r.sourceReadError(ctx, err, ref.Kind, key)
+		}
+		generation, conditions, artifact = src.Generation, src.Status.Conditions, src.Status.Artifact
+	case sourcev1.GitRepositoryKind:
+		src := &sourcev1.GitRepository{}
+		if err := r.Get(ctx, key, src); err != nil {
+			return r.sourceReadError(ctx, err, ref.Kind, key)
+		}
+		generation, conditions, artifact = src.Generation, src.Status.Conditions, src.Status.Artifact
+	default:
+		log.V(1).Info("source kind not checked for applied revision", "kind", ref.Kind)
+		return false, ""
+	}
+
+	name := fmt.Sprintf("%s %s/%s", ref.Kind, key.Namespace, key.Name)
+	ready := meta.FindStatusCondition(conditions, fluxmeta.ReadyCondition)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration < generation || artifact == nil {
+		return true, fmt.Sprintf("Kustomization pending: source %s is not ready for its current spec", name)
+	}
+	if ks.Status.LastAppliedRevision != artifact.Revision {
+		return true, fmt.Sprintf("Kustomization has not applied source revision %s yet (last applied %s)", artifact.Revision, ks.Status.LastAppliedRevision)
+	}
+	return false, ""
+}
+
+func (r *KustomizationHealthReconciler) sourceReadError(ctx context.Context, err error, kind string, key client.ObjectKey) (bool, string) {
+	if apierrors.IsNotFound(err) {
+		return true, fmt.Sprintf("Kustomization pending: source %s %s/%s not found", kind, key.Namespace, key.Name)
+	}
+	logf.FromContext(ctx).V(1).Info("cannot read source, skipping applied-revision check", "kind", kind, "source", key.String(), "error", err.Error())
+	return false, ""
 }
 
 // KustomizationReference represents a reference to a kustomization
