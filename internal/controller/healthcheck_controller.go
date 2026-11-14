@@ -91,9 +91,11 @@ func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // checkAndResetForRecentDeployments checks if there are any rollout deployments
 // that should trigger a reset of this health check based on timing
 func (r *HealthCheckReconciler) checkAndResetForRecentDeployments(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, log logr.Logger) error {
-	// Find all rollouts in the same namespace
+	// Find every rollout that could select this check. A rollout may select
+	// checks in other namespaces through healthCheckSelector.namespaceSelector,
+	// so list cluster-wide; isHealthCheckForRollout does the scoping.
 	rolloutList := &rolloutv1alpha1.RolloutList{}
-	if err := r.Client.List(ctx, rolloutList, client.InNamespace(healthCheck.Namespace)); err != nil {
+	if err := r.Client.List(ctx, rolloutList); err != nil {
 		return err
 	}
 
@@ -199,9 +201,14 @@ func (r *HealthCheckReconciler) findHealthChecksForRollout(ctx context.Context, 
 		return []reconcile.Request{}
 	}
 
-	// Find all health checks in the same namespace
+	// Same namespace by default; a namespaceSelector widens it to the cluster
+	// (isHealthCheckForRollout filters).
+	var listOpts []client.ListOption
+	if rollout.Spec.HealthCheckSelector == nil || rollout.Spec.HealthCheckSelector.NamespaceSelector == nil {
+		listOpts = append(listOpts, client.InNamespace(rollout.Namespace))
+	}
 	healthCheckList := &rolloutv1alpha1.HealthCheckList{}
-	if err := r.Client.List(ctx, healthCheckList, client.InNamespace(rollout.Namespace)); err != nil {
+	if err := r.Client.List(ctx, healthCheckList, listOpts...); err != nil {
 		return []reconcile.Request{}
 	}
 
