@@ -123,7 +123,9 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 
 	It("reports unhealthy when kustomize-controller's health check failed", func() {
 		// After a failed health check Flux keeps Reconciling=True (ProgressingWithRetry),
-		// which kstatus alone would report as in progress.
+		// which kstatus alone would report as in progress. Realistic state: the source
+		// serves a new revision that Flux has not applied (lastAppliedRevision stays old).
+		setSource("v2", metav1.ConditionTrue, 0)
 		setConditions(
 			metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: fluxmeta.HealthCheckFailedReason, Message: "timeout waiting for: [Deployment/app/web status: 'Failed']"},
 			metav1.Condition{Type: fluxmeta.ReconcilingCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ProgressingWithRetryReason, Message: "retrying"},
@@ -168,12 +170,10 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
 		kustomization.Spec.Suspend = true
 		Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
-		// Mirror the generation bump: Flux does not observe it while suspended, so the
-		// condition keeps its old generation; also verify with a matching one below.
+		// Flux does not observe the generation bump while suspended, so the condition is
+		// stale and the existing generation rule already reads Pending.
 		hc := reconcileHealthCheck()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
-		Expect(*hc.Status.Message).To(ContainSubstring("Suspended"))
-		Expect(*hc.Status.Message).To(ContainSubstring("ks"))
 		Expect(hc.Status.LastErrorTime).To(BeNil())
 	})
 
@@ -199,6 +199,37 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		Expect(*hc.Status.Message).To(ContainSubstring("not yet observed"))
 	})
 
+	Describe("new source revision that fails to apply", func() {
+		for _, reason := range []string{fluxmeta.HealthCheckFailedReason, fluxmeta.BuildFailedReason} {
+			reason := reason
+			It("stays unhealthy with LastErrorTime ("+reason+")", func() {
+				setSource("v2", metav1.ConditionTrue, 0)
+				setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: reason, Message: "failed"})
+				hc := reconcileHealthCheck()
+				Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+				Expect(hc.Status.LastErrorTime).NotTo(BeNil())
+			})
+		}
+
+		It("is pending while Ready=True is stale, before Flux reconciles the new revision", func() {
+			setSource("v2", metav1.ConditionTrue, 0)
+			setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
+			hc := reconcileHealthCheck()
+			Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+			Expect(hc.Status.LastErrorTime).To(BeNil())
+		})
+	})
+
+	It("reports pending when the Ready condition's observedGeneration is unset", func() {
+		setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"})
+		kustomization.Status.Conditions[0].ObservedGeneration = 0
+		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
+		Expect(kustomization.Generation).To(BeNumerically(">", 0))
+		hc := reconcileHealthCheck()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("not yet observed"))
+	})
+
 	Describe("source revision", func() {
 		ready := metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason, Message: "Applied revision: v1"}
 
@@ -214,7 +245,11 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 		It("reports pending on the wait: false path too", func() {
 			kustomization.Spec.Wait = false
 			Expect(k8sClient.Update(ctx, kustomization)).To(Succeed())
+			// A healthy managed resource, so only the revision check can make this Pending.
+			Expect(k8sClient.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm", Namespace: namespace}})).To(Succeed())
 			setConditions(ready)
+			kustomization.Status.Inventory = &kustomizev1.ResourceInventory{Entries: []kustomizev1.ResourceRef{{ID: namespace + "_cm__ConfigMap", Version: "v1"}}}
+			Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 			setSource("v2", metav1.ConditionTrue, 0)
 			hc := reconcileHealthCheck()
 			Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))

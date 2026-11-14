@@ -96,7 +96,6 @@ rules:
   - buckets
   - externalartifacts
   - gitrepositories
-  - helmcharts
   verbs:
   - get
   - list

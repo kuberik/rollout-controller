@@ -53,7 +53,7 @@ type KustomizationHealthReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
-// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories;gitrepositories;buckets;helmcharts;externalartifacts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories;gitrepositories;buckets;externalartifacts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=*,verbs=get;list;watch
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
 
@@ -101,19 +101,24 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
-	if kustomization.Spec.Suspend {
-		// A suspended Kustomization keeps its last Ready=True, but nothing new is being
-		// applied. That is pending, not a failure: no error time is recorded.
-		healthStatus = rolloutv1alpha1.HealthStatusPending
-		message = fmt.Sprintf("Kustomization pending (Suspended): %s/%s is suspended, so new revisions are not applied", kustomization.Namespace, kustomization.Name)
-	} else if pending, msg := r.checkSourceRevisionApplied(ctx, kustomization); pending {
-		// The Kustomization has not applied the revision its source currently serves.
-		healthStatus = rolloutv1alpha1.HealthStatusPending
-		message = msg
-	} else if kustomization.Spec.Wait {
+	if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
 	} else {
 		healthStatus, message, errorTime, err = r.checkKustomizationHealth(ctx, kustomization)
+	}
+	if err == nil && healthStatus == rolloutv1alpha1.HealthStatusHealthy {
+		// The checks below may only downgrade a would-be Healthy result to Pending. They must
+		// never override Unhealthy (a failing new revision keeps its error and LastErrorTime,
+		// since Flux sets lastAppliedRevision only after apply and health succeed) and Pending
+		// stays Pending.
+		if kustomization.Spec.Suspend {
+			// A suspended Kustomization keeps its last Ready=True while nothing new is applied.
+			healthStatus = rolloutv1alpha1.HealthStatusPending
+			message = fmt.Sprintf("Kustomization pending (Suspended): %s/%s is suspended, so new revisions are not applied", kustomization.Namespace, kustomization.Name)
+		} else if pending, msg := r.checkSourceRevisionApplied(ctx, kustomization); pending {
+			healthStatus = rolloutv1alpha1.HealthStatusPending
+			message = msg
+		}
 	}
 	if err != nil {
 		log.Error(err, "failed to check kustomization health")
@@ -143,12 +148,8 @@ func (r *KustomizationHealthReconciler) checkSourceRevisionApplied(ctx context.C
 	name := fmt.Sprintf("%s %s/%s", ref.Kind, key.Namespace, key.Name)
 
 	src := &unstructured.Unstructured{}
+	// Always read source.toolkit.fluxcd.io/v1 by kind, as Flux itself does; sourceRef.apiVersion is ignored.
 	gv := schema.GroupVersion{Group: sourcev1.GroupVersion.Group, Version: sourcev1.GroupVersion.Version}
-	if ref.APIVersion != "" {
-		if parsed, err := schema.ParseGroupVersion(ref.APIVersion); err == nil {
-			gv = parsed
-		}
-	}
 	src.SetGroupVersionKind(gv.WithKind(ref.Kind))
 	if err := r.Get(ctx, key, src); err != nil {
 		switch {
