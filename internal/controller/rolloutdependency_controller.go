@@ -137,7 +137,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// The provider may have moved past its newest succeeded release (still
-	// baking, failed, rolled back). Consumers must also satisfy what runs now.
+	// baking, failed). Consumers must also satisfy what runs now.
 	var runningVersion *string
 	runningTag := ""
 	if running, version := runningRelease(provider); running != nil {
@@ -195,8 +195,13 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				"Waiting for %s to serve contract %q at a version satisfying release(s) %s (deployed: %s)",
 				providerKey, contract, summarizeTags(blocking), orNone(providedVersion))
 			if runningVersion != nil {
-				satisfied.Message += fmt.Sprintf("; the provider's running release %s (contract version %s) is not a succeeded release; blocked by it: %s",
-					runningTag, orNone(*runningVersion), runningBlockers(blocked, blocking))
+				if *runningVersion == "" {
+					satisfied.Message += fmt.Sprintf("; the provider's running release %s has no readable contract version and is not a succeeded release; blocked by it: %s",
+						runningTag, runningBlockers(blocked, blocking))
+				} else {
+					satisfied.Message += fmt.Sprintf("; the provider's running release %s (contract version %s) is not a succeeded release; blocked by it: %s",
+						runningTag, *runningVersion, runningBlockers(blocked, blocking))
+				}
 			}
 		}
 	}

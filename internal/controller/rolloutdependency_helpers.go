@@ -193,7 +193,7 @@ func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.Deployme
 // A consumer is admitted only when its constraint holds for BOTH the newest
 // succeeded provider entry (providedVersion) and, when it differs, the
 // provider's History[0] (runningVersion). Otherwise a provider that deployed a
-// newer, still-baking (or rolled-back) version would admit consumers against a
+// newer, still-baking (or failed) version would admit consumers against a
 // contract version that is not what is serving traffic. runningVersion is nil
 // when History[0] is the succeeded entry; a pointer to "" when History[0] is a
 // different entry whose contract version is unknown (blocked: unknown is not
