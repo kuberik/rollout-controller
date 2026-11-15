@@ -106,6 +106,12 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		healthStatus, message, errorTime, observations = r.checkKustomizationHealth(ctx, kustomization, now)
 	}
+	// An Unhealthy result always says what failed, even when there is no Ready condition to quote.
+	if healthStatus == rolloutv1alpha1.HealthStatusUnhealthy && len(observations) == 0 {
+		o := observation.State("Kustomization "+kustomization.Namespace+"/"+kustomization.Name, false, now)
+		o.Message = observation.Message(message)
+		observations = []observation.Observation{o}
+	}
 	// Update the health check status
 	return r.writeHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime, observations)
 }
@@ -235,6 +241,7 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 			}
 		case status.TerminatingStatus:
 			pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (terminating)", objMetadata.Namespace, objMetadata.Name))
+			observations = append(observations, resourceObservation(obj, objMetadata, "terminating", false, now))
 		default:
 			unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s: %s)", objMetadata.Namespace, objMetadata.Name, result.Status, result.Message))
 			observations = append(observations, resourceObservation(obj, objMetadata, result.Message, true, now))
@@ -248,7 +255,8 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 	// Real failures win. Errors of our own (unparsable inventory entry, failed GET) mean the
 	// check could not run for that resource, so they are Pending, never a failure witness.
 	if len(unhealthyResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime, observation.Sort(observations)
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime,
+			withKustomizationRow(kustomization, rolloutv1alpha1.HealthStatusUnhealthy, observations, now)
 	}
 
 	if len(errorResources) > 0 {
@@ -256,7 +264,8 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 	}
 
 	if len(pendingResources) > 0 {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil, observation.Sort(observations)
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil,
+			withKustomizationRow(kustomization, rolloutv1alpha1.HealthStatusPending, observations, now)
 	}
 
 	// All resources are healthy, but check if kustomization itself has any pending status
@@ -324,6 +333,18 @@ func workloadReplicas(obj *unstructured.Unstructured, gk schema.GroupKind, faile
 		return ready, total, "ready", true
 	}
 	return updated, total, "updated", true
+}
+
+// withKustomizationRow sorts and caps the per-resource rows and puts the Kustomization's own
+// row first when its Ready condition is not True, so an apply error is shown next to the
+// resources that are still rolling. The total stays within observation.Max.
+func withKustomizationRow(kustomization *kustomizev1.Kustomization, health rolloutv1alpha1.HealthStatus, rows []observation.Observation, now metav1.Time) []observation.Observation {
+	ks := readyObservations(kustomization, health, now)
+	rows = observation.Sort(rows)
+	if len(ks) > 0 && len(rows) > observation.Max-len(ks) {
+		rows = rows[:observation.Max-len(ks)]
+	}
+	return append(ks, rows...)
 }
 
 // readyObservations is the wait: true counterpart: the Kustomization's own Ready condition

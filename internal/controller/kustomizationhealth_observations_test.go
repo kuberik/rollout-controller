@@ -314,6 +314,47 @@ var _ = Describe("KustomizationHealth observations", func() {
 		Expect(o.Message).To(Equal("Reconciliation in progress"))
 	})
 
+	It("shows the apply error next to a Deployment that is still rolling", func() {
+		createDeployment("api", 3, appsv1.DeploymentStatus{
+			Replicas: 3, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 2, ObservedGeneration: 1,
+		})
+		setInventory(deployID("api"))
+		setReady(metav1.ConditionFalse, fluxmeta.ReconciliationFailedReason, "Service/app/web dry-run failed: field is immutable",
+			metav1.Condition{Type: fluxmeta.ReconcilingCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ProgressingWithRetryReason, Message: "retrying"})
+		hc := reconcileHC()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(hc.Status.Observations).To(HaveLen(2))
+		ks, dep := hc.Status.Observations[0], hc.Status.Observations[1]
+		Expect(ks.Name).To(Equal("Kustomization " + namespace + "/ks"))
+		Expect(ks.Message).To(Equal("Service/app/web dry-run failed: field is immutable"))
+		Expect(ks.Healthy).To(BeNil())
+		Expect(dep.Name).To(Equal("Deployment " + namespace + "/api"))
+		Expect(dep.Unit).To(Equal("updated"))
+	})
+
+	It("keeps the Kustomization row inside the cap of 16", func() {
+		var ids []object.ObjMetadata
+		for i := 0; i < 20; i++ {
+			name := fmt.Sprintf("d%02d", i)
+			createDeployment(name, 3, failedStatus(0, "stalled"))
+			ids = append(ids, deployID(name))
+		}
+		setInventory(ids...)
+		setReady(metav1.ConditionFalse, fluxmeta.ReconciliationFailedReason, "apply failed")
+		hc := reconcileHC()
+		Expect(hc.Status.Observations).To(HaveLen(16))
+		Expect(hc.Status.Observations[0].Name).To(Equal("Kustomization " + namespace + "/ks"))
+		Expect(*hc.Status.Observations[0].Healthy).To(BeFalse())
+	})
+
+	It("always carries a row when Unhealthy, even with no Ready condition", func() {
+		createDeployment("web", 3, failedStatus(0, "stalled"))
+		setInventory(deployID("web"))
+		hc := reconcileHC()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(hc.Status.Observations).NotTo(BeEmpty())
+	})
+
 	It("writes no observations when the Kustomization and its resources are healthy", func() {
 		createDeployment("web", 1, currentStatus())
 		setInventory(deployID("web"))
