@@ -146,11 +146,11 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 
-			By("verifying that the HealthCheck status was updated to unhealthy")
+			By("verifying that the HealthCheck status was updated to pending")
 			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("annotation"))
 		})
@@ -172,11 +172,11 @@ var _ = Describe("KustomizationHealth Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
 
-			By("verifying that the HealthCheck status was updated to unhealthy")
+			By("verifying that the HealthCheck status was updated to pending")
 			updatedHealthCheck := &rolloutv1alpha1.HealthCheck{}
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("not found"))
 		})
