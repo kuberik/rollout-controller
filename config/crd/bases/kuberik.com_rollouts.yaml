@@ -550,6 +550,18 @@ spec:
                         This is when the bake process completed (either successfully or with failure).
                       format: date-time
                       type: string
+                    bakeHeldDuration:
+                      description: |-
+                        BakeHeldDuration is the total time the bake clock was stopped, excluding
+                        the hold in progress (see BakeHoldStartTime). Held time does not count
+                        toward the bake time.
+                      type: string
+                    bakeHoldStartTime:
+                      description: |-
+                        BakeHoldStartTime is when the bake clock was stopped because a selected
+                        health check was not Healthy. It is nil while the bake clock is running.
+                      format: date-time
+                      type: string
                     bakeStartTime:
                       description: |-
                         BakeStartTime is the time when the bake period started for this deployment
@@ -623,6 +635,14 @@ spec:
                                   description: Limit is the boundary for a Threshold
                                     observation, as a decimal string.
                                   pattern: ^-?[0-9]+(\.[0-9]+)?$
+                                  type: string
+                                message:
+                                  description: |-
+                                    Message says what this observation is about when Name alone does not: the
+                                    failing resource's status message, the alert's identifying labels, the
+                                    monitor's alerting groups. One line of plain text. Consumers show it
+                                    verbatim and never parse it.
+                                  maxLength: 256
                                   type: string
                                 name:
                                   description: Name of the observed quantity, shown

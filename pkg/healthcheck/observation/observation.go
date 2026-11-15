@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,6 +87,54 @@ func Threshold(name string, value, limit float64, direction kuberikv1alpha1.Heal
 		Healthy:      healthy,
 		ObservedTime: &now,
 	}, true
+}
+
+// Ratio is a value out of a total (5 of 6 replicas ready). The verdict is the
+// provider's own and may be nil when there is none yet. If value or total
+// cannot be rendered as a decimal (NaN, Inf) the result degrades to a State
+// observation with the same verdict, so it always satisfies the CRD.
+func Ratio(name string, value, total float64, unit string, healthy *bool, now metav1.Time) Observation {
+	v, ok1 := FormatDecimal(value)
+	t, ok2 := FormatDecimal(total)
+	if !ok1 || !ok2 {
+		return Observation{Name: name, Kind: kuberikv1alpha1.ObservationKindState, Healthy: healthy, ObservedTime: &now}
+	}
+	return Observation{
+		Name:         name,
+		Kind:         kuberikv1alpha1.ObservationKindRatio,
+		Value:        v,
+		Total:        t,
+		Unit:         unit,
+		Healthy:      healthy,
+		ObservedTime: &now,
+	}
+}
+
+// MaxMessageBytes mirrors the +kubebuilder:validation:MaxLength on
+// HealthCheckObservation.Message.
+const MaxMessageBytes = 256
+
+// Message makes s fit HealthCheckObservation.Message: whitespace runs
+// (including newlines) collapse to one space, the ends are trimmed, and text
+// longer than MaxMessageBytes is cut on a rune boundary and ends with "…".
+// The result never exceeds MaxMessageBytes bytes.
+func Message(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= MaxMessageBytes {
+		return s
+	}
+	const ellipsis = "…"
+	cut := MaxMessageBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.TrimRight(s[:cut], " ") + ellipsis
+}
+
+// WithMessage returns o with Message set to msg normalised by Message.
+func WithMessage(o Observation, msg string) Observation {
+	o.Message = Message(msg)
+	return o
 }
 
 // ParseDirection reads "Above"/"Below" (case-insensitive, trimmed).

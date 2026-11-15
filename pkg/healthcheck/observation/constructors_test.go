@@ -2,7 +2,9 @@ package observation
 
 import (
 	"math"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -46,5 +48,57 @@ func TestThreshold(t *testing.T) {
 		if _, ok := Threshold("x", bad[0], bad[1], "", "", "", nil, now); ok {
 			t.Errorf("Threshold(%v) should fail", bad)
 		}
+	}
+}
+
+func TestRatio(t *testing.T) {
+	now := metav1.Now()
+	bad := false
+	o := Ratio("Deployment a/b", 2, 3, "ready", &bad, now)
+	if o.Kind != kuberikv1alpha1.ObservationKindRatio || o.Value != "2" || o.Total != "3" ||
+		o.Unit != "ready" || o.Healthy != &bad || o.ObservedTime == nil {
+		t.Errorf("Ratio = %+v", o)
+	}
+	if o := Ratio("x", 1, 2, "", nil, now); o.Healthy != nil {
+		t.Errorf("nil verdict must stay nil: %+v", o)
+	}
+	for _, o := range []Observation{Ratio("x", math.NaN(), 1, "", &bad, now), Ratio("x", 1, math.Inf(1), "", &bad, now)} {
+		if o.Kind != kuberikv1alpha1.ObservationKindState || o.Value != "" || o.Total != "" || o.Healthy != &bad {
+			t.Errorf("non-finite must degrade to State: %+v", o)
+		}
+	}
+}
+
+func TestMessage(t *testing.T) {
+	if got := Message("  a\n\tb   c \r\n"); got != "a b c" {
+		t.Errorf("collapse = %q", got)
+	}
+	if got := Message("short"); got != "short" {
+		t.Errorf("short = %q", got)
+	}
+	exact := strings.Repeat("a", MaxMessageBytes)
+	if got := Message(exact); got != exact {
+		t.Errorf("exactly max must be untouched, len %d", len(got))
+	}
+	long := Message(strings.Repeat("a", 1000))
+	if len(long) != MaxMessageBytes || !strings.HasSuffix(long, "…") {
+		t.Errorf("ascii cut: len %d suffix %q", len(long), long[len(long)-4:])
+	}
+	// multi-byte runes: the cut must land on a rune boundary.
+	for pad := 0; pad < 4; pad++ {
+		got := Message(strings.Repeat("a", pad) + strings.Repeat("é", 300))
+		if len(got) > MaxMessageBytes || !utf8.ValidString(got) || !strings.HasSuffix(got, "…") {
+			t.Errorf("pad %d: len %d valid %v", pad, len(got), utf8.ValidString(got))
+		}
+	}
+	if got := Message(strings.Repeat("日", 200)); len(got) > MaxMessageBytes || !utf8.ValidString(got) {
+		t.Errorf("cjk: len %d", len(got))
+	}
+}
+
+func TestWithMessage(t *testing.T) {
+	o := WithMessage(State("x", true, metav1.Now()), "a\nb")
+	if o.Message != "a b" || o.Name != "x" {
+		t.Errorf("WithMessage = %+v", o)
 	}
 }

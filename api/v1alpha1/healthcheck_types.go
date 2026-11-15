@@ -126,6 +126,14 @@ type HealthCheckObservation struct {
 	// +optional
 	Window string `json:"window,omitempty"`
 
+	// Message says what this observation is about when Name alone does not: the
+	// failing resource's status message, the alert's identifying labels, the
+	// monitor's alerting groups. One line of plain text. Consumers show it
+	// verbatim and never parse it.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Message string `json:"message,omitempty"`
+
 	// Healthy says whether this observation alone is within bounds, so a consumer
 	// can mark the offending one when several are listed.
 	// +optional

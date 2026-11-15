@@ -25,6 +25,7 @@ import (
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -77,17 +78,16 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Get the referenced kustomization from annotations
 	kustomizationRef, err := r.getKustomizationReference(healthCheck)
 	if err != nil {
+		// The check cannot run: that is not evidence the application is unhealthy.
 		log.Error(err, "failed to get kustomization reference")
-		now := metav1.NewTime(r.Clock.Now())
-		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, err.Error(), &now)
+		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusPending, err.Error(), nil)
 	}
 
 	// Get the kustomization
 	kustomization := &kustomizev1.Kustomization{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: kustomizationRef.Namespace, Name: kustomizationRef.Name}, kustomization); err != nil {
 		log.Error(err, "unable to fetch Kustomization", "namespace", kustomizationRef.Namespace, "name", kustomizationRef.Name)
-		now := metav1.NewTime(r.Clock.Now())
-		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization not found: %v", err), &now)
+		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization not found: %v", err), nil)
 	}
 
 	// wait: true is only usable with rollouts when kustomize-controller runs with the
@@ -98,13 +98,22 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	var healthStatus rolloutv1alpha1.HealthStatus
 	var message string
 	var errorTime *metav1.Time
+	var observations []observation.Observation
+	now := metav1.NewTime(r.Clock.Now())
 	if kustomization.Spec.Wait {
 		healthStatus, message, errorTime = checkKustomizationReadyHealth(kustomization)
+		observations = readyObservations(kustomization, healthStatus, now)
 	} else {
-		healthStatus, message, errorTime = r.checkKustomizationHealth(ctx, kustomization)
+		healthStatus, message, errorTime, observations = r.checkKustomizationHealth(ctx, kustomization, now)
+	}
+	// An Unhealthy result always says what failed, even when there is no Ready condition to quote.
+	if healthStatus == rolloutv1alpha1.HealthStatusUnhealthy && len(observations) == 0 {
+		o := observation.State("Kustomization "+kustomization.Namespace+"/"+kustomization.Name, false, now)
+		o.Message = observation.Message(message)
+		observations = []observation.Observation{o}
 	}
 	// Update the health check status
-	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime)
+	return r.writeHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime, observations)
 }
 
 // KustomizationReference represents a reference to a kustomization
@@ -151,31 +160,38 @@ func (r *KustomizationHealthReconciler) getKustomizationReference(healthCheck *r
 // Returns the health status, a human-readable message, the latest failure condition timestamp
 // (used by the caller as LastErrorTime so the rollout controller can determine whether the failure
 // is pre- or post-retry).
-func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization) (rolloutv1alpha1.HealthStatus, string, *metav1.Time) {
+// The fourth result lists one observation per managed resource that is not
+// Current, for the dashboard to show which resource is holding the check back.
+func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Context, kustomization *kustomizev1.Kustomization, now metav1.Time) (rolloutv1alpha1.HealthStatus, string, *metav1.Time, []observation.Observation) {
 	// First, check the kustomization resource itself
 	kustomizationHealth, kustomizationMessage, kustomizationErrorTime, err := r.checkKustomizationResourceHealth(kustomization)
 	if err != nil {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Kustomization health check failed: %v", err), nil
+		// The controller failed to evaluate; that says nothing about the application.
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization health check failed: %v", err), nil, nil
 	}
 
 	// If kustomization itself is unhealthy, return that status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusUnhealthy {
-		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), kustomizationErrorTime
+		return kustomizationHealth, fmt.Sprintf("Kustomization unhealthy: %s", kustomizationMessage), kustomizationErrorTime,
+			readyObservations(kustomization, kustomizationHealth, now)
 	}
 
 	// Check if kustomization has inventory
 	if kustomization.Status.Inventory == nil || len(kustomization.Status.Inventory.Entries) == 0 {
 		// If kustomization is healthy but has no inventory, it might be pending
 		if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
+			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil,
+				readyObservations(kustomization, rolloutv1alpha1.HealthStatusPending, now)
 		}
-		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil
+		return rolloutv1alpha1.HealthStatusPending, "Kustomization has no managed resources", nil,
+			readyObservations(kustomization, rolloutv1alpha1.HealthStatusPending, now)
 	}
 
 	var unhealthyResources []string
 	var pendingResources []string
 	var errorResources []string
 	var latestErrorTime *metav1.Time
+	var observations []observation.Observation
 
 	// Check each managed resource
 	for _, entry := range kustomization.Status.Inventory.Entries {
@@ -216,15 +232,19 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 			// Resource is healthy
 		case status.InProgressStatus:
 			pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (%s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			observations = append(observations, resourceObservation(obj, objMetadata, result.Message, false, now))
 		case status.FailedStatus:
 			unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s)", objMetadata.Namespace, objMetadata.Name, result.Message))
+			observations = append(observations, resourceObservation(obj, objMetadata, result.Message, true, now))
 			if t := getFailureConditionTime(obj); t != nil && (latestErrorTime == nil || t.Time.After(latestErrorTime.Time)) {
 				latestErrorTime = t
 			}
 		case status.TerminatingStatus:
 			pendingResources = append(pendingResources, fmt.Sprintf("%s/%s (terminating)", objMetadata.Namespace, objMetadata.Name))
+			observations = append(observations, resourceObservation(obj, objMetadata, "terminating", false, now))
 		default:
 			unhealthyResources = append(unhealthyResources, fmt.Sprintf("%s/%s (%s: %s)", objMetadata.Namespace, objMetadata.Name, result.Status, result.Message))
+			observations = append(observations, resourceObservation(obj, objMetadata, result.Message, true, now))
 			if t := getFailureConditionTime(obj); t != nil && (latestErrorTime == nil || t.Time.After(latestErrorTime.Time)) {
 				latestErrorTime = t
 			}
@@ -232,24 +252,118 @@ func (r *KustomizationHealthReconciler) checkKustomizationHealth(ctx context.Con
 	}
 
 	// Determine overall health status based on both kustomization and managed resources
-	if len(errorResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), latestErrorTime
+	// Real failures win. Errors of our own (unparsable inventory entry, failed GET) mean the
+	// check could not run for that resource, so they are Pending, never a failure witness.
+	if len(unhealthyResources) > 0 {
+		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime,
+			withKustomizationRow(kustomization, rolloutv1alpha1.HealthStatusUnhealthy, observations, now)
 	}
 
-	if len(unhealthyResources) > 0 {
-		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Unhealthy resources: %s", strings.Join(unhealthyResources, "; ")), latestErrorTime
+	if len(errorResources) > 0 {
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Errors: %s", strings.Join(errorResources, "; ")), nil, nil
 	}
 
 	if len(pendingResources) > 0 {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Pending resources: %s", strings.Join(pendingResources, "; ")), nil,
+			withKustomizationRow(kustomization, rolloutv1alpha1.HealthStatusPending, observations, now)
 	}
 
 	// All resources are healthy, but check if kustomization itself has any pending status
 	if kustomizationHealth == rolloutv1alpha1.HealthStatusPending {
-		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil
+		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: %s", kustomizationMessage), nil,
+			readyObservations(kustomization, rolloutv1alpha1.HealthStatusPending, now)
 	}
 
-	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil
+	return rolloutv1alpha1.HealthStatusHealthy, "Kustomization and all managed resources are healthy", nil, nil
+}
+
+// resourceObservation describes one managed resource that is not Current. Failed resources
+// are unhealthy; in-progress ones carry no verdict. Workloads draw as a ratio of replicas,
+// everything else as a bare state.
+func resourceObservation(obj *unstructured.Unstructured, id object.ObjMetadata, msg string, failed bool, now metav1.Time) observation.Observation {
+	kind := id.GroupKind.Kind
+	name := kind + " " + id.Name
+	if id.Namespace != "" {
+		name = kind + " " + id.Namespace + "/" + id.Name
+	}
+	var healthy *bool
+	if failed {
+		f := false
+		healthy = &f
+	}
+	var o observation.Observation
+	if value, total, unit, ok := workloadReplicas(obj, id.GroupKind, failed); ok {
+		o = observation.Ratio(name, float64(value), float64(total), unit, healthy, now)
+	} else {
+		o = observation.State(name, false, now)
+		o.Healthy = healthy
+	}
+	o.Message = observation.Message(msg)
+	return o
+}
+
+// workloadReplicas reads replica counts from the built-in workload kinds. A progressing
+// workload reports updated replicas; a failed one reports ready replicas.
+func workloadReplicas(obj *unstructured.Unstructured, gk schema.GroupKind, failed bool) (value, total int64, unit string, ok bool) {
+	if gk.Group != "apps" {
+		return 0, 0, "", false
+	}
+	num := func(fields ...string) int64 {
+		n, _, _ := unstructured.NestedInt64(obj.Object, fields...)
+		return n
+	}
+	var ready, updated int64
+	switch gk.Kind {
+	case "Deployment", "StatefulSet", "ReplicaSet":
+		total = 1
+		if n, found, _ := unstructured.NestedInt64(obj.Object, "spec", "replicas"); found {
+			total = n
+		}
+		ready, updated = num("status", "readyReplicas"), num("status", "updatedReplicas")
+		if gk.Kind == "ReplicaSet" {
+			updated = ready
+		}
+	case "DaemonSet":
+		total = num("status", "desiredNumberScheduled")
+		ready, updated = num("status", "numberReady"), num("status", "updatedNumberScheduled")
+	default:
+		return 0, 0, "", false
+	}
+	if failed {
+		return ready, total, "ready", true
+	}
+	return updated, total, "updated", true
+}
+
+// withKustomizationRow sorts and caps the per-resource rows and puts the Kustomization's own
+// row first when its Ready condition is not True, so an apply error is shown next to the
+// resources that are still rolling. The total stays within observation.Max.
+func withKustomizationRow(kustomization *kustomizev1.Kustomization, health rolloutv1alpha1.HealthStatus, rows []observation.Observation, now metav1.Time) []observation.Observation {
+	ks := readyObservations(kustomization, health, now)
+	rows = observation.Sort(rows)
+	if len(ks) > 0 && len(rows) > observation.Max-len(ks) {
+		rows = rows[:observation.Max-len(ks)]
+	}
+	return append(ks, rows...)
+}
+
+// readyObservations is the wait: true counterpart: the Kustomization's own Ready condition
+// is all there is to show while it is not ready.
+func readyObservations(kustomization *kustomizev1.Kustomization, health rolloutv1alpha1.HealthStatus, now metav1.Time) []observation.Observation {
+	if health == rolloutv1alpha1.HealthStatusHealthy {
+		return nil
+	}
+	ready := meta.FindStatusCondition(kustomization.Status.Conditions, fluxmeta.ReadyCondition)
+	if ready == nil || ready.Status == metav1.ConditionTrue ||
+		(ready.ObservedGeneration != 0 && ready.ObservedGeneration < kustomization.Generation) {
+		return nil
+	}
+	o := observation.State("Kustomization "+kustomization.Namespace+"/"+kustomization.Name, false, now)
+	if health != rolloutv1alpha1.HealthStatusUnhealthy {
+		o.Healthy = nil
+	}
+	o.Message = observation.Message(ready.Message)
+	return []observation.Observation{o}
 }
 
 // checkKustomizationReadyHealth derives health from the Kustomization's Ready condition alone.
@@ -369,6 +483,12 @@ func getFailureConditionTime(obj *unstructured.Unstructured) *metav1.Time {
 // statuses). Using the real condition time lets the rollout controller compare it against
 // deployment/retry time without needing staleness logic here.
 func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string, errorTime *metav1.Time) (ctrl.Result, error) {
+	return r.writeHealthCheckStatus(ctx, healthCheck, newStatus, newMessage, errorTime, nil)
+}
+
+// writeHealthCheckStatus is updateHealthCheckStatus plus status.observations, merged so a
+// steady state keeps its observedTime and does not churn writes.
+func (r *KustomizationHealthReconciler) writeHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string, errorTime *metav1.Time, observations []observation.Observation) (ctrl.Result, error) {
 	now := metav1.NewTime(r.Clock.Now())
 
 	// Check if status has changed
@@ -377,6 +497,11 @@ func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Cont
 	// Update status fields
 	healthCheck.Status.Status = newStatus
 	healthCheck.Status.Message = &newMessage
+	merged, _ := observation.Merge(healthCheck.Status.Observations, observations)
+	if len(merged) == 0 {
+		merged = nil
+	}
+	healthCheck.Status.Observations = merged
 
 	// Update LastChangeTime only if status changed
 	if statusChanged {

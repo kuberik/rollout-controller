@@ -430,6 +430,17 @@ type DeploymentHistoryEntry struct {
 	// +optional
 	BakeStartTime *metav1.Time `json:"bakeStartTime,omitempty"`
 
+	// BakeHoldStartTime is when the bake clock was stopped because a selected
+	// health check was not Healthy. It is nil while the bake clock is running.
+	// +optional
+	BakeHoldStartTime *metav1.Time `json:"bakeHoldStartTime,omitempty"`
+
+	// BakeHeldDuration is the total time the bake clock was stopped, excluding
+	// the hold in progress (see BakeHoldStartTime). Held time does not count
+	// toward the bake time.
+	// +optional
+	BakeHeldDuration *metav1.Duration `json:"bakeHeldDuration,omitempty"`
+
 	// BakeEndTime is the time when the bake period ended for this deployment
 	// This is when the bake process completed (either successfully or with failure).
 	// +optional
