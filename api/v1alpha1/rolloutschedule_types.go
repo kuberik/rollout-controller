@@ -124,7 +124,7 @@ type RolloutScheduleSpec struct {
 type RolloutScheduleStatus struct {
 	// Active indicates if the schedule is currently active (any rule matches).
 	// +optional
-	Active bool `json:"active,omitempty"`
+	Active bool `json:"active"`
 
 	// ActiveRules is a list of rule names that are currently active.
 	// +optional
