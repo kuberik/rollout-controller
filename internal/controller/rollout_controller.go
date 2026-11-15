@@ -1488,6 +1488,8 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				log.Error(err, "Failed to update rollout status")
 				return ctrl.Result{}, err
 			}
+			// The update refreshed rollout from the server response; re-point at the live entry.
+			currentEntry = &rollout.Status.History[0]
 		} else {
 			log.Info("Waiting for health checks to become healthy before starting bake")
 			// Calculate requeue time based on deployTimeout if set
