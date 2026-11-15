@@ -218,6 +218,84 @@ var _ = Describe("Bake completion requires Healthy health checks", func() {
 		fakeClock.Add(time.Second)
 		Expect(*step().BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
 	})
+
+	patchEntry := func(f func(e *rolloutv1alpha1.DeploymentHistoryEntry)) {
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		f(&rollout.Status.History[0])
+		Expect(k8sClient.Status().Update(ctx, rollout)).To(Succeed())
+	}
+
+	It("starts and completes the bake in one call when there is no bakeTime and all checks are Healthy", func() {
+		seed(nil, nil, false)
+		patchEntry(func(e *rolloutv1alpha1.DeploymentHistoryEntry) {
+			e.BakeStartTime = nil
+			e.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusDeploying)
+		})
+		e := step()
+		Expect(e.BakeStartTime).NotTo(BeNil())
+		Expect(*e.BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusSucceeded))
+		Expect(e.BakeEndTime).NotTo(BeNil())
+	})
+
+	holdFields := func(e *rolloutv1alpha1.DeploymentHistoryEntry) {
+		e.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
+		e.BakeHoldStartTime = &metav1.Time{Time: fakeClock.Now()}
+		e.BakeHeldDuration = &metav1.Duration{Duration: time.Minute}
+	}
+
+	It("clears the hold fields on retry", func() {
+		seed(&metav1.Duration{Duration: bakeTime}, nil, false)
+		patchEntry(holdFields)
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		rollout.Annotations = map[string]string{rolloutv1alpha1.RetryAnnotation: "true"}
+		Expect(k8sClient.Update(ctx, rollout)).To(Succeed())
+		Expect(reconciler.handleRetryAnnotation(ctx, rollout, testLogger())).To(Succeed())
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		Expect(rollout.Status.History[0].BakeHoldStartTime).To(BeNil())
+		Expect(rollout.Status.History[0].BakeHeldDuration).To(BeNil())
+	})
+
+	It("clears the hold fields when resetting a failed bake", func() {
+		seed(&metav1.Duration{Duration: bakeTime}, nil, false)
+		patchEntry(holdFields)
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		Expect(reconciler.resetFailedBakeStatus(ctx, rollout)).To(Succeed())
+		Expect(k8sClient.Get(ctx, key, rollout)).To(Succeed())
+		Expect(rollout.Status.History[0].BakeHoldStartTime).To(BeNil())
+		Expect(rollout.Status.History[0].BakeHeldDuration).To(BeNil())
+	})
+
+	Describe("requeue while the bake is held", func() {
+		heldRollout := func(dt *metav1.Duration, recovery bool) *rolloutv1alpha1.Rollout {
+			r := &rolloutv1alpha1.Rollout{Spec: rolloutv1alpha1.RolloutSpec{DeployTimeout: dt}}
+			r.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
+				BakeStartTime:     &metav1.Time{Time: fakeClock.Now().Add(-time.Hour)},
+				BakeHoldStartTime: &metav1.Time{Time: fakeClock.Now()},
+			}}
+			if recovery {
+				meta.SetStatusCondition(&r.Status.Conditions, metav1.Condition{
+					Type: rolloutv1alpha1.RolloutBakeFailureDisabled, Status: metav1.ConditionTrue, Reason: "Recovery",
+				})
+			}
+			return r
+		}
+
+		It("polls every 10s at most, shrinks to the deadline, and floors at 1s", func() {
+			Expect(reconciler.calculateRequeueTime(heldRollout(nil, false))).To(Equal(10 * time.Second))
+			Expect(reconciler.calculateRequeueTime(heldRollout(&metav1.Duration{Duration: time.Hour}, false))).To(Equal(10 * time.Second))
+			dt := &metav1.Duration{Duration: 4 * time.Second}
+			Expect(reconciler.calculateRequeueTime(heldRollout(dt, false))).To(Equal(4 * time.Second))
+			r := heldRollout(dt, false)
+			fakeClock.Add(4 * time.Second)
+			Expect(reconciler.calculateRequeueTime(r)).To(Equal(time.Second))
+		})
+
+		It("backs off to 30s past the deadline in recovery mode", func() {
+			r := heldRollout(&metav1.Duration{Duration: 4 * time.Second}, true)
+			fakeClock.Add(time.Minute)
+			Expect(reconciler.calculateRequeueTime(r)).To(Equal(30 * time.Second))
+		})
+	})
 })
 
 func healthCheckKey(hc *rolloutv1alpha1.HealthCheck) types.NamespacedName {
