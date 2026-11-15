@@ -647,17 +647,18 @@ Without the gate, a Kustomization with `wait: true` stays stuck on a failing rev
 
 ### Benefits
 
-- **GitOps Integration**: Leverages Flux's image automation for consistent, auditable release management
-- **Separation of Concerns**: Image discovery is handled by Flux, deployment by the rollout controller
-- **Policy-Driven**: Uses Flux's powerful image policy engine for release selection
-- **Observability**: Integrates with Flux's monitoring and alerting capabilities
+- **GitOps Integration**: Deploys through Flux sources (OCIRepository, GitRepository, Bucket) and Kustomizations for auditable releases
+- **Separation of Concerns**: Release discovery is handled by a ReleaseSource (release-controller, which scans the registry itself), deployment by the rollout controller
+- **Policy-Driven**: A ReleaseSource `policy` selects which tags are release candidates
+- **Observability**: Reads Flux source and Kustomization status for deploy health
 
 ## Installation
 
 ### Prerequisites
 
 - Kubernetes cluster
-- Flux v2 installed with image-reflector-controller
+- Flux 2.6 or later with the source and kustomize controllers (any Flux source works). image-reflector-controller is optional: it is only needed if a ReleaseSource reads an existing ImagePolicy through `oci.imagePolicyRef`
+- release-controller installed, for ReleaseSource releases
 - kubectl configured
 
 ### Install the Controller
@@ -686,7 +687,7 @@ kubectl apply -k config/default/
 ## Usage Examples
 
 See the `config/samples/` directory for complete examples including:
-- `v1alpha1_imagerepository.yaml` - Flux ImageRepository example
+- `v1alpha1_imagerepository.yaml` - Flux ImageRepository example (optional, only for the ImagePolicy migration path)
 - `v1alpha1_releasesource.yaml` - ReleaseSource samples (`oci.image` + `policy`)
 - `v1alpha1_releasesource_from_imagepolicy.yaml` - ReleaseSource migrating a Flux ImagePolicy (`oci.imagePolicyRef`)
 - `v1alpha1_imagepolicy.yaml` - Flux ImagePolicy example, referenced by the migration sample
