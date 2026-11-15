@@ -657,7 +657,7 @@ Without the gate, a Kustomization with `wait: true` stays stuck on a failing rev
 ### Prerequisites
 
 - Kubernetes cluster
-- Flux 2.6 or later with the source and kustomize controllers (any Flux source works). The Flux image automation CRDs are optional: they are only needed if a ReleaseSource reads an existing ImagePolicy through `oci.imagePolicyRef`, which requires Flux 2.7 or later (`image.toolkit.fluxcd.io/v1`). release-controller reads only the ImagePolicy spec, so image-reflector-controller itself does not have to run
+- Flux 2.6 or later with the source and kustomize controllers (any Flux source works). The Flux image automation CRDs are optional: they are only needed if a ReleaseSource reads an existing ImagePolicy through `oci.imagePolicyRef`, which requires Flux 2.7 or later (`image.toolkit.fluxcd.io/v1`). release-controller reads only the spec of the ImagePolicy and its ImageRepository (never status), so image-reflector-controller itself does not have to run
 - release-controller installed, for ReleaseSource releases
 - kubectl configured
 
