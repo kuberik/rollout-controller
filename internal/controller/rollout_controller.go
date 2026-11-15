@@ -1688,6 +1688,10 @@ func (r *RolloutReconciler) calculateRequeueTime(rollout *rolloutv1alpha1.Rollou
 			}
 		}
 		if requeueAfter <= 0 {
+			// Past the deadline in recovery mode: failure is suppressed, so poll slowly.
+			if meta.IsStatusConditionTrue(rollout.Status.Conditions, rolloutv1alpha1.RolloutBakeFailureDisabled) {
+				return 30 * time.Second
+			}
 			return 1 * time.Second
 		}
 		return requeueAfter
