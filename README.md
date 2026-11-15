@@ -431,7 +431,7 @@ The Rollout Controller manages application deployments by:
 - Reading available releases from a release-controller `ReleaseSource` catalogue
 - Evaluating deployment gates
 - Managing bake time for health checks
-- Copying releases from source to target repositories
+- Patching annotated OCIRepositories and Kustomizations to the selected release
 
 ## Release Sources
 
@@ -649,15 +649,15 @@ Without the gate, a Kustomization with `wait: true` stays stuck on a failing rev
 
 - **GitOps Integration**: Deploys through Flux sources (OCIRepository, GitRepository, Bucket) and Kustomizations for auditable releases
 - **Separation of Concerns**: Release discovery is handled by a ReleaseSource (release-controller, which scans the registry itself), deployment by the rollout controller
-- **Policy-Driven**: A ReleaseSource `policy` selects which tags are release candidates
-- **Observability**: Reads Flux source and Kustomization status for deploy health
+- **Policy-Driven**: A ReleaseSource's `spec.oci.policy` (with optional `filterTags`) decides which tags are releases and their order
+- **Observability**: Reads Kustomization status (Ready and per-resource health) for deploy health
 
 ## Installation
 
 ### Prerequisites
 
 - Kubernetes cluster
-- Flux 2.6 or later with the source and kustomize controllers (any Flux source works). image-reflector-controller is optional: it is only needed if a ReleaseSource reads an existing ImagePolicy through `oci.imagePolicyRef`
+- Flux 2.6 or later with the source and kustomize controllers (any Flux source works). The Flux image automation CRDs are optional: they are only needed if a ReleaseSource reads an existing ImagePolicy through `oci.imagePolicyRef`, which requires Flux 2.7 or later (`image.toolkit.fluxcd.io/v1`). release-controller reads only the ImagePolicy spec, so image-reflector-controller itself does not have to run
 - release-controller installed, for ReleaseSource releases
 - kubectl configured
 
@@ -686,7 +686,7 @@ kubectl apply -k config/default/
 
 ## Usage Examples
 
-See the `config/samples/` directory for complete examples including:
+See the `config/samples/` directory for complete examples including the following. `config/samples/kustomization.yaml` also includes the Flux ImagePolicy and ImageRepository samples, so applying the whole directory needs the Flux image automation CRDs installed:
 - `v1alpha1_imagerepository.yaml` - Flux ImageRepository example (optional, only for the ImagePolicy migration path)
 - `v1alpha1_releasesource.yaml` - ReleaseSource samples (`oci.image` + `policy`)
 - `v1alpha1_releasesource_from_imagepolicy.yaml` - ReleaseSource migrating a Flux ImagePolicy (`oci.imagePolicyRef`)
