@@ -446,6 +446,15 @@ func (in *DeploymentHistoryEntry) DeepCopyInto(out *DeploymentHistoryEntry) {
 		in, out := &in.BakeStartTime, &out.BakeStartTime
 		*out = (*in).DeepCopy()
 	}
+	if in.BakeHoldStartTime != nil {
+		in, out := &in.BakeHoldStartTime, &out.BakeHoldStartTime
+		*out = (*in).DeepCopy()
+	}
+	if in.BakeHeldDuration != nil {
+		in, out := &in.BakeHeldDuration, &out.BakeHeldDuration
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.BakeEndTime != nil {
 		in, out := &in.BakeEndTime, &out.BakeEndTime
 		*out = (*in).DeepCopy()
