@@ -363,7 +363,9 @@ var _ = Describe("KustomizationHealth observations", func() {
 		o := hc.Status.Observations[0]
 		Expect(o.Name).To(Equal("Kustomization " + namespace + "/ks"))
 		Expect(o.Kind).To(Equal(rolloutv1alpha1.ObservationKindState))
+		Expect(o.Healthy).NotTo(BeNil())
 		Expect(*o.Healthy).To(BeFalse())
+		Expect(o.Message).To(ContainSubstring("stalled without a Ready condition"))
 	})
 
 	It("writes a State row without a verdict for a resource that is terminating", func() {
