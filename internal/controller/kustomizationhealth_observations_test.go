@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cli-utils/pkg/object"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -348,11 +349,46 @@ var _ = Describe("KustomizationHealth observations", func() {
 	})
 
 	It("always carries a row when Unhealthy, even with no Ready condition", func() {
-		createDeployment("web", 3, failedStatus(0, "stalled"))
-		setInventory(deployID("web"))
+		// Stalled=True makes kstatus report Failed; with no Ready condition and no managed
+		// resource, the only row that can exist is the one Reconcile adds itself.
+		kustomization.Status.ObservedGeneration = kustomization.Generation
+		kustomization.Status.Conditions = []metav1.Condition{{
+			Type: "Stalled", Status: metav1.ConditionTrue, Reason: "BuildFailed", Message: "stalled without a Ready condition",
+			ObservedGeneration: kustomization.Generation, LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second)),
+		}}
+		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 		hc := reconcileHC()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
-		Expect(hc.Status.Observations).NotTo(BeEmpty())
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		o := hc.Status.Observations[0]
+		Expect(o.Name).To(Equal("Kustomization " + namespace + "/ks"))
+		Expect(o.Kind).To(Equal(rolloutv1alpha1.ObservationKindState))
+		Expect(*o.Healthy).To(BeFalse())
+	})
+
+	It("writes a State row without a verdict for a resource that is terminating", func() {
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "held", Namespace: namespace, Finalizers: []string{"test.kuberik.com/hold"}}}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			Eventually(func() error {
+				got := &corev1.ConfigMap{}
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(cm), got); err != nil {
+					return client.IgnoreNotFound(err)
+				}
+				got.Finalizers = nil
+				return k8sClient.Update(ctx, got)
+			}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
+		})
+		Expect(k8sClient.Delete(ctx, cm)).To(Succeed())
+		setInventory(object.ObjMetadata{Namespace: namespace, Name: "held", GroupKind: schema.GroupKind{Kind: "ConfigMap"}})
+		hc := reconcileHC()
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusPending))
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		o := hc.Status.Observations[0]
+		Expect(o.Name).To(Equal("ConfigMap " + namespace + "/held"))
+		Expect(o.Kind).To(Equal(rolloutv1alpha1.ObservationKindState))
+		Expect(o.Healthy).To(BeNil())
+		Expect(o.Message).To(Equal("terminating"))
 	})
 
 	It("writes no observations when the Kustomization and its resources are healthy", func() {
