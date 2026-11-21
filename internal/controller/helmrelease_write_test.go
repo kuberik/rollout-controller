@@ -178,7 +178,7 @@ var _ = Describe("HelmRelease write path", func() {
 				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/shop", Interval: metav1.Duration{Duration: time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
-			Expect(k8sClient.Create(ctx, oci)).To(Succeed())
+			seedLegacyOCIRepository(oci)
 			ks = &kustomizev1.Kustomization{
 				ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: ns, Annotations: map[string]string{"rollout.kuberik.com/substitute.v.from": "shop"}},
 				Spec: kustomizev1.KustomizationSpec{Interval: metav1.Duration{Duration: time.Minute}, Path: "./",

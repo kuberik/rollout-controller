@@ -50,6 +50,13 @@ Variables written by the shared `rollout-controller` field manager of earlier ve
 
 OCIRepositories use a simpler approach since they only have one modifiable field (tag). Each OCIRepository can be managed by a single rollout.
 
+The rollout writes only `spec.ref.tag`, with server-side apply under its own field manager
+(`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Every other `spec.ref` field (such as `semver`
+or `digest`) stays yours. Do not set `spec.ref.tag` in the OCIRepository you commit. If another field manager (for example
+Flux applying the OCIRepository from Git) owns it, the deploy writes nothing and the Rollout reports `Ready=False` with
+reason `OCIRepositoryFieldConflict`. A tag written by the shared `rollout-controller` field manager of earlier versions is
+taken over on the next deploy.
+
 #### Example
 
 ```yaml

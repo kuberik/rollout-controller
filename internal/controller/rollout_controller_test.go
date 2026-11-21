@@ -1187,7 +1187,7 @@ var _ = Describe("Rollout Controller", func() {
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, ociRepo)).To(Succeed())
+			seedLegacyOCIRepository(ociRepo)
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}

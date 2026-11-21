@@ -198,7 +198,7 @@ var _ = Describe("Kustomization write path", func() {
 				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/app", Interval: metav1.Duration{Duration: time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
-			Expect(k8sClient.Create(ctx, oci)).To(Succeed())
+			seedLegacyOCIRepository(oci)
 			hr = newHR(ns, map[string]string{"rollout.kuberik.com/values.image.tag.from": "a"},
 				helmSpec(map[string]interface{}{"values": map[string]interface{}{"replicas": int64(2)}}))
 			Expect(k8sClient.Create(ctx, hr)).To(Succeed())
