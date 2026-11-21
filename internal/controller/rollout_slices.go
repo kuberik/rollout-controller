@@ -432,7 +432,7 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 	// release newer than the deployed one, as list mode does; K and the cap only
 	// shape what is written to status.
 	requested := gateBypassOf(rollout)
-	gatedAll, _, bypass := gateOutcome(gates, rollout.Name, requested, all)
+	gatedAll, _, bypass := gateOutcome(gates, rollout.Name, requested, withoutHeld(rollout, all))
 	// blockedBy drops the gates a partial bypass skips for its build even
 	// while other gates still hold it, so the remaining blockers are named.
 	blockBypass := bypass
@@ -448,6 +448,7 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 		return err
 	}
 
+	held := failedBakeTags(rollout)
 	cands := make([]rolloutv1alpha1.ReleaseCandidate, 0, len(working))
 	for _, v := range working {
 		c := rolloutv1alpha1.ReleaseCandidate{Tag: v.Tag, Created: v.Created}
@@ -457,6 +458,7 @@ func (r *RolloutReconciler) applyCandidateStatus(rollout *rolloutv1alpha1.Rollou
 		}
 		c.BlockedBy = blockedByGates(gates, rollout.Name, v.Tag, blockBypass)
 		c.Gated = len(c.BlockedBy) == 0 && (bypass == nil || v.Tag == bypass.version)
+		c.FailedBake = held[v.Tag]
 		cands = append(cands, c)
 	}
 	rollout.Status.Candidates = cands
@@ -612,7 +614,8 @@ func (r *RolloutReconciler) nextReleaseCandidates(ctx context.Context, rollout *
 		return nil, nil, err
 	}
 	candidates, err := cat.candidatesAfter(&rollout.Status)
-	return candidates, gates, err
+	// A build whose bake failed here is skipped by automatic selection.
+	return withoutHeld(rollout, candidates), gates, err
 }
 
 // evaluateCandidateGates evaluates the gates for the candidates and records
