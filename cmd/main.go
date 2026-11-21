@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -27,9 +28,14 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/go-logr/logr"
+	authorizationv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -265,7 +271,10 @@ func main() {
 
 	// HelmRelease support is optional: run the health class only where Flux's
 	// helm-controller CRD is served.
-	if _, mapErr := mgr.GetRESTMapper().RESTMapping(controller.HelmReleaseGroupKind(), "v2"); mapErr == nil {
+	// It also needs list+watch RBAC, or the informer cannot sync and the manager exits.
+	if _, mapErr := mgr.GetRESTMapper().RESTMapping(controller.HelmReleaseGroupKind(), "v2"); mapErr != nil {
+		setupLog.Info("HelmRelease CRD not served, helmrelease health checks are disabled", "reason", mapErr.Error())
+	} else if helmReleasesReadable(setupLog, mgr.GetConfig()) {
 		if err := (&controller.HelmReleaseHealthReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
@@ -274,8 +283,6 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "HelmReleaseHealth")
 			os.Exit(1)
 		}
-	} else {
-		setupLog.Info("HelmRelease CRD not served, helmrelease health checks are disabled", "reason", mapErr.Error())
 	}
 
 	if err = (&controller.RolloutScheduleReconciler{
@@ -367,4 +374,29 @@ func requiredKinds() []client.Object {
 		&kuberikcomv1alpha1.RolloutDependency{},
 		&kustomizev1.Kustomization{},
 	}
+}
+
+// helmReleasesReadable asks the API server whether this controller may list and watch
+// HelmReleases, so a missing RBAC rule disables the health class instead of failing the
+// cache sync at startup.
+func helmReleasesReadable(log logr.Logger, cfg *rest.Config) bool {
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Error(err, "cannot check HelmRelease permissions, helmrelease health checks are disabled")
+		return false
+	}
+	for _, verb := range []string{"list", "watch"} {
+		ssar := &authorizationv1.SelfSubjectAccessReview{
+			Spec: authorizationv1.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Group: "helm.toolkit.fluxcd.io", Resource: "helmreleases", Verb: verb,
+			}},
+		}
+		reviews := cs.AuthorizationV1().SelfSubjectAccessReviews()
+		review, err := reviews.Create(context.Background(), ssar, metav1.CreateOptions{})
+		if err != nil || !review.Status.Allowed {
+			log.Info("HelmRelease CRD is served but RBAC denies it, helmrelease health checks are disabled", "verb", verb)
+			return false
+		}
+	}
+	return true
 }
