@@ -242,6 +242,11 @@ func describeFieldConflict(kind, id string, paths []string, hint string, err err
 	manager := "another field manager"
 	if m := conflictManagerPattern.FindStringSubmatch(err.Error()); m != nil {
 		manager = fmt.Sprintf("%q", m[1])
+		// Another rollout's manager: the annotation moved, and that rollout never releases
+		// the field on its own, so Git is not the culprit.
+		if parts := strings.Split(m[1], "/"); len(parts) == 3 && parts[0] == legacyFieldManager {
+			hint = fmt.Sprintf("Rollout %s wrote it before the annotation moved and still owns it. Release it with a server-side apply under field manager %q of a %s body without the field.", parts[2], m[1], kind)
+		}
 	}
 	var status apierrors.APIStatus
 	if errors.As(err, &status) && status.Status().Details != nil {
