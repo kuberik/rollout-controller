@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,7 +43,9 @@ const (
 	reasonHelmReleaseFieldConflict     = "HelmReleaseFieldConflict"
 	reasonHelmReleaseInvalidAnnotation = "HelmReleaseInvalidAnnotation"
 
-	helmReleaseFieldManager        = "rollout-controller"
+	// legacyHelmReleaseFieldManager is the single manager earlier versions used for every rollout.
+	legacyHelmReleaseFieldManager  = "rollout-controller"
+	helmReleaseFieldManagerMaxLen  = 128
 	helmReleaseChartVersionAnnot   = "rollout.kuberik.com/chart-version.from"
 	helmReleaseConflictRequeueSecs = 60
 )
@@ -53,6 +58,40 @@ var (
 	helmValuesAnnotPattern = regexp.MustCompile(`^rollout\.kuberik\.com/values\.(.+)\.from$`)
 	conflictManagerPattern = regexp.MustCompile(`conflict with "([^"]+)"`)
 )
+
+var helmReleaseForbiddenOnce sync.Once
+
+// helmReleaseFieldManager returns the server-side-apply field manager for one rollout.
+// Each rollout owns its own leaves, so one rollout's apply never drops another's. Field
+// manager names are limited to 128 characters; a longer name is truncated and suffixed
+// with a hash of the full name so it stays unique.
+func helmReleaseFieldManager(namespace, name string) string {
+	full := "rollout-controller/" + namespace + "/" + name
+	if len(full) <= helmReleaseFieldManagerMaxLen {
+		return full
+	}
+	sum := sha256.Sum256([]byte(full))
+	suffix := "-" + hex.EncodeToString(sum[:])[:8]
+	return full[:helmReleaseFieldManagerMaxLen-len(suffix)] + suffix
+}
+
+// onlyLegacyManagerConflict reports whether every conflict in err is with the shared
+// manager earlier versions used. Those fields are ours, so the apply may take them over.
+func onlyLegacyManagerConflict(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return false
+	}
+	n := 0
+	for _, c := range status.Status().Details.Causes {
+		m := conflictManagerPattern.FindStringSubmatch(c.Message)
+		if m == nil || m[1] != legacyHelmReleaseFieldManager {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
 
 // helmReleaseIssue is a deploy-blocking problem with an annotated HelmRelease. The
 // deploy writes nothing and the Rollout reports Reason on its Ready condition.
@@ -81,13 +120,23 @@ func listHelmReleases(ctx context.Context, c client.Reader, namespace string) ([
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 			return nil, nil
 		}
+		if apierrors.IsForbidden(err) {
+			// The CRD is served but this controller has no RBAC for it: HelmRelease
+			// support stays off so Kustomization and OCI deploys keep working.
+			helmReleaseForbiddenOnce.Do(func() {
+				logf.FromContext(ctx).V(1).Info("Not allowed to list HelmReleases, skipping HelmRelease handling", "error", err.Error())
+			})
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to list HelmReleases: %w", err)
 	}
 	return list.Items, nil
 }
 
-// planHelmReleaseWrites works out, per HelmRelease annotated for the rollout, the minimal
-// server-side-apply patch holding only the leaves that must change. It returns a
+// planHelmReleaseWrites works out, per HelmRelease annotated for the rollout, the
+// server-side-apply patch holding every leaf the rollout owns on it, and skips the
+// HelmRelease when none of them has to change. Applying all leaves matters: SSA drops
+// any leaf the manager owned before but omits now. It returns a
 // helmReleaseIssue for a misconfigured annotation.
 func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, items []unstructured.Unstructured) ([]helmReleaseWrite, *helmReleaseIssue) {
 	writes := make([]helmReleaseWrite, 0, len(items))
@@ -125,14 +174,14 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 				}
 			}
 			full := append([]string{"spec", "values"}, segs...)
-			if cur, found, err := unstructured.NestedString(hr.Object, full...); err == nil && found && cur == wanted {
-				continue
-			}
+			cur, found, curErr := unstructured.NestedString(hr.Object, full...)
 			if err := unstructured.SetNestedField(patch.Object, wanted, full...); err != nil {
 				return nil, &helmReleaseIssue{reasonHelmReleaseInvalidAnnotation,
 					fmt.Sprintf("HelmRelease %s: cannot set %s: %v", id, "spec.values."+p, err)}
 			}
-			changed = append(changed, "spec.values."+p)
+			if !(curErr == nil && found && cur == wanted) {
+				changed = append(changed, "spec.values."+p)
+			}
 		}
 
 		if chartVersion {
@@ -145,8 +194,8 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 					fmt.Sprintf("HelmRelease %s: %s needs spec.chart.spec.", id, helmReleaseChartVersionAnnot)}
 			}
 			cur, _, _ := unstructured.NestedString(hr.Object, "spec", "chart", "spec", "version")
+			_ = unstructured.SetNestedField(patch.Object, wanted, "spec", "chart", "spec", "version")
 			if cur != wanted {
-				_ = unstructured.SetNestedField(patch.Object, wanted, "spec", "chart", "spec", "version")
 				changed = append(changed, "spec.chart.spec.version")
 			}
 		}
@@ -174,8 +223,8 @@ func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollo
 	}
 	for _, w := range writes {
 		dry := w.patch.DeepCopy()
-		err := r.Client.Patch(ctx, dry, client.Apply, client.FieldOwner(helmReleaseFieldManager), client.DryRunAll) //nolint:staticcheck // SA1019: server-side apply of unstructured
-		if err == nil {
+		err := r.Client.Patch(ctx, dry, client.Apply, client.FieldOwner(helmReleaseFieldManager(rollout.Namespace, rollout.Name)), client.DryRunAll) //nolint:staticcheck // SA1019: server-side apply of unstructured
+		if err == nil || onlyLegacyManagerConflict(err) {
 			continue
 		}
 		if apierrors.IsConflict(err) {
@@ -206,7 +255,7 @@ func describeFieldConflict(w helmReleaseWrite, err error) string {
 }
 
 // patchHelmReleases writes the wanted release into every HelmRelease annotated for the
-// rollout, with server-side apply listing only the owned leaves and no forced ownership.
+// rollout, with server-side apply listing every owned leaf, forcing ownership only from the legacy shared manager.
 func (r *RolloutReconciler) patchHelmReleases(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
 	log := logf.FromContext(ctx)
 	items, err := listHelmReleases(ctx, r.Client, rollout.Namespace)
@@ -218,7 +267,13 @@ func (r *RolloutReconciler) patchHelmReleases(ctx context.Context, rollout *roll
 		return issue
 	}
 	for _, w := range writes {
-		if err := r.Client.Patch(ctx, w.patch, client.Apply, client.FieldOwner(helmReleaseFieldManager)); err != nil { //nolint:staticcheck // SA1019: server-side apply of unstructured
+		manager := helmReleaseFieldManager(rollout.Namespace, rollout.Name)
+		err := r.Client.Patch(ctx, w.patch.DeepCopy(), client.Apply, client.FieldOwner(manager)) //nolint:staticcheck // SA1019: server-side apply of unstructured
+		if err != nil && onlyLegacyManagerConflict(err) {
+			// First deploy after an upgrade: take over leaves the shared legacy manager owned.
+			err = r.Client.Patch(ctx, w.patch.DeepCopy(), client.Apply, client.FieldOwner(manager), client.ForceOwnership) //nolint:staticcheck // SA1019: server-side apply of unstructured
+		}
+		if err != nil {
 			if apierrors.IsConflict(err) {
 				return &helmReleaseIssue{reasonHelmReleaseFieldConflict, describeFieldConflict(w, err)}
 			}
