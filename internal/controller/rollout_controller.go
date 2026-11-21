@@ -354,6 +354,11 @@ func (r *RolloutReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		if err := r.deployRelease(ctx, &rollout, *wantedRelease, cat); err != nil {
+			var helmIssue *helmReleaseIssue
+			if errors.As(err, &helmIssue) {
+				log.Info("Deploy refused", "reason", helmIssue.Reason, "message", helmIssue.Message)
+				return ctrl.Result{RequeueAfter: helmReleaseConflictRequeueSecs * time.Second}, r.updateRolloutStatusOnError(ctx, &rollout, helmIssue.Reason, helmIssue.Message)
+			}
 			var writeIssue *deployWriteIssue
 			if errors.As(err, &writeIssue) {
 				log.Info("Deploy refused", "reason", writeIssue.Reason, "message", writeIssue.Message)
@@ -998,7 +1003,10 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	rollback := opt.rollback != nil
 
 	// Refuse the whole deploy, before any write or in-memory status change, when a
-	// Kustomization or OCIRepository cannot be written (field conflict).
+	// HelmRelease, Kustomization or OCIRepository cannot be written (field conflict, bad annotation).
+	if err := r.checkHelmReleaseConflicts(ctx, rollout, wantedRelease); err != nil {
+		return err
+	}
 	if err := r.checkKustomizationConflicts(ctx, rollout, wantedRelease); err != nil {
 		return err
 	}
@@ -1073,6 +1081,12 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Find and patch Kustomizations
 	if err := r.patchKustomizations(ctx, rollout, wantedRelease); err != nil {
 		log.Error(err, "Failed to patch Kustomizations")
+		return err
+	}
+
+	// Find and patch HelmReleases
+	if err := r.patchHelmReleases(ctx, rollout, wantedRelease); err != nil {
+		log.Error(err, "Failed to patch HelmReleases")
 		return err
 	}
 
