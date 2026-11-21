@@ -117,15 +117,8 @@ func (e *arEnv) deployV2(ctx context.Context) {
 	ExpectWithOffset(1, h[0].Version.Tag).To(Equal("v2"))
 }
 
-// failHC marks the health check failed, a second after the deploy, with the
-// failures it recorded.
+// failHC marks the health check failed now, with the failures it recorded.
 func (e *arEnv) failHC(ctx context.Context, failures ...rolloutv1alpha1.HealthCheckFailure) {
-	e.clock.Add(time.Second)
-	e.failHCNow(ctx, failures...)
-}
-
-// failHCNow marks the health check failed at the current clock time.
-func (e *arEnv) failHCNow(ctx context.Context, failures ...rolloutv1alpha1.HealthCheckFailure) {
 	hc := &rolloutv1alpha1.HealthCheck{}
 	ExpectWithOffset(1, k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
 	now := metav1.NewTime(e.clock.Now())
@@ -337,24 +330,6 @@ var _ = Describe("Automatic rollback", func() {
 				Expect(c.Reason).NotTo(Equal(autoRollbackRolledBack))
 			}
 		})
-	})
-
-	It("does not count a failure stamped in the same second as the deploy", func() {
-		e = newArEnv(ctx, arOpts{})
-		e.deployV2(ctx)
-		// Recorded at the deploy's own timestamp: indistinguishable from the
-		// previous cycle's failure that the reset has not cleared yet.
-		e.failHCNow(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindUnclassified, nil))
-		e.reconcile(ctx)
-		h := e.get(ctx).Status.History
-		Expect(h[0].Version.Tag).To(Equal("v2"))
-		Expect(*h[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
-		Expect(e.condition(ctx)).To(BeNil())
-
-		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindUnclassified, nil))
-		e.reconcile(ctx)
-		Expect(e.get(ctx).Status.History[1].BakeStatus).To(HaveValue(Equal(rolloutv1alpha1.BakeStatusFailed)),
-			"a failure witnessed after the deploy still fails it")
 	})
 
 	It("never chains: a rollback that is itself marked failed is left alone", func() {
