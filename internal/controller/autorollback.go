@@ -155,19 +155,35 @@ func notReadyEntry(hc *rolloutv1alpha1.HealthCheck) rolloutv1alpha1.HealthCheckF
 
 // --- hold ---------------------------------------------------------------
 
-// failedBakeTags are the tags whose newest deploy in this Rollout's history
-// failed its bake. Automatic selection skips them.
-func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
-	seen := map[string]bool{}
-	held := map[string]bool{}
-	for _, h := range rollout.Status.History {
-		if seen[h.Version.Tag] {
+// heldEntries maps each held tag to the index (newest first) of the Failed
+// history entry that holds it. A tag is held when it has a Failed entry and no
+// newer Succeeded entry. Cancelled, Deploying and in-progress entries are
+// neutral: a pin of a held build that is superseded must not release it.
+func heldEntries(history []rolloutv1alpha1.DeploymentHistoryEntry) map[string]int {
+	decided := map[string]bool{}
+	held := map[string]int{}
+	for i, h := range history {
+		if decided[h.Version.Tag] || h.BakeStatus == nil {
 			continue
 		}
-		seen[h.Version.Tag] = true
-		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusFailed {
-			held[h.Version.Tag] = true
+		switch *h.BakeStatus {
+		case rolloutv1alpha1.BakeStatusSucceeded:
+			decided[h.Version.Tag] = true
+		case rolloutv1alpha1.BakeStatusFailed:
+			decided[h.Version.Tag] = true
+			held[h.Version.Tag] = i
 		}
+	}
+	return held
+}
+
+// failedBakeTags are the held tags: a Failed deploy of the tag exists in this
+// Rollout's history and no later deploy of it Succeeded. Automatic selection
+// skips them.
+func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
+	held := map[string]bool{}
+	for t := range heldEntries(rollout.Status.History) {
+		held[t] = true
 	}
 	return held
 }
@@ -175,28 +191,21 @@ func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
 // maxHeldBeyondLimit caps the failed entries kept past versionHistoryLimit.
 const maxHeldBeyondLimit = 10
 
-// trimHistory keeps the newest limit entries plus, past the limit, the entry
-// that holds a failed build: the newest entry of a tag that failed its bake and
-// was not deployed again since. Without it a held build is released when its
+// trimHistory keeps the newest limit entries plus, past the limit, the Failed
+// entry that holds a build (see heldEntries), whatever later Cancelled or
+// Deploying entries the tag has. Without it a held build is released when its
 // entry scrolls out, and automatic selection deploys it again (at most
 // maxHeldBeyondLimit such entries are kept).
 func trimHistory(history []rolloutv1alpha1.DeploymentHistoryEntry, limit int) []rolloutv1alpha1.DeploymentHistoryEntry {
 	if len(history) <= limit {
 		return history
 	}
-	seen := map[string]bool{}
-	for _, h := range history[:limit] {
-		seen[h.Version.Tag] = true
-	}
+	holders := heldEntries(history)
 	out := slices.Clone(history[:limit])
 	extra := 0
-	for _, h := range history[limit:] {
-		if seen[h.Version.Tag] {
-			continue
-		}
-		seen[h.Version.Tag] = true
-		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusFailed && extra < maxHeldBeyondLimit {
-			out = append(out, h)
+	for i := limit; i < len(history) && extra < maxHeldBeyondLimit; i++ {
+		if idx, ok := holders[history[i].Version.Tag]; ok && idx == i {
+			out = append(out, history[i])
 			extra++
 		}
 	}
@@ -250,9 +259,10 @@ func pendingManualIntent(rollout *rolloutv1alpha1.Rollout) string {
 // than the failed build itself.
 func rollbackTarget(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.DeploymentHistoryEntry {
 	failedTag := rollout.Status.History[0].Version.Tag
+	held := failedBakeTags(rollout)
 	for i := 1; i < len(rollout.Status.History); i++ {
 		h := &rollout.Status.History[i]
-		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded && h.Version.Tag != failedTag {
+		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded && h.Version.Tag != failedTag && !held[h.Version.Tag] {
 			return h
 		}
 	}

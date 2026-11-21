@@ -117,8 +117,15 @@ func (e *arEnv) deployV2(ctx context.Context) {
 	ExpectWithOffset(1, h[0].Version.Tag).To(Equal("v2"))
 }
 
-// failHC marks the health check failed now, with the failures it recorded.
+// failHC marks the health check failed, a second after the deploy, with the
+// failures it recorded.
 func (e *arEnv) failHC(ctx context.Context, failures ...rolloutv1alpha1.HealthCheckFailure) {
+	e.clock.Add(time.Second)
+	e.failHCNow(ctx, failures...)
+}
+
+// failHCNow marks the health check failed at the current clock time.
+func (e *arEnv) failHCNow(ctx context.Context, failures ...rolloutv1alpha1.HealthCheckFailure) {
 	hc := &rolloutv1alpha1.HealthCheck{}
 	ExpectWithOffset(1, k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
 	now := metav1.NewTime(e.clock.Now())
@@ -330,6 +337,24 @@ var _ = Describe("Automatic rollback", func() {
 				Expect(c.Reason).NotTo(Equal(autoRollbackRolledBack))
 			}
 		})
+	})
+
+	It("does not count a failure stamped in the same second as the deploy", func() {
+		e = newArEnv(ctx, arOpts{})
+		e.deployV2(ctx)
+		// Recorded at the deploy's own timestamp: indistinguishable from the
+		// previous cycle's failure that the reset has not cleared yet.
+		e.failHCNow(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindUnclassified, nil))
+		e.reconcile(ctx)
+		h := e.get(ctx).Status.History
+		Expect(h[0].Version.Tag).To(Equal("v2"))
+		Expect(*h[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(e.condition(ctx)).To(BeNil())
+
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindUnclassified, nil))
+		e.reconcile(ctx)
+		Expect(e.get(ctx).Status.History[1].BakeStatus).To(HaveValue(Equal(rolloutv1alpha1.BakeStatusFailed)),
+			"a failure witnessed after the deploy still fails it")
 	})
 
 	It("never chains: a rollback that is itself marked failed is left alone", func() {
@@ -746,4 +771,39 @@ func TestTrimHistoryKeepsTheEntriesThatHoldABuild(t *testing.T) {
 	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"A": true, "B": true, "D": true}))
 	g.Expect(trimHistory(h[:2], 3)).To(HaveLen(2))
 	g.Expect(tags(trimHistory(h, 8))).To(Equal(tags(h)))
+}
+
+func TestHeldSurvivesCancelledEntries(t *testing.T) {
+	g := NewWithT(t)
+	failed, ok, cancelled := rolloutv1alpha1.BakeStatusFailed, rolloutv1alpha1.BakeStatusSucceeded, rolloutv1alpha1.BakeStatusCancelled
+	e := func(tag string, s *string) rolloutv1alpha1.DeploymentHistoryEntry {
+		return rolloutv1alpha1.DeploymentHistoryEntry{Version: rolloutv1alpha1.VersionInfo{Tag: tag}, BakeStatus: s}
+	}
+	// The live run: A3 failed, was pinned and cancelled by the next pin, then
+	// the good build baked.
+	h := []rolloutv1alpha1.DeploymentHistoryEntry{e("good", &ok), e("A3", &cancelled), e("good", &ok), e("A3", &failed), e("good", &ok)}
+	ro := &rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: h}}
+	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"A3": true}), "a Cancelled entry does not release the hold")
+	g.Expect(withoutHeld(ro, []rolloutv1alpha1.VersionInfo{{Tag: "A3"}, {Tag: "n"}})).To(Equal([]rolloutv1alpha1.VersionInfo{{Tag: "n"}}))
+
+	// A later Deploying entry (pin in progress) does not release it either.
+	dep := rolloutv1alpha1.BakeStatusDeploying
+	ro.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{e("A3", &dep)}, h...)
+	g.Expect(failedBakeTags(ro)).To(HaveKey("A3"))
+
+	// A later Succeeded deploy does.
+	ro.Status.History = append([]rolloutv1alpha1.DeploymentHistoryEntry{e("A3", &ok)}, h...)
+	g.Expect(failedBakeTags(ro)).To(BeEmpty())
+
+	// trimHistory keeps the Failed entry past the limit under a newer Cancelled one.
+	got := trimHistory(h, 2)
+	g.Expect(got).To(HaveLen(3))
+	g.Expect(*got[2].BakeStatus).To(Equal(failed))
+	g.Expect(failedBakeTags(&rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: got}})).To(HaveKey("A3"))
+
+	// rollbackTarget never picks a baked entry of a held tag.
+	h3 := []rolloutv1alpha1.DeploymentHistoryEntry{e("X", &failed), e("B", &failed), e("B", &ok), e("good", &ok)}
+	tgt := rollbackTarget(&rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: h3}})
+	g.Expect(tgt).NotTo(BeNil())
+	g.Expect(tgt.Version.Tag).To(Equal("good"))
 }

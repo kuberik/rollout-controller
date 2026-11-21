@@ -736,13 +736,37 @@ func snapshotObservations(in []rolloutv1alpha1.HealthCheckObservation) []rollout
 	return out
 }
 
+// failedAfter reports whether the check witnessed a failure strictly after the
+// cutoff (a deploy or retry start). LastErrorTime and the deploy timestamp both
+// have one-second resolution, so a failure stamped in the same second as the
+// deploy cannot be told from one that was already recorded when the deploy
+// started (the check is reset asynchronously). It is not counted; a failure that
+// persists is stamped again and counts from the next second.
+func failedAfter(hc *rolloutv1alpha1.HealthCheck, cutoff time.Time) bool {
+	return hc.Status.LastErrorTime != nil && hc.Status.LastErrorTime.Time.After(cutoff)
+}
+
+// failuresSince drops failures first seen before the cutoff: they belong to an
+// earlier cycle of the check that the reset at the deploy has not cleared yet.
+func failuresSince(in []rolloutv1alpha1.HealthCheckFailure, cutoff time.Time) []rolloutv1alpha1.HealthCheckFailure {
+	var out []rolloutv1alpha1.HealthCheckFailure
+	for _, f := range in {
+		if !f.FirstSeenTime.Time.Before(cutoff) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // collectFailedHealthChecks collects all health checks that have failed after the deployment time.
-// It returns health checks that have LastErrorTime after deployTime.
+// It returns health checks whose LastErrorTime is strictly after deployTime.
 func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
 	var failedHealthChecks []rolloutv1alpha1.FailedHealthCheck
 
 	for _, hc := range allHealthChecks {
-		if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(deployTime) {
+		if failedAfter(&hc, deployTime) {
+			hc = *hc.DeepCopy()
+			hc.Status.Failures = failuresSince(hc.Status.Failures, deployTime)
 			failedHC := rolloutv1alpha1.FailedHealthCheck{
 				Name:         hc.Name,
 				Namespace:    hc.Namespace,
@@ -1321,7 +1345,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 	healthCheckError := false
 	if len(allHealthChecks) > 0 {
 		for _, hc := range allHealthChecks {
-			if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(errorCutoff) {
+			if failedAfter(&hc, errorCutoff) {
 				healthCheckError = true
 				log.Info("HealthCheck error detected after deployment", "name", hc.Name, "namespace", hc.Namespace, "lastErrorTime", hc.Status.LastErrorTime, "errorCutoff", errorCutoff)
 				break
