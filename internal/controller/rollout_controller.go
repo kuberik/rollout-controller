@@ -145,6 +145,10 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	r.setDeploymentBlockedCondition(&rollout, healthChecksHealthy, healthCheckMessage)
 
+	if !autoRollbackEnabled(&rollout) {
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	}
+
 	// Update status once with both release candidates and gated release candidates
 	if err := r.Client.Status().Update(ctx, &rollout); err != nil {
 		log.Error(err, "Failed to update rollout status with release candidates and gated release candidates")
@@ -161,6 +165,19 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				result, err := r.handleBakeTime(ctx, req.Namespace, &rollout)
 				if err != nil {
 					return result, err
+				}
+				// handleBakeTime refreshed rollout from its own status write, so a
+				// Failed here was written by this reconcile: the edge the automatic
+				// rollback decision runs on.
+				if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil &&
+					*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusFailed {
+					rolledBack, err := r.autoRollbackAfterFailedBake(ctx, &rollout, cat)
+					if err != nil {
+						return ctrl.Result{}, err
+					}
+					if rolledBack {
+						return ctrl.Result{RequeueAfter: time.Second}, nil
+					}
 				}
 				// Refetch the rollout to get the updated status after handleBakeTime
 				if err := r.Client.Get(ctx, req.NamespacedName, &rollout); err != nil {
@@ -713,6 +730,7 @@ func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv
 			if hc.Status.Message != nil {
 				failedHC.Message = hc.Status.Message
 			}
+			recordVerdicts(&failedHC, &hc, nil)
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 		}
 	}
@@ -739,6 +757,8 @@ func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rollo
 				msg := fmt.Sprintf("Status: %s", hc.Status.Status)
 				failedHC.Message = &msg
 			}
+			// A check that is not Healthy at the deadline did not become ready.
+			recordVerdicts(&failedHC, &hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(&hc)})
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 			continue
 		}
@@ -919,8 +939,13 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 }
 
 // deployRelease finds and patches Flux resources with the wanted version.
-func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, cat *catalogue) error {
+func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, cat *catalogue, opts ...deployOpts) error {
 	log := logf.FromContext(ctx)
+	var opt deployOpts
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	rollback := opt.rollback != nil
 
 	// Refuse the whole deploy, before any write or in-memory status change, when a
 	// Kustomization or OCIRepository cannot be written (field conflict).
@@ -934,6 +959,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Check if this deployment was done with gate bypass. A bypass is used only
 	// by a deploy of the build it names; see bypassOnDeploy for clearing.
 	bypass, bypassUsed, clearBypass := bypassOnDeploy(rollout, wantedRelease)
+	if rollback {
+		bypassUsed, clearBypass = false, false
+	}
 	bypassDesc := ""
 	if bypassUsed {
 		bypassDesc = "gate bypass"
@@ -948,7 +976,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// Check if this deployment was done with force deploy
 	forceDeployUsed := false
-	if rollout.Annotations != nil {
+	if !rollback && rollout.Annotations != nil {
 		if forceDeploy, exists := rollout.Annotations["rollout.kuberik.com/force-deploy"]; exists && forceDeploy != "" {
 			// Only consider force deploy as "used" if the deployed version matches the force deploy version
 			if forceDeploy == wantedRelease {
@@ -960,7 +988,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// Check if this deployment was done with failed bake unblock
 	unblockUsed := false
-	if rollout.Annotations != nil {
+	if !rollback && rollout.Annotations != nil {
 		if unblock, exists := rollout.Annotations["rollout.kuberik.com/unblock-failed"]; exists && unblock == annotationTrue {
 			unblockUsed = true
 			log.Info("Deployment using failed bake unblock")
@@ -1032,6 +1060,13 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// Extract triggered by information
 	triggeredBy := r.extractTriggeredByInfo(rollout, r.hasManualDeployment(rollout))
+	deployKind := deployKindOf(rollback, rollout.Spec.WantedVersion != nil, forceDeployUsed, unblockUsed, bypassUsed)
+	var rollbackOf *int64
+	if rollback {
+		deploymentMessage = rollbackMessage(opt.rollback)
+		triggeredBy = &rolloutv1alpha1.TriggeredByInfo{Kind: "System", Name: "rollout-controller"}
+		rollbackOf = k8sptr.To(opt.rollback.failedID)
+	}
 
 	// Version info for the wanted release: catalogue, then history, else the bare tag.
 	versionInfo := r.versionInfoForDeploy(rollout, cat, wantedRelease)
@@ -1042,7 +1077,10 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 
 	// A partial bypass (bypass-gates-only) leaves the other gates, approval
 	// gates included, in force, so their approval is still recorded.
-	approval := r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed && bypass.all())
+	var approval *rolloutv1alpha1.ApprovalRecord
+	if !rollback {
+		approval = r.approvalRecordForDeploy(ctx, rollout, wantedRelease, bypassUsed && bypass.all())
+	}
 
 	nextID := r.getNextHistoryID(rollout)
 	now := metav1.Time{Time: r.now()}
@@ -1053,6 +1091,8 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Message:           &deploymentMessage,
 		TriggeredBy:       triggeredBy,
 		Approval:          approval,
+		DeployKind:        deployKind,
+		RollbackOf:        rollbackOf,
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     nil, // Will be set when healthchecks become healthy
@@ -1087,6 +1127,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Reason:             "RolloutSucceeded",
 		Message:            conditionMessage,
 	})
+
+	// A deploy ends the decision about the previous failed build; a rollback
+	// records its own.
+	if rollback {
+		r.recordRollback(rollout, opt.rollback, wantedRelease)
+	} else {
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	}
 
 	// Emit event for successful deployment
 	eventType := corev1.EventTypeNormal
