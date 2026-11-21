@@ -209,16 +209,16 @@ func evaluateHelmRelease(hr *unstructured.Unstructured) (rolloutv1alpha1.HealthS
 		return rolloutv1alpha1.HealthStatusPending,
 			fmt.Sprintf("HelmRelease generation %d not yet observed (Ready is at %d)", hr.GetGeneration(), ready.ObservedGeneration), nil
 	}
-	if st, ok := conds["Stalled"]; ok && st.Status == "True" {
+	if st, ok := conds["Stalled"]; ok && st.Status == string(metav1.ConditionTrue) {
 		return rolloutv1alpha1.HealthStatusUnhealthy, "HelmRelease stalled: " + st.Message, st.LastTransitionTime
 	}
 	switch ready.Status {
-	case "False":
+	case string(metav1.ConditionFalse):
 		if helmReleasePendingReasons[ready.Reason] {
 			return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("HelmRelease %s: %s", ready.Reason, ready.Message), nil
 		}
 		return rolloutv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("HelmRelease %s: %s", ready.Reason, ready.Message), ready.LastTransitionTime
-	case "True":
+	case string(metav1.ConditionTrue):
 	default:
 		return rolloutv1alpha1.HealthStatusPending, "HelmRelease readiness is unknown: " + ready.Message, nil
 	}

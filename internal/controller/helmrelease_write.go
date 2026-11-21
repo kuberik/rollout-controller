@@ -90,7 +90,7 @@ func listHelmReleases(ctx context.Context, c client.Reader, namespace string) ([
 // server-side-apply patch holding only the leaves that must change. It returns a
 // helmReleaseIssue for a misconfigured annotation.
 func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, items []unstructured.Unstructured) ([]helmReleaseWrite, *helmReleaseIssue) {
-	var writes []helmReleaseWrite
+	writes := make([]helmReleaseWrite, 0, len(items))
 	for i := range items {
 		hr := &items[i]
 		annots := hr.GetAnnotations()
