@@ -323,12 +323,18 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	// Persist the decision before touching Flux. If the deploy or its status write
 	// fails, the marker survives and the next reconcile decides again (see
 	// pendingAutoRollback) instead of the rollback being lost.
-	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-		Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackPending,
-		Message: fmt.Sprintf("Rolling back %s to %s (%s).", failedTag, target.Version.Tag, plan.sources),
-	})
-	if err := r.Status().Update(ctx, rollout); err != nil {
-		return false, err
+	// A retry after DeployError keeps that marker: flipping it back to Pending would
+	// change the status on every attempt, and each write re-enqueues the Rollout
+	// without the rate limiter's backoff (a hot loop while the deploy keeps failing).
+	if c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback); c == nil ||
+		c.Reason != autoRollbackDeployError {
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackPending,
+			Message: fmt.Sprintf("Rolling back %s to %s (%s).", failedTag, target.Version.Tag, plan.sources),
+		})
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return false, err
+		}
 	}
 
 	derr := r.deployRelease(ctx, rollout, target.Version.Tag, cat, deployOpts{rollback: plan})
