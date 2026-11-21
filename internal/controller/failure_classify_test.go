@@ -46,6 +46,17 @@ func rolloutTestFailed(ns, name string, annotations map[string]string) *unstruct
 		cond("Ready", "False", "TestFailed"), cond("Stalled", "True", "TestFailed"))
 }
 
+// forRollout points a RolloutTest at the Kruise Rollout it gates.
+func forRollout(o *unstructured.Unstructured, rollout string) *unstructured.Unstructured {
+	_ = unstructured.SetNestedField(o.Object, rollout, "spec", "rolloutName")
+	return o
+}
+
+func rolloutTestPassing(ns, name, rollout string) *unstructured.Unstructured {
+	return forRollout(failedObj("rollout.kuberik.com/v1alpha1", "RolloutTest", ns, name, nil,
+		cond("Ready", "True", "TestPassed")), rollout)
+}
+
 func kruiseStalled(ns, name, reason string) *unstructured.Unstructured {
 	return failedObj("rollouts.kruise.io/v1beta1", "Rollout", ns, name, nil, cond("Stalled", "True", reason))
 }
@@ -114,7 +125,7 @@ func TestClassifierRows(t *testing.T) {
 func TestKruiseRolloutIsDerivedFromItsTests(t *testing.T) {
 	g := NewWithT(t)
 	kr := kruiseStalled("app", "canary", "RolloutTestFailed")
-	test := rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.RollbackAnnotation: "false"})
+	test := forRollout(rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.RollbackAnnotation: "false"}), "canary")
 
 	got := classify(ksWith("HealthCheckFailed", kr, test), kr, test)
 	g.Expect(kindsOf(got)).To(Equal([]string{"RolloutTest app/smoke|TestFailed|RolloutTestFailed"}),
@@ -215,4 +226,28 @@ func TestMergeFailuresKeepsFirstSeenAndCaps(t *testing.T) {
 		many = append(many, rolloutv1alpha1.HealthCheckFailure{Source: fmt.Sprintf("S%d", i), Kind: rolloutv1alpha1.FailureKindNotReady, FirstSeenTime: t1})
 	}
 	g.Expect(mergeFailures(nil, many)).To(HaveLen(maxFailures))
+}
+
+func TestKruiseRolloutSuppressedByAnyTestOfItsRollout(t *testing.T) {
+	g := NewWithT(t)
+	kr := kruiseStalled("app", "canary", "RolloutTestFailed")
+
+	// The test for this rollout is in the inventory but no longer Failed
+	// (reset, retry, pin): the Kruise Rollout still adds no entry of its own.
+	passing := rolloutTestPassing("app", "smoke", "canary")
+	c := fake.NewClientBuilder().WithObjects(kr, passing).Build()
+	g.Expect(inventoryFailures(context.Background(), c, ksWith("HealthCheckFailed", kr, passing), metav1.Now())).To(BeEmpty(),
+		"a RolloutTest for the Kruise Rollout in the inventory decides, whatever its phase")
+
+	// A failed test for a different rollout does not explain this one.
+	other := forRollout(rolloutTestFailed("app", "other-smoke", nil), "other")
+	got := classify(ksWith("HealthCheckFailed", kr, other), kr, other)
+	g.Expect(kindsOf(got)).To(ConsistOf(
+		"RolloutTest app/other-smoke|TestFailed|RolloutTestFailed",
+		"Rollout app/canary|TestFailed|RolloutTestFailed"))
+
+	// A test for the same rollout name in another namespace does not either.
+	elsewhere := rolloutTestPassing("elsewhere", "smoke", "canary")
+	got = classify(ksWith("HealthCheckFailed", kr, elsewhere), kr, elsewhere)
+	g.Expect(kindsOf(got)).To(Equal([]string{"Rollout app/canary|TestFailed|RolloutTestFailed"}))
 }
