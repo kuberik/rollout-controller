@@ -83,6 +83,7 @@ var _ = BeforeSuite(func() {
 			filepath.Join("..", "..", "vendir", "ocirepositories"),
 			filepath.Join("..", "..", "vendir", "kustomizations"),
 			filepath.Join("testdata", "release-catalogue-crds"),
+			filepath.Join("testdata", "helmrelease-crds"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}
