@@ -156,10 +156,7 @@ func notReadyEntry(hc *rolloutv1alpha1.HealthCheck) rolloutv1alpha1.HealthCheckF
 // --- hold ---------------------------------------------------------------
 
 // failedBakeTags are the tags whose newest deploy in this Rollout's history
-// failed its bake. Automatic selection skips them. A held build whose entries
-// have scrolled out of history (versionHistoryLimit) stays held through the
-// candidates list, which carries failedBake from one reconcile to the next;
-// only a newer deploy of that tag in history decides again.
+// failed its bake. Automatic selection skips them.
 func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
 	seen := map[string]bool{}
 	held := map[string]bool{}
@@ -172,12 +169,38 @@ func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
 			held[h.Version.Tag] = true
 		}
 	}
-	for _, c := range rollout.Status.Candidates {
-		if c.FailedBake && !seen[c.Tag] {
-			held[c.Tag] = true
+	return held
+}
+
+// maxHeldBeyondLimit caps the failed entries kept past versionHistoryLimit.
+const maxHeldBeyondLimit = 10
+
+// trimHistory keeps the newest limit entries plus, past the limit, the entry
+// that holds a failed build: the newest entry of a tag that failed its bake and
+// was not deployed again since. Without it a held build is released when its
+// entry scrolls out, and automatic selection deploys it again (at most
+// maxHeldBeyondLimit such entries are kept).
+func trimHistory(history []rolloutv1alpha1.DeploymentHistoryEntry, limit int) []rolloutv1alpha1.DeploymentHistoryEntry {
+	if len(history) <= limit {
+		return history
+	}
+	seen := map[string]bool{}
+	for _, h := range history[:limit] {
+		seen[h.Version.Tag] = true
+	}
+	out := slices.Clone(history[:limit])
+	extra := 0
+	for _, h := range history[limit:] {
+		if seen[h.Version.Tag] {
+			continue
+		}
+		seen[h.Version.Tag] = true
+		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusFailed && extra < maxHeldBeyondLimit {
+			out = append(out, h)
+			extra++
 		}
 	}
-	return held
+	return out
 }
 
 // withoutHeld drops the held builds, except those a person named (pin,
