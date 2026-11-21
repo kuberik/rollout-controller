@@ -240,21 +240,33 @@ func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollo
 func describeFieldConflict(kind, id string, paths []string, hint string, err error) string {
 	path := paths[0]
 	manager := "another field manager"
-	if m := conflictManagerPattern.FindStringSubmatch(err.Error()); m != nil {
-		manager = fmt.Sprintf("%q", m[1])
-		// Another rollout's manager: the annotation moved, and that rollout never releases
-		// the field on its own, so Git is not the culprit.
-		if parts := strings.Split(m[1], "/"); len(parts) == 3 && parts[0] == legacyFieldManager {
-			hint = fmt.Sprintf("Rollout %s wrote it before the annotation moved and still owns it. Release it with a server-side apply under field manager %q of a %s body without the field.", parts[2], m[1], kind)
-		}
-	}
+	name := ""
 	var status apierrors.APIStatus
 	if errors.As(err, &status) && status.Status().Details != nil {
+		// Read the first cause: the error text says "conflicts with" when there are several.
 		for _, c := range status.Status().Details.Causes {
 			if c.Field != "" {
 				path = strings.TrimPrefix(c.Field, ".")
+			}
+			if m := conflictManagerPattern.FindStringSubmatch(c.Message); m != nil {
+				name = m[1]
+			}
+			if c.Field != "" || name != "" {
 				break
 			}
+		}
+	}
+	if name == "" {
+		if m := conflictManagerPattern.FindStringSubmatch(err.Error()); m != nil {
+			name = m[1]
+		}
+	}
+	if name != "" {
+		manager = fmt.Sprintf("%q", name)
+		// Another rollout's manager: the annotation moved, and that rollout never releases
+		// the field on its own, so Git is not the culprit.
+		if parts := strings.Split(name, "/"); len(parts) == 3 && parts[0] == legacyFieldManager {
+			hint = fmt.Sprintf("Rollout %s wrote it before the annotation moved and still owns it. Release it with a server-side apply under field manager %q of a %s body without the field.", parts[2], name, kind)
 		}
 	}
 	return fmt.Sprintf("%s %s: %s is also set by %s. %s", kind, id, path, manager, hint)

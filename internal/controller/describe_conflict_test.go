@@ -30,4 +30,16 @@ var _ = Describe("describeFieldConflict", func() {
 		Expect(msg).To(ContainSubstring(`field manager "rollout-controller/ns/old-app"`))
 		Expect(msg).NotTo(ContainSubstring("in Git"))
 	})
+
+	It("reads the manager from the causes when there are several conflicts", func() {
+		err := apierrors.NewApplyConflict([]metav1.StatusCause{
+			{Type: metav1.CauseTypeFieldManagerConflict, Message: `conflict with "rollout-controller/ns/old-app" using kustomize.toolkit.fluxcd.io/v1`, Field: ".spec.postBuild.substitute.APP_VERSION"},
+			{Type: metav1.CauseTypeFieldManagerConflict, Message: `conflict with "rollout-controller/ns/old-app" using kustomize.toolkit.fluxcd.io/v1`, Field: ".spec.postBuild.substitute.API_VERSION"},
+		}, `Apply failed with 2 conflicts: conflicts with "rollout-controller/ns/old-app" using kustomize.toolkit.fluxcd.io/v1:
+- .spec.postBuild.substitute.APP_VERSION
+- .spec.postBuild.substitute.API_VERSION`)
+		msg := describeFieldConflict("Kustomization", "ns/k", paths, kustomizationConflictHint, err)
+		Expect(msg).To(ContainSubstring(`spec.postBuild.substitute.APP_VERSION is also set by "rollout-controller/ns/old-app"`))
+		Expect(msg).To(ContainSubstring("Rollout old-app wrote it before the annotation moved"))
+	})
 })
