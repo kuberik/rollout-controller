@@ -286,10 +286,10 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		if err := r.deployRelease(ctx, &rollout, *wantedRelease, cat); err != nil {
-			var helmIssue *helmReleaseIssue
-			if errors.As(err, &helmIssue) {
-				log.Info("Deploy refused", "reason", helmIssue.Reason, "message", helmIssue.Message)
-				return ctrl.Result{RequeueAfter: helmReleaseConflictRequeueSecs * time.Second}, r.updateRolloutStatusOnError(ctx, &rollout, helmIssue.Reason, helmIssue.Message)
+			var writeIssue *deployWriteIssue
+			if errors.As(err, &writeIssue) {
+				log.Info("Deploy refused", "reason", writeIssue.Reason, "message", writeIssue.Message)
+				return ctrl.Result{RequeueAfter: writeConflictRequeueSecs * time.Second}, r.updateRolloutStatusOnError(ctx, &rollout, writeIssue.Reason, writeIssue.Message)
 			}
 			log.Error(err, "Failed to deploy release")
 			return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
