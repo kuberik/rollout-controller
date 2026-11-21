@@ -263,6 +263,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// HelmRelease support is optional: run the health class only where Flux's
+	// helm-controller CRD is served.
+	if _, mapErr := mgr.GetRESTMapper().RESTMapping(controller.HelmReleaseGroupKind(), "v2"); mapErr == nil {
+		if err := (&controller.HelmReleaseHealthReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Clock:  controller.RealClock{},
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "HelmReleaseHealth")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("HelmRelease CRD not served, helmrelease health checks are disabled", "reason", mapErr.Error())
+	}
+
 	if err = (&controller.RolloutScheduleReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

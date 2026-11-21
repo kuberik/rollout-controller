@@ -49,6 +49,9 @@ type HealthCheckReconciler struct {
 // healthCheckClassKustomization is the HealthCheck class handled by KustomizationHealthReconciler.
 const healthCheckClassKustomization = "kustomization"
 
+// healthCheckClassHelmRelease is the HealthCheck class handled by HelmReleaseHealthReconciler.
+const healthCheckClassHelmRelease = "helmrelease"
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // This controller handles generic HealthCheck logic and delegates specific
@@ -73,7 +76,7 @@ func (r *HealthCheckReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Delegate to specialized controllers based on class
 	if healthCheck.Spec.Class != nil {
 		switch *healthCheck.Spec.Class {
-		case healthCheckClassKustomization:
+		case healthCheckClassKustomization, healthCheckClassHelmRelease:
 			// KustomizationHealth controller will handle this
 			// This controller just ensures the resource exists and is properly structured
 			return ctrl.Result{}, nil
