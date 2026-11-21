@@ -16,6 +16,6 @@ spec:
     name: my-app-repo
   postBuild:
     substitute:
-      frontend_version: "1.0.0" # Managed by frontend-rollout
-      backend_version: "2.0.0" # Managed by backend-rollout
-      api_version: "3.0.0" # Managed by api-rollout
+      # frontend_version, backend_version and api_version are written by their rollouts.
+      # Do not set them here; use ${frontend_version:=1.0.0} defaults in the manifests.
+      environment: production

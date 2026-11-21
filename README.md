@@ -31,15 +31,20 @@ spec:
   # ... other spec fields
   postBuild:
     substitute:
-      frontend_version: "1.0.0"  # Managed by frontend-rollout
-      backend_version: "2.0.0"   # Managed by backend-rollout
-      api_version: "3.0.0"       # Managed by api-rollout
+      environment: production  # keeps substitution on; the rollouts add their own keys
 ```
 
 In this example:
 - `frontend-rollout` manages the `frontend_version` substitute
 - `backend-rollout` manages the `backend_version` substitute
 - `api-rollout` manages the `api_version` substitute
+
+Each rollout writes only its own variable, with server-side apply under its own field manager
+(`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Do not set these variables in the
+Kustomization you commit; give the manifests a default instead (`${frontend_version:=1.0.0}`). If another field
+manager (for example kustomize-controller applying the Kustomization from Git) owns a variable the rollout writes,
+the deploy writes nothing and the Rollout reports `Ready=False` with reason `KustomizationFieldConflict`.
+Variables written by the shared `rollout-controller` field manager of earlier versions are taken over on the next deploy.
 
 ### OCIRepositories
 
@@ -559,7 +564,7 @@ metadata:
 spec:
   postBuild:
     substitute:
-      IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
+      environment: production  # IMAGE_TAG is written by the rollout; use ${IMAGE_TAG:=1.0.0} in manifests
 ```
 
 #### Gate bypass
