@@ -112,8 +112,14 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		o.Message = observation.Message(message)
 		observations = []observation.Observation{o}
 	}
+	// An Unhealthy result also records what failed and of what kind, so a Rollout
+	// can decide whether the failure rolls it back.
+	var failures []rolloutv1alpha1.HealthCheckFailure
+	if healthStatus == rolloutv1alpha1.HealthStatusUnhealthy {
+		failures = classifyKustomizationFailures(ctx, r.Client, kustomization, now)
+	}
 	// Update the health check status
-	return r.writeHealthCheckStatus(ctx, healthCheck, healthStatus, message, errorTime, observations)
+	return r.writeHealthCheckStatusWithFailures(ctx, healthCheck, healthStatus, message, errorTime, observations, failures)
 }
 
 // KustomizationReference represents a reference to a kustomization
@@ -489,6 +495,13 @@ func (r *KustomizationHealthReconciler) updateHealthCheckStatus(ctx context.Cont
 // writeHealthCheckStatus is updateHealthCheckStatus plus status.observations, merged so a
 // steady state keeps its observedTime and does not churn writes.
 func (r *KustomizationHealthReconciler) writeHealthCheckStatus(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string, errorTime *metav1.Time, observations []observation.Observation) (ctrl.Result, error) {
+	return r.writeHealthCheckStatusWithFailures(ctx, healthCheck, newStatus, newMessage, errorTime, observations, nil)
+}
+
+// writeHealthCheckStatusWithFailures also merges the failures seen now into
+// status.failures, which is a witness like lastErrorTime: it is only cleared by
+// the reset at a new deploy or retry.
+func (r *KustomizationHealthReconciler) writeHealthCheckStatusWithFailures(ctx context.Context, healthCheck *rolloutv1alpha1.HealthCheck, newStatus rolloutv1alpha1.HealthStatus, newMessage string, errorTime *metav1.Time, observations []observation.Observation, failures []rolloutv1alpha1.HealthCheckFailure) (ctrl.Result, error) {
 	now := metav1.NewTime(r.Clock.Now())
 
 	// Check if status has changed
@@ -502,6 +515,9 @@ func (r *KustomizationHealthReconciler) writeHealthCheckStatus(ctx context.Conte
 		merged = nil
 	}
 	healthCheck.Status.Observations = merged
+	if len(failures) > 0 {
+		healthCheck.Status.Failures = mergeFailures(healthCheck.Status.Failures, failures)
+	}
 
 	// Update LastChangeTime only if status changed
 	if statusChanged {
