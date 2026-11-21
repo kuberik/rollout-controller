@@ -1108,9 +1108,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	if rollout.Spec.VersionHistoryLimit != nil {
 		versionHistoryLimit = *rollout.Spec.VersionHistoryLimit
 	}
-	if int32(len(rollout.Status.History)) > versionHistoryLimit {
-		rollout.Status.History = rollout.Status.History[:versionHistoryLimit]
-	}
+	rollout.Status.History = trimHistory(rollout.Status.History, int(versionHistoryLimit))
 
 	// Update the condition message to reflect if gates were bypassed
 	conditionMessage := fmt.Sprintf("Release deployed successfully. %s", r.getBakeStatusSummary(rollout))

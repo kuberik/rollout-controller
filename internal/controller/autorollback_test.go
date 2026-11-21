@@ -695,12 +695,6 @@ func TestHoldFollowsTheNewestEntryAndNamedBuilds(t *testing.T) {
 	}}}
 	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"v2": true}), "only the newest entry for a tag decides")
 
-	// v0's failed entry scrolled out of history: the candidates list still holds it.
-	// v3's newest entry in history decides over a stale candidate flag.
-	ro.Status.Candidates = []rolloutv1alpha1.ReleaseCandidate{{Tag: "v0", FailedBake: true}, {Tag: "v1", FailedBake: true}}
-	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"v0": true, "v2": true}), "a held build stays held after its entry scrolls out")
-	ro.Status.Candidates = nil
-
 	cands := []rolloutv1alpha1.VersionInfo{{Tag: "v2"}, {Tag: "v3"}}
 	g.Expect(withoutHeld(ro, cands)).To(Equal([]rolloutv1alpha1.VersionInfo{{Tag: "v3"}}))
 
@@ -725,4 +719,31 @@ func TestDeployKindPrecedence(t *testing.T) {
 	g.Expect(deployKindOf(true, false, false, true, true)).To(Equal(rolloutv1alpha1.DeployKindAutoRollback))
 	g.Expect(deployKindOf(true, false, true, true, true)).To(Equal(rolloutv1alpha1.DeployKindForceDeploy))
 	g.Expect(deployKindOf(true, true, true, true, true)).To(Equal(rolloutv1alpha1.DeployKindPin))
+}
+
+func TestTrimHistoryKeepsTheEntriesThatHoldABuild(t *testing.T) {
+	g := NewWithT(t)
+	failed, ok := rolloutv1alpha1.BakeStatusFailed, rolloutv1alpha1.BakeStatusSucceeded
+	e := func(tag string, s string) rolloutv1alpha1.DeploymentHistoryEntry {
+		s2 := s
+		return rolloutv1alpha1.DeploymentHistoryEntry{Version: rolloutv1alpha1.VersionInfo{Tag: tag}, BakeStatus: &s2}
+	}
+	tags := func(h []rolloutv1alpha1.DeploymentHistoryEntry) []string {
+		out := []string{}
+		for _, x := range h {
+			out = append(out, x.Version.Tag)
+		}
+		return out
+	}
+	// The live run: T (rollback) , B failed, T, A failed, T ... with limit 3.
+	h := []rolloutv1alpha1.DeploymentHistoryEntry{
+		e("T", ok), e("B", failed), e("T", ok), e("A", failed), e("T", ok), e("C", ok), e("A", ok), e("D", failed),
+	}
+	got := trimHistory(h, 3)
+	g.Expect(tags(got)).To(Equal([]string{"T", "B", "T", "A", "D"}),
+		"A and D stay held past the limit; C succeeded and an older A entry does not decide")
+	ro := &rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: got}}
+	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"A": true, "B": true, "D": true}))
+	g.Expect(trimHistory(h[:2], 3)).To(HaveLen(2))
+	g.Expect(tags(trimHistory(h, 8))).To(Equal(tags(h)))
 }
