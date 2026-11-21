@@ -266,6 +266,34 @@ var _ = Describe("Automatic rollback", func() {
 			Expect(e.get(ctx).Status.History).To(HaveLen(3))
 		})
 
+		It("does not rewrite the status on every retry while the deploy keeps failing", func() {
+			e = newArEnv(ctx, arOpts{})
+			failV2()
+			wc, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme.Scheme})
+			Expect(err).NotTo(HaveOccurred())
+			e.r.Client = interceptor.NewClient(wc, interceptor.Funcs{
+				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					if isRollbackWrite(obj) {
+						return fmt.Errorf("injected persistent conflict")
+					}
+					return c.SubResource(sub).Update(ctx, obj, opts...)
+				},
+			})
+
+			_, err = e.r.Reconcile(ctx, reconcile.Request{NamespacedName: e.key})
+			Expect(err).To(HaveOccurred())
+			Expect(e.condition(ctx).Reason).To(Equal(autoRollbackDeployError))
+			rv := e.get(ctx).ResourceVersion
+
+			for range 3 {
+				_, err = e.r.Reconcile(ctx, reconcile.Request{NamespacedName: e.key})
+				Expect(err).To(HaveOccurred(), "the error goes back to the rate limiter")
+			}
+			Expect(e.get(ctx).ResourceVersion).To(Equal(rv), "a retry that fails the same way leaves the Rollout unchanged")
+			Expect(e.condition(ctx).Reason).To(Equal(autoRollbackDeployError))
+			Expect(rollbackEntries()).To(Equal(0))
+		})
+
 		It("keeps RolledBack when only the annotation clean-up fails afterwards", func() {
 			e = newArEnv(ctx, arOpts{})
 			e.deployV2(ctx)
