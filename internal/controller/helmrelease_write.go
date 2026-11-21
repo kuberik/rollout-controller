@@ -18,9 +18,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -43,9 +40,6 @@ const (
 	reasonHelmReleaseFieldConflict     = "HelmReleaseFieldConflict"
 	reasonHelmReleaseInvalidAnnotation = "HelmReleaseInvalidAnnotation"
 
-	// legacyFieldManager is the single manager earlier versions used for every rollout.
-	legacyFieldManager           = "rollout-controller"
-	fieldManagerMaxLen           = 128
 	helmReleaseChartVersionAnnot = "rollout.kuberik.com/chart-version.from"
 	writeConflictRequeueSecs     = 60
 )
@@ -56,51 +50,9 @@ var (
 	helmReleaseListGVK   = schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmReleaseList"}
 
 	helmValuesAnnotPattern = regexp.MustCompile(`^rollout\.kuberik\.com/values\.(.+)\.from$`)
-	conflictManagerPattern = regexp.MustCompile(`conflict with "([^"]+)"`)
 )
 
 var helmReleaseForbiddenOnce sync.Once
-
-// rolloutFieldManager returns the server-side-apply field manager for one rollout, shared by its HelmRelease and Kustomization writes.
-// Each rollout owns its own leaves, so one rollout's apply never drops another's. Field
-// manager names are limited to 128 characters; a longer name is truncated and suffixed
-// with a hash of the full name so it stays unique.
-func rolloutFieldManager(namespace, name string) string {
-	full := "rollout-controller/" + namespace + "/" + name
-	if len(full) <= fieldManagerMaxLen {
-		return full
-	}
-	sum := sha256.Sum256([]byte(full))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return full[:fieldManagerMaxLen-len(suffix)] + suffix
-}
-
-// onlyLegacyManagerConflict reports whether every conflict in err is with the shared
-// manager earlier versions used. Those fields are ours, so the apply may take them over.
-func onlyLegacyManagerConflict(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) || status.Status().Details == nil {
-		return false
-	}
-	n := 0
-	for _, c := range status.Status().Details.Causes {
-		m := conflictManagerPattern.FindStringSubmatch(c.Message)
-		if m == nil || m[1] != legacyFieldManager {
-			return false
-		}
-		n++
-	}
-	return n > 0
-}
-
-// deployWriteIssue is a deploy-blocking problem with an annotated HelmRelease or Kustomization. The
-// deploy writes nothing and the Rollout reports Reason on its Ready condition.
-type deployWriteIssue struct {
-	Reason  string
-	Message string
-}
-
-func (e *deployWriteIssue) Error() string { return e.Reason + ": " + e.Message }
 
 // helmReleaseWrite is the set of leaves kuberik owns on one HelmRelease that still
 // need to change to the wanted release.
@@ -233,43 +185,6 @@ func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollo
 		return fmt.Errorf("dry-run of HelmRelease %s failed: %w", w.name, err)
 	}
 	return nil
-}
-
-// describeFieldConflict names the object, the contested path and the other manager, then
-// appends the fix hint for the kind (kind is e.g. "HelmRelease"; id is namespace/name).
-func describeFieldConflict(kind, id string, paths []string, hint string, err error) string {
-	path := paths[0]
-	manager := "another field manager"
-	name := ""
-	var status apierrors.APIStatus
-	if errors.As(err, &status) && status.Status().Details != nil {
-		// Read the first cause: the error text says "conflicts with" when there are several.
-		for _, c := range status.Status().Details.Causes {
-			if c.Field != "" {
-				path = strings.TrimPrefix(c.Field, ".")
-			}
-			if m := conflictManagerPattern.FindStringSubmatch(c.Message); m != nil {
-				name = m[1]
-			}
-			if c.Field != "" || name != "" {
-				break
-			}
-		}
-	}
-	if name == "" {
-		if m := conflictManagerPattern.FindStringSubmatch(err.Error()); m != nil {
-			name = m[1]
-		}
-	}
-	if name != "" {
-		manager = fmt.Sprintf("%q", name)
-		// Another rollout's manager: the annotation moved, and that rollout never releases
-		// the field on its own, so Git is not the culprit.
-		if parts := strings.Split(name, "/"); len(parts) == 3 && parts[0] == legacyFieldManager {
-			hint = fmt.Sprintf("Rollout %s wrote it before the annotation moved and still owns it. Release it with a server-side apply under field manager %q of a %s body without the field.", parts[2], name, kind)
-		}
-	}
-	return fmt.Sprintf("%s %s: %s is also set by %s. %s", kind, id, path, manager, hint)
 }
 
 const helmReleaseConflictHint = "Remove it from the manifest in Git so kuberik owns it (set the default in the chart's values.yaml instead)."
