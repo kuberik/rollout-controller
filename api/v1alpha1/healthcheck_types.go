@@ -132,6 +132,14 @@ type HealthCheckStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=16
 	Failures []HealthCheckFailure `json:"failures,omitempty"`
+
+	// FailuresDeferred says the check is Unhealthy for a reason other sources
+	// report (for example a Kruise Rollout left to its RolloutTests), so an empty
+	// failures list does not mean the failure is unclassified. Like failures it is
+	// a witness: set by the check, cleared only by the reset at a new deploy or
+	// retry.
+	// +optional
+	FailuresDeferred bool `json:"failuresDeferred,omitempty"`
 }
 
 // HealthCheckObservationKind selects how an observation is drawn.

@@ -207,14 +207,15 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 
 // classifyKustomizationFailures says what is failing for an Unhealthy
 // kustomization check. It returns an empty list only when the failing objects
-// are Kruise Rollouts left to their RolloutTests (see inventoryFailures).
-func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) []rolloutv1alpha1.HealthCheckFailure {
+// are Kruise Rollouts left to their RolloutTests (see inventoryFailures); then
+// deferred is true, so the check can say the failure is accounted for elsewhere.
+func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) (failures []rolloutv1alpha1.HealthCheckFailure, deferred bool) {
 	src := failureSource(failureSourceKustomizationLabel, ks.Namespace, ks.Name)
-	own := func(kind rolloutv1alpha1.FailureKind, reason, msg string) []rolloutv1alpha1.HealthCheckFailure {
+	own := func(kind rolloutv1alpha1.FailureKind, reason, msg string) ([]rolloutv1alpha1.HealthCheckFailure, bool) {
 		return []rolloutv1alpha1.HealthCheckFailure{{
 			Source: src, Kind: kind, Reason: reason, Message: observation.Message(msg),
 			Rollback: rollbackSwitch(ks.GetAnnotations()), FirstSeenTime: now,
-		}}
+		}}, false
 	}
 	ready := meta.FindStatusCondition(ks.Status.Conditions, fluxmeta.ReadyCondition)
 	readyReason, readyMsg := "", ""
@@ -229,7 +230,7 @@ func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kus
 	// here would add a failure that rolls back by the class default and override a
 	// test's rollback: "false".
 	if found, explained := inventoryFailures(ctx, c, ks, now); len(found) > 0 || explained {
-		return found
+		return found, len(found) == 0
 	}
 	if readyReason == reasonHealthCheckFailed {
 		return own(rolloutv1alpha1.FailureKindNotReady, reasonHealthCheckFailed, readyMsg)

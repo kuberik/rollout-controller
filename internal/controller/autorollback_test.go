@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -681,8 +682,113 @@ var _ = Describe("HealthCheck rollbackOn and failures", func() {
 		Expect(k8sClient.Get(ctx, hcKey, got)).To(Succeed())
 		Expect(got.Status.LastErrorTime).To(BeNil())
 		Expect(got.Status.Failures).To(BeEmpty())
+		Expect(got.Status.FailuresDeferred).To(BeFalse())
+	})
+
+	It("clears failuresDeferred with the reset", func() {
+		hc := &rolloutv1alpha1.HealthCheck{ObjectMeta: metav1.ObjectMeta{Name: "hc-deferred", Namespace: ns}}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		hc.Status.FailuresDeferred = true
+		Expect(k8sClient.Status().Update(ctx, hc)).To(Succeed())
+		reset := &HealthCheckReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}
+		Expect(reset.ResetHealthCheckStatus(ctx, hc)).To(Succeed())
+		got := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(hc), got)).To(Succeed())
+		Expect(got.Status.FailuresDeferred).To(BeFalse())
 	})
 })
+
+var _ = Describe("A kustomization failure explained by the tests", func() {
+	ctx := context.Background()
+
+	It("records the failed bake without a rolling-back verdict and starts no rollback", func() {
+		e := newArEnv(ctx, arOpts{})
+		defer e.cleanup(ctx)
+		e.deployV2(ctx)
+
+		ks := &kustomizev1.Kustomization{
+			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: e.ns},
+			Spec: kustomizev1.KustomizationSpec{Path: "./", Wait: true,
+				SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "OCIRepository", Name: "src"}},
+		}
+		Expect(k8sClient.Create(ctx, ks)).To(Succeed())
+		e.clock.Add(time.Minute)
+		ks.Status.Conditions = []metav1.Condition{{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: "HealthCheckFailed",
+			Message: "health check failed", ObservedGeneration: ks.Generation, LastTransitionTime: metav1.NewTime(e.clock.Now())}}
+		ks.Status.ObservedGeneration = ks.Generation
+		kruise := kruiseStalled(e.ns, "web", reasonRolloutTestFailed)
+		kruise.SetAPIVersion("rollouts.kruise.io/v1beta1")
+		// The RolloutTest for the Kruise Rollout is not Failed yet and opted out of rolling back.
+		test := forRollout(failedObj("rollout.kuberik.com/v1alpha1", "RolloutTest", e.ns, "smoke",
+			map[string]string{"rollout.kuberik.com/rollback": "false"}, cond("Ready", "Unknown", "Running")), "web")
+		ks.Status.Inventory = inventoryOf(kruise, test)
+		Expect(k8sClient.Status().Update(ctx, ks)).To(Succeed())
+
+		// Envtest has no Kruise or RolloutTest CRDs: serve those two from memory.
+		objs := map[string]*unstructured.Unstructured{"Rollout": kruise, "RolloutTest": test}
+		wc, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme.Scheme})
+		Expect(err).NotTo(HaveOccurred())
+		c := interceptor.NewClient(wc, interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if u, ok := obj.(*unstructured.Unstructured); ok {
+				if src, ok := objs[u.GetKind()]; ok && schema.FromAPIVersionAndKind(u.GetAPIVersion(), u.GetKind()).Group != "" {
+					src.DeepCopyInto(u)
+					return nil
+				}
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		}})
+
+		hc := &rolloutv1alpha1.HealthCheck{}
+		Expect(k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
+		hc.Annotations = map[string]string{"healthcheck.kuberik.com/kustomization": "ks"}
+		Expect(k8sClient.Update(ctx, hc)).To(Succeed())
+		health := &KustomizationHealthReconciler{Client: c, Scheme: k8sClient.Scheme(), Clock: e.clock}
+		_, err = health.Reconcile(ctx, reconcile.Request{NamespacedName: e.hcKey})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
+		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
+		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
+		Expect(hc.Status.Failures).To(BeEmpty())
+		Expect(hc.Status.FailuresDeferred).To(BeTrue())
+
+		e.reconcile(ctx)
+		h := e.get(ctx).Status.History
+		Expect(h).To(HaveLen(2), "no rollback deploy")
+		Expect(h[0].Version.Tag).To(Equal("v2"))
+		Expect(*h[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(h[0].FailedHealthChecks).To(HaveLen(1), "the failed bake is still recorded")
+		Expect(h[0].FailedHealthChecks[0].Failures).To(BeEmpty(), "with no Unclassified fallback entry")
+		Expect(e.condition(ctx)).NotTo(BeNil())
+		Expect(e.condition(ctx).Status).To(Equal(metav1.ConditionFalse))
+		Expect(e.condition(ctx).Reason).To(Equal(autoRollbackNotATrigger))
+	})
+})
+
+func TestRecordVerdictsDeferredFailures(t *testing.T) {
+	class := healthCheckClassKustomization
+	hc := &rolloutv1alpha1.HealthCheck{Spec: rolloutv1alpha1.HealthCheckSpec{Class: &class}}
+	hc.Namespace, hc.Name = "app", "hc"
+
+	var rec rolloutv1alpha1.FailedHealthCheck
+	recordVerdicts(&rec, hc, nil)
+	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindUnclassified || !rec.Failures[0].RollsBack {
+		t.Fatalf("a check with no failures keeps the Unclassified fallback, got %+v", rec.Failures)
+	}
+
+	hc.Status.FailuresDeferred = true
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil)
+	if len(rec.Failures) != 0 {
+		t.Fatalf("a deferred check adds no fallback, got %+v", rec.Failures)
+	}
+
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(hc)})
+	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindNotReady {
+		t.Fatalf("extra entries are still recorded for a deferred check, got %+v", rec.Failures)
+	}
+}
 
 func TestHoldFollowsTheNewestEntryAndNamedBuilds(t *testing.T) {
 	g := NewWithT(t)

@@ -89,7 +89,8 @@ func classify(ks *kustomizev1.Kustomization, objs ...*unstructured.Unstructured)
 		b = b.WithObjects(o)
 	}
 	var c client.Reader = b.Build()
-	return classifyKustomizationFailures(context.Background(), c, ks, metav1.Now())
+	fs, _ := classifyKustomizationFailures(context.Background(), c, ks, metav1.Now())
+	return fs
 }
 
 func kindsOf(fs []rolloutv1alpha1.HealthCheckFailure) []string {

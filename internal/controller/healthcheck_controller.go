@@ -179,6 +179,7 @@ func (r *HealthCheckReconciler) ResetHealthCheckStatus(ctx context.Context, heal
 	healthCheck.Status.LastErrorTime = nil
 	// failures are a witness of the same failure and go with it.
 	healthCheck.Status.Failures = nil
+	healthCheck.Status.FailuresDeferred = false
 
 	// Update the status
 	return r.Status().Update(ctx, healthCheck)

@@ -116,7 +116,9 @@ func verdictFor(f rolloutv1alpha1.HealthCheckFailure, rollbackOn []rolloutv1alph
 // failed health check record. extra entries come first (the deploy-timeout path
 // adds NotReady for a check that is not Healthy). A check that recorded no
 // failures counts as one Unclassified failure, so older providers still roll back
-// by their class default.
+// by their class default. The exception is a check that says its failures are
+// deferred (status.failuresDeferred): another source accounts for them, so no
+// entry is added and nothing rolls back on its account.
 func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.HealthCheck, extra []rolloutv1alpha1.HealthCheckFailure) {
 	if hc.Spec.Class != nil {
 		rec.Class = *hc.Spec.Class
@@ -124,7 +126,7 @@ func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.
 	rollbackOn := resolvedRollbackOn(hc)
 	rec.RollbackOn = rollbackOn
 	entries := append(slices.Clone(extra), hc.Status.Failures...)
-	if len(entries) == 0 {
+	if len(entries) == 0 && !hc.Status.FailuresDeferred {
 		entries = []rolloutv1alpha1.HealthCheckFailure{{
 			Source: "HealthCheck " + hc.Namespace + "/" + hc.Name,
 			Kind:   rolloutv1alpha1.FailureKindUnclassified,
