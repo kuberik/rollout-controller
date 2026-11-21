@@ -90,6 +90,11 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.updateHealthCheckStatus(ctx, healthCheck, rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization not found: %v", err), nil)
 	}
 
+	// Flux reports Ready on the previous release until the new source revision is applied.
+	if res, done, err := r.holdForSource(ctx, healthCheck, kustomization); done {
+		return res, err
+	}
+
 	// wait: true is only usable with rollouts when kustomize-controller runs with the
 	// CancelHealthCheckOnNewRevision feature gate (Flux 2.7+); without it a failing revision
 	// blocks the next one until spec.timeout. So with wait: true we assume the gate is on and
