@@ -695,6 +695,12 @@ func TestHoldFollowsTheNewestEntryAndNamedBuilds(t *testing.T) {
 	}}}
 	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"v2": true}), "only the newest entry for a tag decides")
 
+	// v0's failed entry scrolled out of history: the candidates list still holds it.
+	// v3's newest entry in history decides over a stale candidate flag.
+	ro.Status.Candidates = []rolloutv1alpha1.ReleaseCandidate{{Tag: "v0", FailedBake: true}, {Tag: "v1", FailedBake: true}}
+	g.Expect(failedBakeTags(ro)).To(Equal(map[string]bool{"v0": true, "v2": true}), "a held build stays held after its entry scrolls out")
+	ro.Status.Candidates = nil
+
 	cands := []rolloutv1alpha1.VersionInfo{{Tag: "v2"}, {Tag: "v3"}}
 	g.Expect(withoutHeld(ro, cands)).To(Equal([]rolloutv1alpha1.VersionInfo{{Tag: "v3"}}))
 

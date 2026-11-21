@@ -156,7 +156,10 @@ func notReadyEntry(hc *rolloutv1alpha1.HealthCheck) rolloutv1alpha1.HealthCheckF
 // --- hold ---------------------------------------------------------------
 
 // failedBakeTags are the tags whose newest deploy in this Rollout's history
-// failed its bake. Automatic selection skips them.
+// failed its bake. Automatic selection skips them. A held build whose entries
+// have scrolled out of history (versionHistoryLimit) stays held through the
+// candidates list, which carries failedBake from one reconcile to the next;
+// only a newer deploy of that tag in history decides again.
 func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
 	seen := map[string]bool{}
 	held := map[string]bool{}
@@ -167,6 +170,11 @@ func failedBakeTags(rollout *rolloutv1alpha1.Rollout) map[string]bool {
 		seen[h.Version.Tag] = true
 		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusFailed {
 			held[h.Version.Tag] = true
+		}
+	}
+	for _, c := range rollout.Status.Candidates {
+		if c.FailedBake && !seen[c.Tag] {
+			held[c.Tag] = true
 		}
 	}
 	return held
