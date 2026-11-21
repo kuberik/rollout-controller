@@ -1836,7 +1836,7 @@ var _ = Describe("Rollout Controller", func() {
 				By("Setting health check error exactly at bake start time")
 				bakeStartTime := rollout.Status.History[0].BakeStartTime.Time
 				healthCheck.Status.Status = rolloutv1alpha1.HealthStatusUnhealthy
-				healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime.Add(time.Second)} // strictly after the deploy: a same-second stamp is ignored (see failedAfter)
+				healthCheck.Status.LastErrorTime = &metav1.Time{Time: bakeStartTime}
 				Expect(k8sClient.Status().Update(ctx, healthCheck)).To(Succeed())
 
 				By("Reconciling to check bake status")
