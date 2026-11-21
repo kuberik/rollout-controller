@@ -44,10 +44,10 @@ const (
 	reasonHelmReleaseInvalidAnnotation = "HelmReleaseInvalidAnnotation"
 
 	// legacyFieldManager is the single manager earlier versions used for every rollout.
-	legacyFieldManager  = "rollout-controller"
-	fieldManagerMaxLen  = 128
-	helmReleaseChartVersionAnnot   = "rollout.kuberik.com/chart-version.from"
-	writeConflictRequeueSecs = 60
+	legacyFieldManager           = "rollout-controller"
+	fieldManagerMaxLen           = 128
+	helmReleaseChartVersionAnnot = "rollout.kuberik.com/chart-version.from"
+	writeConflictRequeueSecs     = 60
 )
 
 var (
