@@ -35,19 +35,19 @@ func helmSpec(extra map[string]interface{}) map[string]interface{} {
 	return spec
 }
 
-func newHR(ns, name string, annots map[string]string, spec map[string]interface{}) *unstructured.Unstructured {
+func newHR(ns string, annots map[string]string, spec map[string]interface{}) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]interface{}{"spec": spec}}
 	u.SetGroupVersionKind(helmReleaseGVK)
 	u.SetNamespace(ns)
-	u.SetName(name)
+	u.SetName("shop")
 	u.SetAnnotations(annots)
 	return u
 }
 
-func getHR(ns, name string) *unstructured.Unstructured {
+func getHR(ns string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(helmReleaseGVK)
-	ExpectWithOffset(1, k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, u)).To(Succeed())
+	ExpectWithOffset(1, k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "shop"}, u)).To(Succeed())
 	return u
 }
 
@@ -93,15 +93,15 @@ var _ = Describe("HelmRelease write path", func() {
 	})
 
 	It("creates a nested values path, keeps siblings and bumps the generation", func() {
-		Expect(k8sClient.Create(ctx, newHR(ns, "shop", map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
+		Expect(k8sClient.Create(ctx, newHR(ns, map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
 			helmSpec(map[string]interface{}{"values": map[string]interface{}{
 				"replicas": int64(2), "image": map[string]interface{}{"repository": "ghcr.io/x/shop"}}})))).To(Succeed())
-		before := getHR(ns, "shop").GetGeneration()
+		before := getHR(ns).GetGeneration()
 		feed.Publish("2.0.0")
 		_, err := reconcileRollout()
 		Expect(err).NotTo(HaveOccurred())
 
-		hr := getHR(ns, "shop")
+		hr := getHR(ns)
 		Expect(nestedStr(hr, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
 		Expect(nestedStr(hr, "spec", "values", "image", "repository")).To(Equal("ghcr.io/x/shop"))
 		replicas, _, _ := unstructured.NestedInt64(hr.Object, "spec", "values", "replicas")
@@ -111,13 +111,13 @@ var _ = Describe("HelmRelease write path", func() {
 	})
 
 	It("writes two paths on one HelmRelease", func() {
-		Expect(k8sClient.Create(ctx, newHR(ns, "shop", map[string]string{
+		Expect(k8sClient.Create(ctx, newHR(ns, map[string]string{
 			"rollout.kuberik.com/values.image.tag.from":              "shop",
 			"rollout.kuberik.com/values.podAnnotations.release.from": "shop"}, helmSpec(nil)))).To(Succeed())
 		feed.Publish("2.0.0")
 		_, err := reconcileRollout()
 		Expect(err).NotTo(HaveOccurred())
-		hr := getHR(ns, "shop")
+		hr := getHR(ns)
 		Expect(nestedStr(hr, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
 		Expect(nestedStr(hr, "spec", "values", "podAnnotations", "release")).To(Equal("2.0.0"))
 	})
@@ -126,21 +126,21 @@ var _ = Describe("HelmRelease write path", func() {
 		// Git must not set the version itself, or kuberik refuses (field ownership).
 		spec := helmSpec(nil)
 		unstructured.RemoveNestedField(spec, "chart", "spec", "version")
-		Expect(k8sClient.Create(ctx, newHR(ns, "shop", map[string]string{"rollout.kuberik.com/chart-version.from": "shop"}, spec))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newHR(ns, map[string]string{"rollout.kuberik.com/chart-version.from": "shop"}, spec))).To(Succeed())
 		feed.Publish("2.0.0")
 		_, err := reconcileRollout()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(nestedStr(getHR(ns, "shop"), "spec", "chart", "spec", "version")).To(Equal("2.0.0"))
+		Expect(nestedStr(getHR(ns), "spec", "chart", "spec", "version")).To(Equal("2.0.0"))
 	})
 
 	It("does not write when the value is already set", func() {
-		Expect(k8sClient.Create(ctx, newHR(ns, "shop", map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
+		Expect(k8sClient.Create(ctx, newHR(ns, map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
 			helmSpec(map[string]interface{}{"values": map[string]interface{}{"image": map[string]interface{}{"tag": "2.0.0"}}})))).To(Succeed())
-		before := getHR(ns, "shop")
+		before := getHR(ns)
 		feed.Publish("2.0.0")
 		_, err := reconcileRollout()
 		Expect(err).NotTo(HaveOccurred())
-		after := getHR(ns, "shop")
+		after := getHR(ns)
 		Expect(after.GetGeneration()).To(Equal(before.GetGeneration()))
 		Expect(after.GetResourceVersion()).To(Equal(before.GetResourceVersion()))
 		Expect(getRollout().Status.History).To(HaveLen(1))
@@ -149,7 +149,7 @@ var _ = Describe("HelmRelease write path", func() {
 	It("rejects chart-version on a HelmRelease that uses chartRef", func() {
 		spec := helmSpec(map[string]interface{}{"chartRef": map[string]interface{}{"kind": "OCIRepository", "name": "chart"}})
 		delete(spec, "chart")
-		Expect(k8sClient.Create(ctx, newHR(ns, "shop", map[string]string{"rollout.kuberik.com/chart-version.from": "shop"}, spec))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newHR(ns, map[string]string{"rollout.kuberik.com/chart-version.from": "shop"}, spec))).To(Succeed())
 		feed.Publish("2.0.0")
 		res, err := reconcileRollout()
 		Expect(err).NotTo(HaveOccurred())
@@ -189,7 +189,7 @@ var _ = Describe("HelmRelease write path", func() {
 		})
 
 		gitHR := func(values map[string]interface{}) *unstructured.Unstructured {
-			return newHR(ns, "shop", map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
+			return newHR(ns, map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
 				helmSpec(map[string]interface{}{"values": values}))
 		}
 
@@ -208,7 +208,7 @@ var _ = Describe("HelmRelease write path", func() {
 			gotKs := &kustomizev1.Kustomization{}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ks), gotKs)).To(Succeed())
 			Expect(gotKs.Spec.PostBuild.Substitute["v"]).To(Equal("old"))
-			Expect(nestedStr(getHR(ns, "shop"), "spec", "values", "image", "tag")).To(Equal("from-git"))
+			Expect(nestedStr(getHR(ns), "spec", "values", "image", "tag")).To(Equal("from-git"))
 			ro := getRollout()
 			Expect(ro.Status.History).To(BeEmpty())
 
@@ -226,7 +226,7 @@ var _ = Describe("HelmRelease write path", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oci), got)).To(Succeed())
 			Expect(got.Spec.Reference.Tag).To(Equal("2.0.0"))
-			hr := getHR(ns, "shop")
+			hr := getHR(ns)
 			Expect(nestedStr(hr, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
 			Expect(getRollout().Status.History).To(HaveLen(1))
 		})
@@ -236,7 +236,7 @@ var _ = Describe("HelmRelease write path", func() {
 			feed.Publish("2.0.0")
 			_, err := reconcileRollout()
 			Expect(err).NotTo(HaveOccurred())
-			hr := getHR(ns, "shop")
+			hr := getHR(ns)
 			Expect(nestedStr(hr, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
 			Expect(nestedStr(hr, "spec", "values", "image", "repository")).To(Equal("ghcr.io/x/shop"))
 			Expect(getRollout().Status.History).To(HaveLen(1))

@@ -40,14 +40,14 @@ func hrObj(generation int64, annots map[string]string, specVersion, historyChart
 	if historyChart != "" {
 		_ = unstructured.SetNestedSlice(u.Object, []interface{}{map[string]interface{}{"chartVersion": historyChart, "version": int64(3)}}, "status", "history")
 	}
-	var cs []interface{}
+	cs := make([]interface{}, 0, len(conds))
 	for _, c := range conds {
 		cs = append(cs, map[string]interface{}{
 			"type": c.typ, "status": c.status, "reason": c.reason, "message": c.reason + " message",
 			"observedGeneration": c.gen, "lastTransitionTime": c.at.UTC().Format(time.RFC3339),
 		})
 	}
-	if cs != nil {
+	if len(cs) > 0 {
 		_ = unstructured.SetNestedSlice(u.Object, cs, "status", "conditions")
 	}
 	return u
@@ -182,7 +182,7 @@ var _ = Describe("helmrelease health class", func() {
 				}
 				Expect(k8sClient.Create(ctx, oci)).To(Succeed())
 
-				hr = newHR(ns, "shop", nil, map[string]interface{}{
+				hr = newHR(ns, nil, map[string]interface{}{
 					"interval": "1m",
 					"chartRef": map[string]interface{}{"kind": "OCIRepository", "name": "chart"},
 				})
