@@ -236,8 +236,14 @@ func TestKruiseRolloutSuppressedByAnyTestOfItsRollout(t *testing.T) {
 	// (reset, retry, pin): the Kruise Rollout still adds no entry of its own.
 	passing := rolloutTestPassing("app", "smoke", "canary")
 	c := fake.NewClientBuilder().WithObjects(kr, passing).Build()
-	g.Expect(inventoryFailures(context.Background(), c, ksWith("HealthCheckFailed", kr, passing), metav1.Now())).To(BeEmpty(),
-		"a RolloutTest for the Kruise Rollout in the inventory decides, whatever its phase")
+	found, explained := inventoryFailures(context.Background(), c, ksWith("HealthCheckFailed", kr, passing), metav1.Now())
+	g.Expect(found).To(BeEmpty(), "a RolloutTest for the Kruise Rollout in the inventory decides, whatever its phase")
+	g.Expect(explained).To(BeTrue())
+	// Nor does the Kustomization fall back to an entry of its own, which would roll
+	// back by the class default even when the test opted out.
+	for _, reason := range []string{"HealthCheckFailed", ""} {
+		g.Expect(classify(ksWith(reason, kr, passing), kr, passing)).To(BeEmpty(), "ready reason %q", reason)
+	}
 
 	// A failed test for a different rollout does not explain this one.
 	other := forRollout(rolloutTestFailed("app", "other-smoke", nil), "other")

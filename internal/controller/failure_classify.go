@@ -152,22 +152,27 @@ func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, m
 // inventory, whatever phase those tests are in: the tests decide, each by its own
 // switch. derivedIdx maps an entry to its Kruise Rollout key (namespace/name);
 // testedRollouts holds namespace/spec.rolloutName of every RolloutTest walked.
-func dropDerived(entries []rolloutv1alpha1.HealthCheckFailure, derivedIdx map[int]string, testedRollouts map[string]bool) []rolloutv1alpha1.HealthCheckFailure {
-	out := make([]rolloutv1alpha1.HealthCheckFailure, 0, len(entries))
+// dropped reports whether any entry was removed.
+func dropDerived(entries []rolloutv1alpha1.HealthCheckFailure, derivedIdx map[int]string, testedRollouts map[string]bool) (out []rolloutv1alpha1.HealthCheckFailure, dropped bool) {
+	out = make([]rolloutv1alpha1.HealthCheckFailure, 0, len(entries))
 	for i, e := range entries {
 		if key, ok := derivedIdx[i]; ok && testedRollouts[key] {
+			dropped = true
 			continue
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, dropped
 }
 
 // inventoryFailures walks the Kustomization's inventory and classifies every
-// object kstatus reports as Failed.
-func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) []rolloutv1alpha1.HealthCheckFailure {
+// object kstatus reports as Failed. explained reports that a failing Kruise
+// Rollout was left to its RolloutTests: the failure is accounted for even when
+// no test is Failed in this pass (the test's own entry is in the witness from an
+// earlier pass, or comes with a later one).
+func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) (found []rolloutv1alpha1.HealthCheckFailure, explained bool) {
 	if ks.Status.Inventory == nil {
-		return nil
+		return nil, false
 	}
 	entries := make([]rolloutv1alpha1.HealthCheckFailure, 0, len(ks.Status.Inventory.Entries))
 	derivedIdx := map[int]string{}
@@ -201,7 +206,8 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 }
 
 // classifyKustomizationFailures says what is failing for an Unhealthy
-// kustomization check. It never returns an empty list.
+// kustomization check. It returns an empty list only when the failing objects
+// are Kruise Rollouts left to their RolloutTests (see inventoryFailures).
 func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) []rolloutv1alpha1.HealthCheckFailure {
 	src := failureSource(failureSourceKustomizationLabel, ks.Namespace, ks.Name)
 	own := func(kind rolloutv1alpha1.FailureKind, reason, msg string) []rolloutv1alpha1.HealthCheckFailure {
@@ -218,7 +224,11 @@ func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kus
 			return own(rolloutv1alpha1.FailureKindApplyFailed, readyReason, readyMsg)
 		}
 	}
-	if found := inventoryFailures(ctx, c, ks, now); len(found) > 0 {
+	// A Kruise Rollout stalled on its tests is explained by those tests, whatever
+	// phase they are in right now. Falling back to the Kustomization's own entry
+	// here would add a failure that rolls back by the class default and override a
+	// test's rollback: "false".
+	if found, explained := inventoryFailures(ctx, c, ks, now); len(found) > 0 || explained {
 		return found
 	}
 	if readyReason == reasonHealthCheckFailed {
