@@ -1138,14 +1138,10 @@ var _ = Describe("Rollout Controller", func() {
 						Kind: "GitRepository",
 						Name: "test-repo",
 					},
-					PostBuild: &kustomizev1.PostBuild{
-						Substitute: map[string]string{
-							"app_version": "old-version",
-						},
-					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+			seedLegacySubstitute(namespace, "test-kustomization", map[string]interface{}{"app_version": "old-version"})
 
 			By("Reconciling the resources")
 			controllerReconciler := &RolloutReconciler{CatalogueAvailable: true, Client: k8sClient, Scheme: k8sClient.Scheme()}

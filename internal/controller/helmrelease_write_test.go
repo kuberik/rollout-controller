@@ -183,9 +183,10 @@ var _ = Describe("HelmRelease write path", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: ns, Annotations: map[string]string{"rollout.kuberik.com/substitute.v.from": "shop"}},
 				Spec: kustomizev1.KustomizationSpec{Interval: metav1.Duration{Duration: time.Minute}, Path: "./",
 					SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "GitRepository", Name: "g"},
-					PostBuild: &kustomizev1.PostBuild{Substitute: map[string]string{"v": "old"}}},
+				},
 			}
 			Expect(k8sClient.Create(ctx, ks)).To(Succeed())
+			seedLegacySubstitute(ns, "ks", map[string]interface{}{"v": "old"})
 		})
 
 		gitHR := func(values map[string]interface{}) *unstructured.Unstructured {
