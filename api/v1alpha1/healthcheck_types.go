@@ -25,6 +25,72 @@ type HealthCheckSpec struct {
 	// Class specifies the type of health check (e.g., 'kustomization')
 	// +optional
 	Class *string `json:"class,omitempty"`
+
+	// RollbackOn lists the kinds of failure that roll back a Rollout that has
+	// spec.autoRollback.enabled. Unset means the default for the check's class;
+	// an empty list means this check never rolls back. CheckError cannot be
+	// listed: a check that fails to run never rolls anything back.
+	// +optional
+	// +kubebuilder:validation:MaxItems=6
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'CheckError')",message="CheckError never rolls back and cannot be listed"
+	RollbackOn *[]FailureKind `json:"rollbackOn,omitempty"`
+}
+
+// FailureKind classifies why a health check failed.
+// +kubebuilder:validation:Enum=Alert;Incident;ApplyFailed;NotReady;TestFailed;CheckError;Unclassified
+type FailureKind string
+
+const (
+	// FailureKindAlert is a monitoring alert firing.
+	FailureKindAlert FailureKind = "Alert"
+	// FailureKindIncident is an open incident.
+	FailureKindIncident FailureKind = "Incident"
+	// FailureKindApplyFailed is a manifest that could not be built or applied.
+	FailureKindApplyFailed FailureKind = "ApplyFailed"
+	// FailureKindNotReady is a workload that did not become ready.
+	FailureKindNotReady FailureKind = "NotReady"
+	// FailureKindTestFailed is a test (RolloutTest, Job) that failed.
+	FailureKindTestFailed FailureKind = "TestFailed"
+	// FailureKindCheckError is the check itself failing to run. It never rolls back.
+	FailureKindCheckError FailureKind = "CheckError"
+	// FailureKindUnclassified is a failure the provider could not classify.
+	FailureKindUnclassified FailureKind = "Unclassified"
+)
+
+// RollbackAnnotation on an object a check watches (a RolloutTest, a Job, a
+// Deployment) sets whether its failure rolls a Rollout back: "true" or "false".
+// Any other value is ignored.
+const RollbackAnnotation = "rollout.kuberik.com/rollback"
+
+// HealthCheckFailure is one thing that failed, with its kind. Like
+// lastErrorTime it is a witness: it stays after the source recovers and is
+// cleared only by the reset at the next deploy or retry.
+type HealthCheckFailure struct {
+	// Source names what failed, e.g. "RolloutTest ns/name" or "Kustomization ns/name".
+	// +kubebuilder:validation:MaxLength=256
+	Source string `json:"source"`
+
+	// Kind classifies the failure.
+	Kind FailureKind `json:"kind"`
+
+	// Reason is the machine reason (RolloutTestFailed, JobFailed,
+	// ProgressDeadlineExceeded, BuildFailed, ...).
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Reason string `json:"reason,omitempty"`
+
+	// Rollback is the source's own switch, read from the
+	// rollout.kuberik.com/rollback annotation. Nil when the source has none.
+	// +optional
+	Rollback *bool `json:"rollback,omitempty"`
+
+	// Message is one line of detail.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Message string `json:"message,omitempty"`
+
+	// FirstSeenTime is when this source and kind were first recorded as failing.
+	FirstSeenTime metav1.Time `json:"firstSeenTime"`
 }
 
 type HealthStatus string
@@ -59,6 +125,13 @@ type HealthCheckStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=16
 	Observations []HealthCheckObservation `json:"observations,omitempty"`
+
+	// Failures is the witness of what failed, by source and kind. Entries are
+	// added when a source fails and kept after it recovers; the reset at a new
+	// deploy or retry clears them together with lastErrorTime.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	Failures []HealthCheckFailure `json:"failures,omitempty"`
 }
 
 // HealthCheckObservationKind selects how an observation is drawn.
