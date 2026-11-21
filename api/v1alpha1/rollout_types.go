@@ -176,7 +176,33 @@ type RolloutSpec struct {
 	// HealthCheckSelector specifies how to select HealthChecks for this rollout
 	// +optional
 	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
+
+	// AutoRollback turns on rolling back to the last good build when a build
+	// fails its bake because of a failure the health checks say should roll back.
+	// +optional
+	AutoRollback *AutoRollbackSpec `json:"autoRollback,omitempty"`
 }
+
+// AutoRollbackSpec configures automatic rollback.
+type AutoRollbackSpec struct {
+	// Enabled turns automatic rollback on. Off by default.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// DeployKind says what caused a deploy, so automation can tell its own deploys
+// from a person's.
+// +kubebuilder:validation:Enum=Automatic;GateBypass;Unblock;Pin;ForceDeploy;AutoRollback
+type DeployKind string
+
+const (
+	DeployKindAutomatic    DeployKind = "Automatic"
+	DeployKindGateBypass   DeployKind = "GateBypass"
+	DeployKindUnblock      DeployKind = "Unblock"
+	DeployKindPin          DeployKind = "Pin"
+	DeployKindForceDeploy  DeployKind = "ForceDeploy"
+	DeployKindAutoRollback DeployKind = "AutoRollback"
+)
 
 // ValidateHealthCheckSelector validates the health check selector configuration.
 // Returns an error if the configuration is invalid.
@@ -266,6 +292,12 @@ type ReleaseCandidate struct {
 	// +kubebuilder:validation:MaxItems=16
 	// +optional
 	BlockedBy []string `json:"blockedBy,omitempty"`
+
+	// FailedBake is true when this Rollout's newest deploy of the release failed
+	// its bake. Automatic selection skips it until someone names the build
+	// (spec.wantedVersion, force-deploy or bypass-gates).
+	// +optional
+	FailedBake bool `json:"failedBake,omitempty"`
 }
 
 // RolloutStatus defines the observed state of Rollout.
@@ -364,6 +396,40 @@ type FailedHealthCheck struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=16
 	Observations []HealthCheckObservation `json:"observations,omitempty"`
+
+	// Class is the health check's spec.class.
+	// +optional
+	Class string `json:"class,omitempty"`
+
+	// RollbackOn is the check's spec.rollbackOn as resolved when the failure was
+	// recorded (the class default when the check sets none).
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	RollbackOn []FailureKind `json:"rollbackOn,omitempty"`
+
+	// Failures lists what failed in this check, each with the decision it led to.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	Failures []FailureVerdict `json:"failures,omitempty"`
+}
+
+// FailureVerdict is one failure of a health check and whether it rolls back.
+type FailureVerdict struct {
+	// Source names what failed.
+	Source string `json:"source"`
+	// Kind classifies the failure.
+	Kind FailureKind `json:"kind"`
+	// Reason is the machine reason.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// Message is one line of detail.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// RollsBack is true when this failure triggers an automatic rollback.
+	RollsBack bool `json:"rollsBack"`
+	// Why is the rule that decided: CheckRollbackOn, NotInRollbackOn,
+	// SourceOptedOut, SourceOptedIn or CheckErrorNever.
+	Why string `json:"why"`
 }
 
 // TriggeredByInfo indicates what triggered a deployment.
@@ -462,6 +528,15 @@ type DeploymentHistoryEntry struct {
 	// approval gate. Nil when no approval gate applied, or when gates were bypassed.
 	// +optional
 	Approval *ApprovalRecord `json:"approval,omitempty"`
+
+	// DeployKind is what caused this deploy. Entries written before it existed
+	// have none and are never rolled back to or from automatically.
+	// +optional
+	DeployKind DeployKind `json:"deployKind,omitempty"`
+
+	// RollbackOf is the ID of the history entry this deploy rolled back.
+	// +optional
+	RollbackOf *int64 `json:"rollbackOf,omitempty"`
 }
 
 // ApprovalRecord is a copy of the RolloutApproval that allowed a deployment,
@@ -527,6 +602,12 @@ const (
 	RolloutInvalidBakeTimeConfiguration = "InvalidBakeTimeConfiguration"
 	// RolloutDeploymentBlocked means deployment is blocked because health checks are unhealthy.
 	RolloutDeploymentBlocked = "DeploymentBlocked"
+	// RolloutAutoRollback records the outcome of the last automatic rollback
+	// decision. Present only when spec.autoRollback.enabled. True/RolledBack:
+	// the newest deploy is an automatic rollback. False: a failed bake did not
+	// roll back (NotATrigger, ManualDeploy, ManualIntent, NoTarget, DeployError).
+	RolloutAutoRollback = "AutoRollback"
+
 	// RolloutBakeFailureDisabled means health check failures will not fail the current deployment.
 	// This occurs when the previous deployment also failed, allowing recovery without cascading failures.
 	RolloutBakeFailureDisabled = "BakeFailureDisabled"
