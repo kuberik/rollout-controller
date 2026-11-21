@@ -148,12 +148,14 @@ func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, m
 	return f, derived
 }
 
-// dropDerived removes the entries that only restate a failed RolloutTest in the
-// same namespace: the tests decide, each by its own switch.
-func dropDerived(entries []rolloutv1alpha1.HealthCheckFailure, derivedIdx map[int]string, testNamespaces map[string]bool) []rolloutv1alpha1.HealthCheckFailure {
+// dropDerived removes the Kruise Rollout entries whose RolloutTests are in the
+// inventory, whatever phase those tests are in: the tests decide, each by its own
+// switch. derivedIdx maps an entry to its Kruise Rollout key (namespace/name);
+// testedRollouts holds namespace/spec.rolloutName of every RolloutTest walked.
+func dropDerived(entries []rolloutv1alpha1.HealthCheckFailure, derivedIdx map[int]string, testedRollouts map[string]bool) []rolloutv1alpha1.HealthCheckFailure {
 	out := make([]rolloutv1alpha1.HealthCheckFailure, 0, len(entries))
 	for i, e := range entries {
-		if ns, ok := derivedIdx[i]; ok && testNamespaces[ns] {
+		if key, ok := derivedIdx[i]; ok && testedRollouts[key] {
 			continue
 		}
 		out = append(out, e)
@@ -169,7 +171,7 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 	}
 	entries := make([]rolloutv1alpha1.HealthCheckFailure, 0, len(ks.Status.Inventory.Entries))
 	derivedIdx := map[int]string{}
-	testNamespaces := map[string]bool{}
+	testedRollouts := map[string]bool{}
 	for _, entry := range ks.Status.Inventory.Entries {
 		id, err := object.ParseObjMetadata(entry.ID)
 		if err != nil {
@@ -180,20 +182,22 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 		if err := c.Get(ctx, client.ObjectKey{Namespace: id.Namespace, Name: id.Name}, obj); err != nil {
 			continue
 		}
+		if id.GroupKind.Group == groupKuberikRollout && id.GroupKind.Kind == "RolloutTest" {
+			if name, _, _ := unstructured.NestedString(obj.Object, "spec", "rolloutName"); name != "" {
+				testedRollouts[obj.GetNamespace()+"/"+name] = true
+			}
+		}
 		res, err := status.Compute(obj)
 		if err != nil || res.Status != status.FailedStatus {
 			continue
 		}
 		f, derived := classifyFailedObject(obj, id.GroupKind, res.Message, now)
 		if derived {
-			derivedIdx[len(entries)] = obj.GetNamespace()
-		}
-		if id.GroupKind.Group == groupKuberikRollout && id.GroupKind.Kind == "RolloutTest" {
-			testNamespaces[obj.GetNamespace()] = true
+			derivedIdx[len(entries)] = obj.GetNamespace() + "/" + obj.GetName()
 		}
 		entries = append(entries, f)
 	}
-	return dropDerived(entries, derivedIdx, testNamespaces)
+	return dropDerived(entries, derivedIdx, testedRollouts)
 }
 
 // classifyKustomizationFailures says what is failing for an Unhealthy
