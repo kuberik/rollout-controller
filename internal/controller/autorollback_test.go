@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,8 +15,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	k8sptr "k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
@@ -197,6 +201,107 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(fhc.Failures).To(ConsistOf(rolloutv1alpha1.FailureVerdict{
 			Source: "RolloutTest app/smoke", Kind: rolloutv1alpha1.FailureKindTestFailed, Reason: "Test", RollsBack: true, Why: whyCheckRollbackOn}))
 		Eventually(e.rec.Events).Should(Receive(ContainSubstring("AutoRollback")))
+	})
+
+	Context("when the rollback deploy is interrupted", func() {
+		isRollbackWrite := func(obj client.Object) bool {
+			ro, ok := obj.(*rolloutv1alpha1.Rollout)
+			return ok && len(ro.Status.History) > 0 && ro.Status.History[0].DeployKind == rolloutv1alpha1.DeployKindAutoRollback
+		}
+		failOnce := func(statusWrite bool) *int {
+			calls := new(int)
+			f := interceptor.Funcs{}
+			if statusWrite {
+				f.SubResourceUpdate = func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					if isRollbackWrite(obj) && *calls == 0 {
+						*calls++
+						return fmt.Errorf("injected status conflict")
+					}
+					return c.SubResource(sub).Update(ctx, obj, opts...)
+				}
+			} else {
+				f.Patch = func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if isRollbackWrite(obj) && *calls == 0 {
+						*calls++
+						return fmt.Errorf("injected patch failure")
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				}
+			}
+			wc, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme.Scheme})
+			Expect(err).NotTo(HaveOccurred())
+			e.r.Client = interceptor.NewClient(wc, f)
+			return calls
+		}
+		failV2 := func() {
+			e.deployV2(ctx)
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+		}
+		rollbackEntries := func() int {
+			n := 0
+			for _, h := range e.get(ctx).Status.History {
+				if h.DeployKind == rolloutv1alpha1.DeployKindAutoRollback {
+					n++
+				}
+			}
+			return n
+		}
+
+		It("retries after the status write fails and rolls back exactly once", func() {
+			e = newArEnv(ctx, arOpts{})
+			failV2()
+			calls := failOnce(true)
+
+			_, err := e.r.Reconcile(ctx, reconcile.Request{NamespacedName: e.key})
+			Expect(err).To(HaveOccurred())
+			Expect(*calls).To(Equal(1))
+			Expect(e.get(ctx).Status.History).To(HaveLen(2), "the rollback was not recorded")
+			Expect(e.condition(ctx).Reason).To(Equal(autoRollbackDeployError))
+
+			e.reconcile(ctx)
+			expectRolledBack()
+			e.reconcile(ctx)
+			e.reconcile(ctx)
+			Expect(rollbackEntries()).To(Equal(1))
+			Expect(e.get(ctx).Status.History).To(HaveLen(3))
+		})
+
+		It("keeps RolledBack when only the annotation clean-up fails afterwards", func() {
+			e = newArEnv(ctx, arOpts{})
+			e.deployV2(ctx)
+			ro := e.get(ctx)
+			ro.Annotations = map[string]string{"rollout.kuberik.com/deploy-message": "stale"}
+			Expect(k8sClient.Update(ctx, ro)).To(Succeed())
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			calls := failOnce(false)
+
+			e.reconcile(ctx)
+			Expect(*calls).To(Equal(1))
+			expectRolledBack()
+			e.reconcile(ctx)
+			expectRolledBack()
+			Expect(rollbackEntries()).To(Equal(1))
+		})
+
+		It("a person's intent before the retry cancels it", func() {
+			e = newArEnv(ctx, arOpts{})
+			failV2()
+			failOnce(true)
+			_, err := e.r.Reconcile(ctx, reconcile.Request{NamespacedName: e.key})
+			Expect(err).To(HaveOccurred())
+
+			ro := e.get(ctx)
+			ro.Spec.WantedVersion = k8sptr.To("v1")
+			Expect(k8sClient.Update(ctx, ro)).To(Succeed())
+			e.reconcile(ctx)
+
+			Expect(rollbackEntries()).To(Equal(0))
+			Expect(e.get(ctx).Status.History[0].DeployKind).To(Equal(rolloutv1alpha1.DeployKindPin))
+			Expect(e.get(ctx).Status.History[0].Version.Tag).To(Equal("v1"))
+			if c := e.condition(ctx); c != nil {
+				Expect(c.Reason).NotTo(Equal(autoRollbackRolledBack))
+			}
+		})
 	})
 
 	It("never chains: a rollback that is itself marked failed is left alone", func() {

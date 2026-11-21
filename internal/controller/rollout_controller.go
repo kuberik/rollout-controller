@@ -210,6 +210,27 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					// even if no new deployment is needed - we'll check the specific version later after wantedRelease is determined
 				}
 			case rolloutv1alpha1.BakeStatusFailed:
+				// An automatic rollback decided earlier but not finished (its deploy or
+				// status write failed): decide again on fresh state and finish it once.
+				// A person's intent in the meantime cancels it inside the decision.
+				if pendingAutoRollback(&rollout) {
+					fresh := rolloutv1alpha1.Rollout{}
+					if err := r.Client.Get(ctx, req.NamespacedName, &fresh); err != nil {
+						return ctrl.Result{}, err
+					}
+					if pendingAutoRollback(&fresh) {
+						rolledBack, err := r.autoRollbackAfterFailedBake(ctx, &fresh, cat)
+						if err != nil {
+							return ctrl.Result{}, err
+						}
+						if rolledBack {
+							return ctrl.Result{RequeueAfter: time.Second}, nil
+						}
+					}
+					if err := r.Client.Get(ctx, req.NamespacedName, &rollout); err != nil {
+						return ctrl.Result{}, err
+					}
+				}
 				// Check if user has requested to unblock failed deployment via annotation
 				unblockRequested := false
 				if rollout.Annotations != nil {

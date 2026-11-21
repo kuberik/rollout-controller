@@ -38,6 +38,7 @@ const (
 	autoRollbackManualIntent = "ManualIntent"
 	autoRollbackNoTarget     = "NoTarget"
 	autoRollbackDeployError  = "DeployError"
+	autoRollbackPending      = "RollbackPending"
 )
 
 // Why values of a FailureVerdict.
@@ -318,15 +319,62 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 
 	plan := &rollbackPlan{failedID: ptrValue(failed.ID), failedTag: failedTag, sources: listFew(sources)}
 	log.Info("Automatic rollback", "failed", failedTag, "target", target.Version.Tag, "sources", plan.sources)
-	if err := r.deployRelease(ctx, rollout, target.Version.Tag, cat, deployOpts{rollback: plan}); err != nil {
-		log.Error(err, "Automatic rollback failed to deploy")
-		fresh := &rolloutv1alpha1.Rollout{}
-		if gerr := r.Get(ctx, client.ObjectKeyFromObject(rollout), fresh); gerr == nil {
-			_ = r.skipAutoRollback(ctx, fresh, autoRollbackDeployError, fmt.Sprintf("Rolling back %s to %s failed: %v", failedTag, target.Version.Tag, err))
-		}
-		return false, nil
+
+	// Persist the decision before touching Flux. If the deploy or its status write
+	// fails, the marker survives and the next reconcile decides again (see
+	// pendingAutoRollback) instead of the rollback being lost.
+	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+		Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackPending,
+		Message: fmt.Sprintf("Rolling back %s to %s (%s).", failedTag, target.Version.Tag, plan.sources),
+	})
+	if err := r.Status().Update(ctx, rollout); err != nil {
+		return false, err
 	}
-	return true, nil
+
+	derr := r.deployRelease(ctx, rollout, target.Version.Tag, cat, deployOpts{rollback: plan})
+	if derr == nil {
+		return true, nil
+	}
+	log.Error(derr, "Automatic rollback failed to deploy")
+	fresh := &rolloutv1alpha1.Rollout{}
+	if gerr := r.Get(ctx, client.ObjectKeyFromObject(rollout), fresh); gerr != nil {
+		return false, derr
+	}
+	if rollbackRecorded(fresh, plan) {
+		// The rollback happened: Flux points at the target and history says so. What
+		// failed afterwards (clearing annotations) is bookkeeping and must not turn
+		// RolledBack into DeployError.
+		return true, nil
+	}
+	if serr := r.skipAutoRollback(ctx, fresh, autoRollbackDeployError,
+		fmt.Sprintf("Rolling back %s to %s failed, retrying: %v", failedTag, target.Version.Tag, derr)); serr != nil {
+		log.Error(serr, "Failed to record the rollback deploy error")
+	}
+	return false, derr
+}
+
+// rollbackRecorded reports whether history already holds the rollback of the plan's failed build.
+func rollbackRecorded(rollout *rolloutv1alpha1.Rollout, plan *rollbackPlan) bool {
+	if len(rollout.Status.History) == 0 {
+		return false
+	}
+	h := rollout.Status.History[0]
+	return h.DeployKind == rolloutv1alpha1.DeployKindAutoRollback && h.RollbackOf != nil && *h.RollbackOf == plan.failedID
+}
+
+// pendingAutoRollback reports whether an earlier reconcile decided to roll back
+// the failed history[0] but did not finish: the decision marker or a retriable
+// deploy error is still on the condition.
+func pendingAutoRollback(rollout *rolloutv1alpha1.Rollout) bool {
+	if !autoRollbackEnabled(rollout) || len(rollout.Status.History) == 0 {
+		return false
+	}
+	h := rollout.Status.History[0]
+	if h.BakeStatus == nil || *h.BakeStatus != rolloutv1alpha1.BakeStatusFailed {
+		return false
+	}
+	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	return c != nil && (c.Reason == autoRollbackPending || c.Reason == autoRollbackDeployError)
 }
 
 func ptrValue(p *int64) int64 {
