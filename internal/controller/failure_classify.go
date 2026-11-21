@@ -83,32 +83,29 @@ func rollbackSwitch(annotations map[string]string) *bool {
 	return nil
 }
 
-// objectCondition returns status and reason and message of the named condition.
-func objectCondition(obj *unstructured.Unstructured, condType string) (condStatus, reason, message string, found bool) {
+// conditionReason returns the reason of the named condition, empty when absent.
+func conditionReason(obj *unstructured.Unstructured, condType string) string {
 	conds, ok, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if !ok {
-		return "", "", "", false
+		return ""
 	}
 	for _, c := range conds {
 		m, ok := c.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		if t, _, _ := unstructured.NestedString(m, "type"); t != condType {
-			continue
+		if t, _, _ := unstructured.NestedString(m, "type"); t == condType {
+			reason, _, _ := unstructured.NestedString(m, "reason")
+			return reason
 		}
-		condStatus, _, _ = unstructured.NestedString(m, "status")
-		reason, _, _ = unstructured.NestedString(m, "reason")
-		message, _, _ = unstructured.NestedString(m, "message")
-		return condStatus, reason, message, true
 	}
-	return "", "", "", false
+	return ""
 }
 
-func short(s string, n int) string {
+func short(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return s[:n]
+	if len(s) > maxUnclassifiedReason {
+		return s[:maxUnclassifiedReason]
 	}
 	return s
 }
@@ -129,7 +126,7 @@ func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, m
 	case gk.Group == "batch" && gk.Kind == "Job":
 		f.Kind, f.Reason = rolloutv1alpha1.FailureKindTestFailed, reasonJobFailed
 	case gk.Group == groupKruiseRollout && gk.Kind == "Rollout":
-		_, reason, _, _ := objectCondition(obj, "Stalled")
+		reason := conditionReason(obj, "Stalled")
 		switch reason {
 		case reasonRolloutTestFailed:
 			f.Kind, f.Reason = rolloutv1alpha1.FailureKindTestFailed, reason
@@ -137,16 +134,16 @@ func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, m
 		case reasonStepReadyTimeoutExceeded:
 			f.Kind, f.Reason = rolloutv1alpha1.FailureKindNotReady, reason
 		default:
-			f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg, maxUnclassifiedReason)
+			f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg)
 		}
 	case gk.Group == "apps" && gk.Kind == "Deployment":
-		if _, reason, _, _ := objectCondition(obj, "Progressing"); reason == reasonProgressDeadlineExceeded {
+		if reason := conditionReason(obj, "Progressing"); reason == reasonProgressDeadlineExceeded {
 			f.Kind, f.Reason = rolloutv1alpha1.FailureKindNotReady, reason
 		} else {
-			f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg, maxUnclassifiedReason)
+			f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg)
 		}
 	default:
-		f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg, maxUnclassifiedReason)
+		f.Kind, f.Reason = rolloutv1alpha1.FailureKindUnclassified, short(msg)
 	}
 	return f, derived
 }
@@ -170,7 +167,7 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 	if ks.Status.Inventory == nil {
 		return nil
 	}
-	var entries []rolloutv1alpha1.HealthCheckFailure
+	entries := make([]rolloutv1alpha1.HealthCheckFailure, 0, len(ks.Status.Inventory.Entries))
 	derivedIdx := map[int]string{}
 	testNamespaces := map[string]bool{}
 	for _, entry := range ks.Status.Inventory.Entries {
@@ -227,7 +224,7 @@ func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kus
 	if reason == "" {
 		reason = "Unhealthy"
 	}
-	return own(rolloutv1alpha1.FailureKindUnclassified, short(reason, maxUnclassifiedReason), readyMsg)
+	return own(rolloutv1alpha1.FailureKindUnclassified, short(reason), readyMsg)
 }
 
 // mergeFailures folds the failures seen now into the recorded ones. Entries are

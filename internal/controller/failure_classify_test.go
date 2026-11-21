@@ -72,7 +72,7 @@ func ksWith(reason string, objs ...*unstructured.Unstructured) *kustomizev1.Kust
 	return ks
 }
 
-func classify(g *WithT, ks *kustomizev1.Kustomization, objs ...*unstructured.Unstructured) []rolloutv1alpha1.HealthCheckFailure {
+func classify(ks *kustomizev1.Kustomization, objs ...*unstructured.Unstructured) []rolloutv1alpha1.HealthCheckFailure {
 	b := fake.NewClientBuilder()
 	for _, o := range objs {
 		b = b.WithObjects(o)
@@ -92,21 +92,21 @@ func kindsOf(fs []rolloutv1alpha1.HealthCheckFailure) []string {
 func TestClassifierRows(t *testing.T) {
 	g := NewWithT(t)
 	test := rolloutTestFailed("app", "smoke", nil)
-	got := classify(g, ksWith("HealthCheckFailed", test), test)
+	got := classify(ksWith("HealthCheckFailed", test), test)
 	g.Expect(kindsOf(got)).To(Equal([]string{"RolloutTest app/smoke|TestFailed|RolloutTestFailed"}), "a failed RolloutTest is TestFailed")
 
 	job := failedObj("batch/v1", "Job", "app", "migrate", nil, cond("Failed", "True", "BackoffLimitExceeded"))
-	g.Expect(kindsOf(classify(g, ksWith("", job), job))).To(Equal([]string{"Job app/migrate|TestFailed|JobFailed"}))
+	g.Expect(kindsOf(classify(ksWith("", job), job))).To(Equal([]string{"Job app/migrate|TestFailed|JobFailed"}))
 
 	dep := failedObj("apps/v1", "Deployment", "app", "web", nil, cond("Progressing", "False", "ProgressDeadlineExceeded"))
-	g.Expect(kindsOf(classify(g, ksWith("", dep), dep))).To(Equal([]string{"Deployment app/web|NotReady|ProgressDeadlineExceeded"}),
+	g.Expect(kindsOf(classify(ksWith("", dep), dep))).To(Equal([]string{"Deployment app/web|NotReady|ProgressDeadlineExceeded"}),
 		"a deployment past its progress deadline did not become ready: NotReady, not TestFailed")
 
 	step := kruiseStalled("app", "canary", "StepReadyTimeoutExceeded")
-	g.Expect(kindsOf(classify(g, ksWith("", step), step))).To(Equal([]string{"Rollout app/canary|NotReady|StepReadyTimeoutExceeded"}))
+	g.Expect(kindsOf(classify(ksWith("", step), step))).To(Equal([]string{"Rollout app/canary|NotReady|StepReadyTimeoutExceeded"}))
 
 	odd := failedObj("example.com/v1", "Widget", "app", "w", nil, cond("Stalled", "True", "Broken"))
-	got = classify(g, ksWith("", odd), odd)
+	got = classify(ksWith("", odd), odd)
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
 }
@@ -116,39 +116,39 @@ func TestKruiseRolloutIsDerivedFromItsTests(t *testing.T) {
 	kr := kruiseStalled("app", "canary", "RolloutTestFailed")
 	test := rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.RollbackAnnotation: "false"})
 
-	got := classify(g, ksWith("HealthCheckFailed", kr, test), kr, test)
+	got := classify(ksWith("HealthCheckFailed", kr, test), kr, test)
 	g.Expect(kindsOf(got)).To(Equal([]string{"RolloutTest app/smoke|TestFailed|RolloutTestFailed"}),
 		"the stalled Kruise Rollout adds no entry of its own when its test is in the same check")
 	g.Expect(got[0].Rollback).NotTo(BeNil())
 	g.Expect(*got[0].Rollback).To(BeFalse())
 
-	got = classify(g, ksWith("HealthCheckFailed", kr), kr)
+	got = classify(ksWith("HealthCheckFailed", kr), kr)
 	g.Expect(kindsOf(got)).To(Equal([]string{"Rollout app/canary|TestFailed|RolloutTestFailed"}),
 		"without a visible RolloutTest the Kruise Rollout counts as TestFailed")
 
 	other := rolloutTestFailed("elsewhere", "smoke", nil)
-	got = classify(g, ksWith("", kr, other), kr, other)
+	got = classify(ksWith("", kr, other), kr, other)
 	g.Expect(got).To(HaveLen(2), "a test in another namespace does not explain this Rollout")
 }
 
 func TestKustomizationOwnFailures(t *testing.T) {
 	g := NewWithT(t)
 	for _, reason := range []string{"BuildFailed", "ReconciliationFailed", "PruneFailed", "InvalidCELExpression", "InvalidPath", "InvalidURL"} {
-		got := classify(g, ksWith(reason))
+		got := classify(ksWith(reason))
 		g.Expect(kindsOf(got)).To(Equal([]string{"Kustomization app/ks|ApplyFailed|" + reason}), reason)
 	}
 
-	got := classify(g, ksWith("HealthCheckFailed"))
+	got := classify(ksWith("HealthCheckFailed"))
 	g.Expect(kindsOf(got)).To(Equal([]string{"Kustomization app/ks|NotReady|HealthCheckFailed"}),
 		"wait: true with nothing classified in the inventory is NotReady")
 
-	got = classify(g, ksWith("SomethingNew"))
+	got = classify(ksWith("SomethingNew"))
 	g.Expect(got).To(HaveLen(1))
 	g.Expect(got[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
 
 	ks := ksWith("BuildFailed")
 	ks.Annotations = map[string]string{rolloutv1alpha1.RollbackAnnotation: "true"}
-	got = classify(g, ks)
+	got = classify(ks)
 	g.Expect(got[0].Rollback).NotTo(BeNil())
 	g.Expect(*got[0].Rollback).To(BeTrue())
 }

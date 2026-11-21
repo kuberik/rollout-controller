@@ -25,14 +25,13 @@ import (
 // arEnv is one Rollout that has v1 baked and v2 about to be deployed, with a
 // kustomization-class health check the tests fail in different ways.
 type arEnv struct {
-	ns         string
-	feed       *testFeed
-	clock      *FakeClock
-	rec        *record.FakeRecorder
-	r          *RolloutReconciler
-	key        types.NamespacedName
-	hcKey      types.NamespacedName
-	rolloutKey types.NamespacedName
+	ns    string
+	feed  *testFeed
+	clock *FakeClock
+	rec   *record.FakeRecorder
+	r     *RolloutReconciler
+	key   types.NamespacedName
+	hcKey types.NamespacedName
 }
 
 type arOpts struct {
