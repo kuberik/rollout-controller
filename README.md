@@ -555,8 +555,7 @@ metadata:
     rollout.kuberik.com/rollout: "my-app-rollout"  # References the rollout name
 spec:
   url: oci://ghcr.io/myorg/myapp
-  ref:
-    tag: "1.0.0"  # This will be updated by the rollout controller
+  # no spec.ref.tag here: the rollout writes it
 ```
 
 #### Kustomization
