@@ -93,7 +93,10 @@ metadata:
     rollout.kuberik.com/substitute.IMAGE_TAG.from: "frontend-rollout"
     rollout.kuberik.com/substitute.VERSION.from: "backend-rollout"
 spec:
-  postBuild: {}  # Do not set IMAGE_TAG/VERSION here; each rollout writes its own variable.
+  postBuild:
+    substitute:
+      ENVIRONMENT: production  # any non-rollout key; keeps Flux substitution on
+      # Do not set IMAGE_TAG/VERSION here; each rollout writes its own variable.
 # In the manifests, use a default for the first reconcile: ${IMAGE_TAG:=1.0.0}
 # If Git also sets a rollout's variable, its deploy is refused (KustomizationFieldConflict).
 ```
