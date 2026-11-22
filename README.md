@@ -48,7 +48,7 @@ Variables written by the shared `rollout-controller` field manager of earlier ve
 
 ### OCIRepositories
 
-OCIRepositories use a simpler approach since they only have one modifiable field (tag). Each OCIRepository can be managed by a single rollout.
+An OCIRepository names the one rollout that sets its tag with the `rollout.kuberik.com/rollout` annotation.
 
 The rollout writes only `spec.ref.tag`, with server-side apply under its own field manager
 (`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Every other `spec.ref` field (such as `semver`
@@ -68,8 +68,7 @@ metadata:
     rollout.kuberik.com/rollout: "my-app-rollout"
 spec:
   # ... other spec fields
-  reference:
-    tag: "latest"  # This will be updated by the referenced rollout
+  # no spec.ref.tag here: the rollout writes it
 ```
 
 ### Annotation Format
@@ -77,7 +76,7 @@ spec:
 - **Kustomizations**: `rollout.kuberik.com/substitute.<variable>.from: <rollout-name>`
 - **OCIRepositories**: `rollout.kuberik.com/rollout`
 
-Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
+Several rollouts can each write their own substitute in one Kustomization, while an OCIRepository's tag is written by the one rollout its annotation names.
 
 ## Approval gates
 
