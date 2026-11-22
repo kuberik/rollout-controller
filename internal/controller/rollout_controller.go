@@ -1239,6 +1239,35 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	return nil
 }
 
+// holdForDeferredFailures keeps the bake as it is while the RolloutTests of hc
+// get time to report, and says so on the history entry and, when automatic
+// rollback is on, on the AutoRollback condition. It writes only on a change.
+func (r *RolloutReconciler) holdForDeferredFailures(ctx context.Context, rollout *rolloutv1alpha1.Rollout, hc *rolloutv1alpha1.HealthCheck, left time.Duration) (ctrl.Result, error) {
+	msg := deferredFailureWaitMessage(hc)
+	entry := &rollout.Status.History[0]
+	changed := false
+	if entry.BakeStatusMessage == nil || *entry.BakeStatusMessage != msg {
+		entry.BakeStatusMessage = &msg
+		changed = true
+	}
+	if autoRollbackEnabled(rollout) {
+		cond := metav1.Condition{
+			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackWaiting,
+			Message: "Waiting for the RolloutTests of HealthCheck " + hc.Namespace + "/" + hc.Name + " to report before deciding whether to roll back.",
+		}
+		if c := meta.FindStatusCondition(rollout.Status.Conditions, cond.Type); c == nil || c.Reason != cond.Reason || c.Message != cond.Message || c.Status != cond.Status {
+			meta.SetStatusCondition(&rollout.Status.Conditions, cond)
+			changed = true
+		}
+	}
+	if changed {
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: min(max(left, time.Second), deferredFailureRequeue)}, nil
+}
+
 func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	now := r.now()
@@ -1337,6 +1366,16 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			log.Info("Rollout is in recovery mode (BakeFailureDisabled=True); not failing despite health check error")
 		}
 
+		// A check that is Unhealthy only because its failures are left to the
+		// RolloutTests gets a short grace for them to report: the record is frozen
+		// at the first failed pass, and without their entries the tests' rollback
+		// switch could not decide.
+		if shouldFail {
+			if hc, left := deferredFailureWait(allHealthChecks, errorCutoff, now); hc != nil {
+				return r.holdForDeferredFailures(ctx, rollout, hc, left)
+			}
+		}
+
 		if shouldFail {
 			log.Info("Health check error detected, marking rollout as failed")
 			currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
@@ -1370,6 +1409,14 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			}
 			return ctrl.Result{}, nil
 		}
+	}
+
+	if c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback); c != nil && c.Reason == autoRollbackWaiting {
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return ctrl.Result{}, err
+		}
+		currentEntry = &rollout.Status.History[0]
 	}
 
 	// Check if all healthchecks are healthy and LastChangeTime is newer than deployment time

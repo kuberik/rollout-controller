@@ -135,9 +135,10 @@ type HealthCheckStatus struct {
 
 	// FailuresDeferred says the check is Unhealthy for a reason other sources
 	// report (for example a Kruise Rollout left to its RolloutTests), so an empty
-	// failures list does not mean the failure is unclassified. Like failures it is
-	// a witness: set by the check, cleared only by the reset at a new deploy or
-	// retry.
+	// failures list does not yet mean the failure is unclassified. The Rollout
+	// waits up to 2 minutes from lastErrorTime for those sources to report before
+	// it treats the failure as unclassified. Like failures it is a witness: set by
+	// the check, cleared only by the reset at a new deploy or retry.
 	// +optional
 	FailuresDeferred bool `json:"failuresDeferred,omitempty"`
 }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,7 +40,16 @@ const (
 	autoRollbackNoTarget     = "NoTarget"
 	autoRollbackDeployError  = "DeployError"
 	autoRollbackPending      = "RollbackPending"
+	autoRollbackWaiting      = "WaitingForTests"
 )
+
+// deferredFailureGrace is how long a Rollout waits for the sources a deferred
+// failure is left to (RolloutTests) to report before it treats the failure as
+// unclassified. It runs from the check's lastErrorTime.
+const deferredFailureGrace = 2 * time.Minute
+
+// deferredFailureRequeue bounds how long the wait goes without a look.
+const deferredFailureRequeue = 15 * time.Second
 
 // Why values of a FailureVerdict.
 const (
@@ -116,9 +126,7 @@ func verdictFor(f rolloutv1alpha1.HealthCheckFailure, rollbackOn []rolloutv1alph
 // failed health check record. extra entries come first (the deploy-timeout path
 // adds NotReady for a check that is not Healthy). A check that recorded no
 // failures counts as one Unclassified failure, so older providers still roll back
-// by their class default. The exception is a check that says its failures are
-// deferred (status.failuresDeferred): another source accounts for them, so no
-// entry is added and nothing rolls back on its account.
+// by their class default.
 func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.HealthCheck, extra []rolloutv1alpha1.HealthCheckFailure) {
 	if hc.Spec.Class != nil {
 		rec.Class = *hc.Spec.Class
@@ -126,7 +134,7 @@ func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.
 	rollbackOn := resolvedRollbackOn(hc)
 	rec.RollbackOn = rollbackOn
 	entries := append(slices.Clone(extra), hc.Status.Failures...)
-	if len(entries) == 0 && !hc.Status.FailuresDeferred {
+	if len(entries) == 0 {
 		entries = []rolloutv1alpha1.HealthCheckFailure{{
 			Source: "HealthCheck " + hc.Namespace + "/" + hc.Name,
 			Kind:   rolloutv1alpha1.FailureKindUnclassified,
@@ -465,4 +473,31 @@ func (r *RolloutReconciler) recordRollback(rollout *rolloutv1alpha1.Rollout, pla
 
 func rollbackMessage(plan *rollbackPlan) string {
 	return fmt.Sprintf("Automatic rollback: %s failed bake (%s)", plan.failedTag, plan.sources)
+}
+
+// deferredFailureWait returns the check the failed bake is still waiting on: an
+// Unhealthy check since errorCutoff whose failures are left to other sources
+// (status.failuresDeferred) and have not arrived, while the grace runs. The
+// second result is how long until the grace ends.
+func deferredFailureWait(checks []rolloutv1alpha1.HealthCheck, errorCutoff, now time.Time) (*rolloutv1alpha1.HealthCheck, time.Duration) {
+	var waitOn *rolloutv1alpha1.HealthCheck
+	var remaining time.Duration
+	for i := range checks {
+		hc := &checks[i]
+		if hc.Status.LastErrorTime == nil || hc.Status.LastErrorTime.Time.Before(errorCutoff) ||
+			!hc.Status.FailuresDeferred || len(hc.Status.Failures) > 0 {
+			continue
+		}
+		left := hc.Status.LastErrorTime.Time.Add(deferredFailureGrace).Sub(now)
+		if left > 0 && (waitOn == nil || left < remaining) {
+			waitOn, remaining = hc, left
+		}
+	}
+	return waitOn, remaining
+}
+
+// deferredFailureWaitMessage says what the bake is waiting for.
+func deferredFailureWaitMessage(hc *rolloutv1alpha1.HealthCheck) string {
+	return fmt.Sprintf("Waiting up to %s for the RolloutTests of HealthCheck %s/%s to report the failure.",
+		strings.TrimSuffix(deferredFailureGrace.String(), "0s"), hc.Namespace, hc.Name)
 }

@@ -698,14 +698,20 @@ var _ = Describe("HealthCheck rollbackOn and failures", func() {
 	})
 })
 
-var _ = Describe("A kustomization failure explained by the tests", func() {
+var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 	ctx := context.Background()
 
-	It("records the failed bake without a rolling-back verdict and starts no rollback", func() {
+	// deferredEnv deploys v2 and makes the kustomization check Unhealthy because a
+	// Kruise Rollout is left to a RolloutTest that has not reported yet. The test
+	// carries ann; fail makes it report TestFailed; check re-runs the check.
+	type deferred struct {
+		e     *arEnv
+		check func()
+		fail  func()
+	}
+	setup := func(ann map[string]string) *deferred {
 		e := newArEnv(ctx, arOpts{})
-		defer e.cleanup(ctx)
 		e.deployV2(ctx)
-
 		ks := &kustomizev1.Kustomization{
 			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: e.ns},
 			Spec: kustomizev1.KustomizationSpec{Path: "./", Wait: true,
@@ -718,9 +724,7 @@ var _ = Describe("A kustomization failure explained by the tests", func() {
 		ks.Status.ObservedGeneration = ks.Generation
 		kruise := kruiseStalled(e.ns, "web", reasonRolloutTestFailed)
 		kruise.SetAPIVersion("rollouts.kruise.io/v1beta1")
-		// The RolloutTest for the Kruise Rollout is not Failed yet and opted out of rolling back.
-		test := forRollout(failedObj("rollout.kuberik.com/v1alpha1", "RolloutTest", e.ns, "smoke",
-			map[string]string{"rollout.kuberik.com/rollback": "false"}, cond("Ready", "Unknown", "Running")), "web")
+		test := forRollout(failedObj("rollout.kuberik.com/v1alpha1", "RolloutTest", e.ns, "smoke", ann, cond("Ready", "Unknown", "Running")), "web")
 		ks.Status.Inventory = inventoryOf(kruise, test)
 		Expect(k8sClient.Status().Update(ctx, ks)).To(Succeed())
 
@@ -743,29 +747,101 @@ var _ = Describe("A kustomization failure explained by the tests", func() {
 		hc.Annotations = map[string]string{"healthcheck.kuberik.com/kustomization": "ks"}
 		Expect(k8sClient.Update(ctx, hc)).To(Succeed())
 		health := &KustomizationHealthReconciler{Client: c, Scheme: k8sClient.Scheme(), Clock: e.clock}
-		_, err = health.Reconcile(ctx, reconcile.Request{NamespacedName: e.hcKey})
-		Expect(err).NotTo(HaveOccurred())
-
+		d := &deferred{e: e}
+		d.check = func() {
+			_, err := health.Reconcile(ctx, reconcile.Request{NamespacedName: e.hcKey})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		d.fail = func() {
+			Expect(unstructured.SetNestedSlice(test.Object, []interface{}{cond("Ready", "False", "TestFailed"), cond("Stalled", "True", "TestFailed")}, "status", "conditions")).To(Succeed())
+		}
+		d.check()
 		Expect(k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
-		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
 		Expect(hc.Status.Failures).To(BeEmpty())
 		Expect(hc.Status.FailuresDeferred).To(BeTrue())
+		return d
+	}
 
-		e.reconcile(ctx)
-		h := e.get(ctx).Status.History
+	It("waits for the tests while they have not reported, and says so", func() {
+		d := setup(nil)
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
+		Expect(h).To(HaveLen(2))
+		Expect(*h[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(h[0].BakeEndTime).To(BeNil())
+		Expect(*h[0].BakeStatusMessage).To(Equal("Waiting up to 2m for the RolloutTests of HealthCheck " + d.e.ns + "/hc to report the failure."))
+		c := d.e.condition(ctx)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionUnknown))
+		Expect(c.Reason).To(Equal(autoRollbackWaiting))
+		Expect(c.Message).To(ContainSubstring("Waiting for the RolloutTests of HealthCheck " + d.e.ns + "/hc to report"))
+
+		// Waiting again changes nothing.
+		before := d.e.get(ctx).ResourceVersion
+		d.e.reconcile(ctx)
+		Expect(d.e.get(ctx).ResourceVersion).To(Equal(before))
+	})
+
+	It("rolls back for an unannotated test that fails within the grace", func() {
+		d := setup(nil)
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		d.e.clock.Add(time.Minute)
+		d.fail()
+		d.check()
+		d.e.reconcile(ctx)
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
+		Expect(h).To(HaveLen(3), "the rollback deploy")
+		Expect(h[1].Version.Tag).To(Equal("v2"))
+		Expect(*h[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		fs := h[1].FailedHealthChecks[0].Failures
+		Expect(fs).To(HaveLen(1))
+		Expect(fs[0].Kind).To(Equal(rolloutv1alpha1.FailureKindTestFailed))
+		Expect(fs[0].RollsBack).To(BeTrue())
+		Expect(d.e.condition(ctx).Reason).To(Equal(autoRollbackRolledBack))
+	})
+
+	It("does not roll back when the failing test opted out", func() {
+		d := setup(map[string]string{"rollout.kuberik.com/rollback": "false"})
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		d.e.clock.Add(time.Minute)
+		d.fail()
+		d.check()
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
 		Expect(h).To(HaveLen(2), "no rollback deploy")
-		Expect(h[0].Version.Tag).To(Equal("v2"))
 		Expect(*h[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
-		Expect(h[0].FailedHealthChecks).To(HaveLen(1), "the failed bake is still recorded")
-		Expect(h[0].FailedHealthChecks[0].Failures).To(BeEmpty(), "with no Unclassified fallback entry")
-		Expect(e.condition(ctx)).NotTo(BeNil())
-		Expect(e.condition(ctx).Status).To(Equal(metav1.ConditionFalse))
-		Expect(e.condition(ctx).Reason).To(Equal(autoRollbackNotATrigger))
+		fs := h[0].FailedHealthChecks[0].Failures
+		Expect(fs).To(HaveLen(1))
+		Expect(fs[0].Kind).To(Equal(rolloutv1alpha1.FailureKindTestFailed))
+		Expect(fs[0].RollsBack).To(BeFalse())
+		Expect(fs[0].Why).To(Equal(whySourceOptedOut))
+		Expect(d.e.condition(ctx).Reason).To(Equal(autoRollbackNotATrigger))
+	})
+
+	It("treats the failure as unclassified and rolls back once the grace passes with no report", func() {
+		d := setup(map[string]string{"rollout.kuberik.com/rollback": "false"})
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		Expect(*d.e.get(ctx).Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
+		d.e.clock.Add(deferredFailureGrace + time.Second)
+		d.e.reconcile(ctx)
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
+		Expect(h).To(HaveLen(3), "the rollback deploy")
+		Expect(*h[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		fs := h[1].FailedHealthChecks[0].Failures
+		Expect(fs).To(HaveLen(1))
+		Expect(fs[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
+		Expect(d.e.condition(ctx).Reason).To(Equal(autoRollbackRolledBack))
 	})
 })
 
-func TestRecordVerdictsDeferredFailures(t *testing.T) {
+func TestRecordVerdictsKeepFallback(t *testing.T) {
 	class := healthCheckClassKustomization
 	hc := &rolloutv1alpha1.HealthCheck{Spec: rolloutv1alpha1.HealthCheckSpec{Class: &class}}
 	hc.Namespace, hc.Name = "app", "hc"
@@ -776,17 +852,19 @@ func TestRecordVerdictsDeferredFailures(t *testing.T) {
 		t.Fatalf("a check with no failures keeps the Unclassified fallback, got %+v", rec.Failures)
 	}
 
+	// The bake waits for deferred failures before it records anything; once it
+	// records, a check with no entries still gets the fallback.
 	hc.Status.FailuresDeferred = true
 	rec = rolloutv1alpha1.FailedHealthCheck{}
 	recordVerdicts(&rec, hc, nil)
-	if len(rec.Failures) != 0 {
-		t.Fatalf("a deferred check adds no fallback, got %+v", rec.Failures)
+	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindUnclassified {
+		t.Fatalf("a deferred check that never reported keeps the fallback, got %+v", rec.Failures)
 	}
 
 	rec = rolloutv1alpha1.FailedHealthCheck{}
 	recordVerdicts(&rec, hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(hc)})
 	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindNotReady {
-		t.Fatalf("extra entries are still recorded for a deferred check, got %+v", rec.Failures)
+		t.Fatalf("extra entries replace the fallback, got %+v", rec.Failures)
 	}
 }
 
