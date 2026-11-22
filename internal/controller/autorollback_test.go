@@ -705,12 +705,13 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 	// Kruise Rollout is left to a RolloutTest that has not reported yet. The test
 	// carries ann; fail makes it report TestFailed; check re-runs the check.
 	type deferred struct {
-		e     *arEnv
-		check func()
-		fail  func()
+		e       *arEnv
+		check   func()
+		fail    func()
+		restamp func()
 	}
-	setup := func(ann map[string]string) *deferred {
-		e := newArEnv(ctx, arOpts{})
+	setupWith := func(ann map[string]string, o arOpts) *deferred {
+		e := newArEnv(ctx, o)
 		e.deployV2(ctx)
 		ks := &kustomizev1.Kustomization{
 			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: e.ns},
@@ -755,6 +756,14 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 		d.fail = func() {
 			Expect(unstructured.SetNestedSlice(test.Object, []interface{}{cond("Ready", "False", "TestFailed"), cond("Stalled", "True", "TestFailed")}, "status", "conditions")).To(Succeed())
 		}
+		// Flux retries re-stamp the Ready condition, which moves the check's lastErrorTime.
+		d.restamp = func() {
+			got := &kustomizev1.Kustomization{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ks), got)).To(Succeed())
+			got.Status.Conditions[0].LastTransitionTime = metav1.NewTime(e.clock.Now())
+			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+			d.check()
+		}
 		d.check()
 		Expect(k8sClient.Get(ctx, e.hcKey, hc)).To(Succeed())
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
@@ -762,6 +771,7 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 		Expect(hc.Status.FailuresDeferred).To(BeTrue())
 		return d
 	}
+	setup := func(ann map[string]string) *deferred { return setupWith(ann, arOpts{}) }
 
 	It("waits for the tests while they have not reported, and says so", func() {
 		d := setup(nil)
@@ -782,6 +792,36 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 		before := d.e.get(ctx).ResourceVersion
 		d.e.reconcile(ctx)
 		Expect(d.e.get(ctx).ResourceVersion).To(Equal(before))
+	})
+
+	It("ends the wait 2m after it began even when every Flux retry re-stamps lastErrorTime", func() {
+		d := setup(nil)
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		for i := 0; i < 3; i++ {
+			d.e.clock.Add(30 * time.Second)
+			d.restamp()
+			d.e.reconcile(ctx)
+			Expect(*d.e.get(ctx).Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed), "still inside the grace")
+		}
+		d.e.clock.Add(31 * time.Second)
+		d.restamp()
+		d.e.reconcile(ctx)
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
+		Expect(h).To(HaveLen(3), "the rollback deploy")
+		Expect(*h[1].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(h[1].FailedHealthChecks[0].Failures[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
+	})
+
+	It("does not wait when automatic rollback is off", func() {
+		d := setupWith(nil, arOpts{disabled: true})
+		defer d.e.cleanup(ctx)
+		d.e.reconcile(ctx)
+		h := d.e.get(ctx).Status.History
+		Expect(*h[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(h[0].FailedHealthChecks[0].Failures[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
+		Expect(d.e.condition(ctx)).To(BeNil())
 	})
 
 	It("rolls back for an unannotated test that fails within the grace", func() {

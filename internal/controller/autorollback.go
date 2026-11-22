@@ -45,7 +45,9 @@ const (
 
 // deferredFailureGrace is how long a Rollout waits for the sources a deferred
 // failure is left to (RolloutTests) to report before it treats the failure as
-// unclassified. It runs from the check's lastErrorTime.
+// unclassified. It runs from the moment the Rollout started waiting (the
+// transition time of its AutoRollback condition), not from the check's
+// lastErrorTime, which Flux retries keep moving.
 const deferredFailureGrace = 2 * time.Minute
 
 // deferredFailureRequeue bounds how long the wait goes without a look.
@@ -475,25 +477,18 @@ func rollbackMessage(plan *rollbackPlan) string {
 	return fmt.Sprintf("Automatic rollback: %s failed bake (%s)", plan.failedTag, plan.sources)
 }
 
-// deferredFailureWait returns the check the failed bake is still waiting on: an
-// Unhealthy check since errorCutoff whose failures are left to other sources
-// (status.failuresDeferred) and have not arrived, while the grace runs. The
-// second result is how long until the grace ends.
-func deferredFailureWait(checks []rolloutv1alpha1.HealthCheck, errorCutoff, now time.Time) (*rolloutv1alpha1.HealthCheck, time.Duration) {
-	var waitOn *rolloutv1alpha1.HealthCheck
-	var remaining time.Duration
+// deferredFailureCheck returns an Unhealthy check since errorCutoff whose
+// failures are left to other sources (status.failuresDeferred) and have not
+// arrived, or nil.
+func deferredFailureCheck(checks []rolloutv1alpha1.HealthCheck, errorCutoff time.Time) *rolloutv1alpha1.HealthCheck {
 	for i := range checks {
 		hc := &checks[i]
-		if hc.Status.LastErrorTime == nil || hc.Status.LastErrorTime.Time.Before(errorCutoff) ||
-			!hc.Status.FailuresDeferred || len(hc.Status.Failures) > 0 {
-			continue
-		}
-		left := hc.Status.LastErrorTime.Time.Add(deferredFailureGrace).Sub(now)
-		if left > 0 && (waitOn == nil || left < remaining) {
-			waitOn, remaining = hc, left
+		if hc.Status.LastErrorTime != nil && !hc.Status.LastErrorTime.Time.Before(errorCutoff) &&
+			hc.Status.FailuresDeferred && len(hc.Status.Failures) == 0 {
+			return hc
 		}
 	}
-	return waitOn, remaining
+	return nil
 }
 
 // deferredFailureWaitMessage says what the bake is waiting for.

@@ -1240,32 +1240,48 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 }
 
 // holdForDeferredFailures keeps the bake as it is while the RolloutTests of hc
-// get time to report, and says so on the history entry and, when automatic
-// rollback is on, on the AutoRollback condition. It writes only on a change.
-func (r *RolloutReconciler) holdForDeferredFailures(ctx context.Context, rollout *rolloutv1alpha1.Rollout, hc *rolloutv1alpha1.HealthCheck, left time.Duration) (ctrl.Result, error) {
+// get time to report, and says so on the history entry and the AutoRollback
+// condition. The wait is anchored on that condition's transition time, which
+// does not move while the hold lasts (a stale one from before errorCutoff is
+// dropped), and is only used with automatic rollback on: without it the
+// verdicts decide nothing. It reports whether it is holding, and writes only on
+// a change.
+func (r *RolloutReconciler) holdForDeferredFailures(ctx context.Context, rollout *rolloutv1alpha1.Rollout, hc *rolloutv1alpha1.HealthCheck, errorCutoff, now time.Time) (bool, ctrl.Result, error) {
+	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	waiting := c != nil && c.Reason == autoRollbackWaiting
+	if waiting && c.LastTransitionTime.Time.Before(errorCutoff) {
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+		waiting = false
+	}
+	started := now
+	if waiting {
+		started = c.LastTransitionTime.Time
+	}
+	left := started.Add(deferredFailureGrace).Sub(now)
+	if left <= 0 {
+		return false, ctrl.Result{}, nil
+	}
+
 	msg := deferredFailureWaitMessage(hc)
 	entry := &rollout.Status.History[0]
-	changed := false
+	changed := !waiting
 	if entry.BakeStatusMessage == nil || *entry.BakeStatusMessage != msg {
 		entry.BakeStatusMessage = &msg
 		changed = true
 	}
-	if autoRollbackEnabled(rollout) {
-		cond := metav1.Condition{
+	if !waiting {
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackWaiting,
-			Message: "Waiting for the RolloutTests of HealthCheck " + hc.Namespace + "/" + hc.Name + " to report before deciding whether to roll back.",
-		}
-		if c := meta.FindStatusCondition(rollout.Status.Conditions, cond.Type); c == nil || c.Reason != cond.Reason || c.Message != cond.Message || c.Status != cond.Status {
-			meta.SetStatusCondition(&rollout.Status.Conditions, cond)
-			changed = true
-		}
+			LastTransitionTime: metav1.NewTime(now),
+			Message:            "Waiting for the RolloutTests of HealthCheck " + hc.Namespace + "/" + hc.Name + " to report before deciding whether to roll back.",
+		})
 	}
 	if changed {
 		if err := r.Status().Update(ctx, rollout); err != nil {
-			return ctrl.Result{}, err
+			return true, ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: min(max(left, time.Second), deferredFailureRequeue)}, nil
+	return true, ctrl.Result{RequeueAfter: min(max(left, time.Second), deferredFailureRequeue)}, nil
 }
 
 func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string, rollout *rolloutv1alpha1.Rollout) (ctrl.Result, error) {
@@ -1370,9 +1386,11 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 		// RolloutTests gets a short grace for them to report: the record is frozen
 		// at the first failed pass, and without their entries the tests' rollback
 		// switch could not decide.
-		if shouldFail {
-			if hc, left := deferredFailureWait(allHealthChecks, errorCutoff, now); hc != nil {
-				return r.holdForDeferredFailures(ctx, rollout, hc, left)
+		if shouldFail && autoRollbackEnabled(rollout) {
+			if hc := deferredFailureCheck(allHealthChecks, errorCutoff); hc != nil {
+				if hold, res, err := r.holdForDeferredFailures(ctx, rollout, hc, errorCutoff, now); hold || err != nil {
+					return res, err
+				}
 			}
 		}
 
