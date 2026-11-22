@@ -82,8 +82,8 @@ metadata:
   annotations:
     rollout.kuberik.com/rollout: "my-app-rollout"
 spec:
-  ref:
-    tag: "1.0.0"  # Updated by rollout controller
+  ref: {}  # Do not set tag in Git; the rollout writes spec.ref.tag.
+# If Git also sets spec.ref.tag, the deploy is refused (OCIRepositoryFieldConflict).
 ```
 
 **Kustomization** - multiple rollouts can manage different variables:
