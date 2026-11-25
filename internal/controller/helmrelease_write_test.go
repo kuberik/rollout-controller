@@ -51,11 +51,6 @@ func getHR(ns string) *unstructured.Unstructured {
 	return u
 }
 
-// applyAs server-side applies obj the way another controller (e.g. kustomize-controller) would.
-func applyAs(manager string, obj *unstructured.Unstructured) {
-	ExpectWithOffset(1, k8sClient.Patch(context.Background(), obj, client.Apply, client.FieldOwner(manager), client.ForceOwnership)).To(Succeed()) //nolint:staticcheck
-}
-
 func nestedStr(u *unstructured.Unstructured, path ...string) string {
 	s, _, _ := unstructured.NestedString(u.Object, path...)
 	return s
@@ -178,14 +173,15 @@ var _ = Describe("HelmRelease write path", func() {
 				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/shop", Interval: metav1.Duration{Duration: time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
-			Expect(k8sClient.Create(ctx, oci)).To(Succeed())
+			seedLegacyOCIRepository(oci)
 			ks = &kustomizev1.Kustomization{
 				ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: ns, Annotations: map[string]string{"rollout.kuberik.com/substitute.v.from": "shop"}},
 				Spec: kustomizev1.KustomizationSpec{Interval: metav1.Duration{Duration: time.Minute}, Path: "./",
 					SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "GitRepository", Name: "g"},
-					PostBuild: &kustomizev1.PostBuild{Substitute: map[string]string{"v": "old"}}},
+				},
 			}
 			Expect(k8sClient.Create(ctx, ks)).To(Succeed())
+			seedLegacySubstitute(ns, "ks", map[string]interface{}{"v": "old"})
 		})
 
 		gitHR := func(values map[string]interface{}) *unstructured.Unstructured {

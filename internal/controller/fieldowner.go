@@ -38,7 +38,7 @@ const (
 var conflictManagerPattern = regexp.MustCompile(`conflict with "([^"]+)"`)
 
 // rolloutFieldManager returns the server-side-apply field manager for one rollout, shared
-// by its Kustomization and OCIRepository writes. Each rollout owns its own leaves, so one rollout's apply never drops another's. Field
+// by its HelmRelease, Kustomization and OCIRepository writes. Each rollout owns its own leaves, so one rollout's apply never drops another's. Field
 // manager names are limited to 128 characters; a longer name is truncated and suffixed
 // with a hash of the full name so it stays unique.
 func rolloutFieldManager(namespace, name string) string {
@@ -69,7 +69,7 @@ func onlyLegacyManagerConflict(err error) bool {
 	return n > 0
 }
 
-// deployWriteIssue is a deploy-blocking problem with an annotated Kustomization or OCIRepository. The
+// deployWriteIssue is a deploy-blocking problem with an annotated HelmRelease, Kustomization or OCIRepository. The
 // deploy writes nothing and the Rollout reports Reason on its Ready condition.
 type deployWriteIssue struct {
 	Reason  string

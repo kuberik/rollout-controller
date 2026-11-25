@@ -18,19 +18,19 @@ import (
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
 
-var _ = Describe("helmReleaseFieldManager", func() {
+var _ = Describe("rolloutFieldManager", func() {
 	It("is per rollout and readable", func() {
-		Expect(helmReleaseFieldManager("ns", "shop")).To(Equal("rollout-controller/ns/shop"))
-		Expect(helmReleaseFieldManager("ns", "a")).NotTo(Equal(helmReleaseFieldManager("ns", "b")))
+		Expect(rolloutFieldManager("ns", "shop")).To(Equal("rollout-controller/ns/shop"))
+		Expect(rolloutFieldManager("ns", "a")).NotTo(Equal(rolloutFieldManager("ns", "b")))
 	})
 	It("stays within 128 characters and unique when truncated", func() {
 		long := strings.Repeat("x", 63)
-		a := helmReleaseFieldManager(long, long+"-a")
-		b := helmReleaseFieldManager(long, long+"-b")
+		a := rolloutFieldManager(long, long+"-a")
+		b := rolloutFieldManager(long, long+"-b")
 		Expect(len(a)).To(BeNumerically("<=", 128))
 		Expect(len(b)).To(BeNumerically("<=", 128))
 		Expect(a).NotTo(Equal(b))
-		Expect(helmReleaseFieldManager(long, long+"-a")).To(Equal(a))
+		Expect(rolloutFieldManager(long, long+"-a")).To(Equal(a))
 	})
 })
 
@@ -96,7 +96,7 @@ var _ = Describe("HelmRelease RBAC and field managers", func() {
 		})
 
 		It("keeps both leaves across alternating deploys, each manager owning only its own", func() {
-			ma, mb := helmReleaseFieldManager(ns, "a"), helmReleaseFieldManager(ns, "b")
+			ma, mb := rolloutFieldManager(ns, "a"), rolloutFieldManager(ns, "b")
 
 			feedA.Publish("a-1")
 			deploy("a")
@@ -123,7 +123,7 @@ var _ = Describe("HelmRelease RBAC and field managers", func() {
 			feedA.Publish("a-1")
 			deploy("a")
 			both("a-1", "")
-			Expect(owns(helmReleaseFieldManager(ns, "a"), "frontend")).To(BeTrue())
+			Expect(owns(rolloutFieldManager(ns, "a"), "frontend")).To(BeTrue())
 			Expect(owns("rollout-controller", "tag")).To(BeFalse())
 			ro := &rolloutv1alpha1.Rollout{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "a"}, ro)).To(Succeed())

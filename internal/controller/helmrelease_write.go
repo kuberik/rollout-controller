@@ -18,9 +18,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -43,11 +40,7 @@ const (
 	reasonHelmReleaseFieldConflict     = "HelmReleaseFieldConflict"
 	reasonHelmReleaseInvalidAnnotation = "HelmReleaseInvalidAnnotation"
 
-	// legacyHelmReleaseFieldManager is the single manager earlier versions used for every rollout.
-	legacyHelmReleaseFieldManager  = "rollout-controller"
-	helmReleaseFieldManagerMaxLen  = 128
-	helmReleaseChartVersionAnnot   = "rollout.kuberik.com/chart-version.from"
-	helmReleaseConflictRequeueSecs = 60
+	helmReleaseChartVersionAnnot = "rollout.kuberik.com/chart-version.from"
 )
 
 var (
@@ -56,51 +49,9 @@ var (
 	helmReleaseListGVK   = schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmReleaseList"}
 
 	helmValuesAnnotPattern = regexp.MustCompile(`^rollout\.kuberik\.com/values\.(.+)\.from$`)
-	conflictManagerPattern = regexp.MustCompile(`conflict with "([^"]+)"`)
 )
 
 var helmReleaseForbiddenOnce sync.Once
-
-// helmReleaseFieldManager returns the server-side-apply field manager for one rollout.
-// Each rollout owns its own leaves, so one rollout's apply never drops another's. Field
-// manager names are limited to 128 characters; a longer name is truncated and suffixed
-// with a hash of the full name so it stays unique.
-func helmReleaseFieldManager(namespace, name string) string {
-	full := "rollout-controller/" + namespace + "/" + name
-	if len(full) <= helmReleaseFieldManagerMaxLen {
-		return full
-	}
-	sum := sha256.Sum256([]byte(full))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return full[:helmReleaseFieldManagerMaxLen-len(suffix)] + suffix
-}
-
-// onlyLegacyManagerConflict reports whether every conflict in err is with the shared
-// manager earlier versions used. Those fields are ours, so the apply may take them over.
-func onlyLegacyManagerConflict(err error) bool {
-	var status apierrors.APIStatus
-	if !errors.As(err, &status) || status.Status().Details == nil {
-		return false
-	}
-	n := 0
-	for _, c := range status.Status().Details.Causes {
-		m := conflictManagerPattern.FindStringSubmatch(c.Message)
-		if m == nil || m[1] != legacyHelmReleaseFieldManager {
-			return false
-		}
-		n++
-	}
-	return n > 0
-}
-
-// helmReleaseIssue is a deploy-blocking problem with an annotated HelmRelease. The
-// deploy writes nothing and the Rollout reports Reason on its Ready condition.
-type helmReleaseIssue struct {
-	Reason  string
-	Message string
-}
-
-func (e *helmReleaseIssue) Error() string { return e.Reason + ": " + e.Message }
 
 // helmReleaseWrite is the set of leaves kuberik owns on one HelmRelease that still
 // need to change to the wanted release.
@@ -137,8 +88,8 @@ func listHelmReleases(ctx context.Context, c client.Reader, namespace string) ([
 // server-side-apply patch holding every leaf the rollout owns on it, and skips the
 // HelmRelease when none of them has to change. Applying all leaves matters: SSA drops
 // any leaf the manager owned before but omits now. It returns a
-// helmReleaseIssue for a misconfigured annotation.
-func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, items []unstructured.Unstructured) ([]helmReleaseWrite, *helmReleaseIssue) {
+// deployWriteIssue for a misconfigured annotation.
+func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, items []unstructured.Unstructured) ([]helmReleaseWrite, *deployWriteIssue) {
 	writes := make([]helmReleaseWrite, 0, len(items))
 	for i := range items {
 		hr := &items[i]
@@ -169,14 +120,14 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 			segs := strings.Split(p, ".")
 			for _, s := range segs {
 				if s == "" {
-					return nil, &helmReleaseIssue{reasonHelmReleaseInvalidAnnotation,
+					return nil, &deployWriteIssue{reasonHelmReleaseInvalidAnnotation,
 						fmt.Sprintf("HelmRelease %s: annotation rollout.kuberik.com/values.%s.from is not a dotted path of non-empty keys.", id, p)}
 				}
 			}
 			full := append([]string{"spec", "values"}, segs...)
 			cur, found, curErr := unstructured.NestedString(hr.Object, full...)
 			if err := unstructured.SetNestedField(patch.Object, wanted, full...); err != nil {
-				return nil, &helmReleaseIssue{reasonHelmReleaseInvalidAnnotation,
+				return nil, &deployWriteIssue{reasonHelmReleaseInvalidAnnotation,
 					fmt.Sprintf("HelmRelease %s: cannot set %s: %v", id, "spec.values."+p, err)}
 			}
 			if !(curErr == nil && found && cur == wanted) {
@@ -186,11 +137,11 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 
 		if chartVersion {
 			if _, hasRef, _ := unstructured.NestedMap(hr.Object, "spec", "chartRef"); hasRef {
-				return nil, &helmReleaseIssue{reasonHelmReleaseInvalidAnnotation,
+				return nil, &deployWriteIssue{reasonHelmReleaseInvalidAnnotation,
 					fmt.Sprintf("HelmRelease %s: %s cannot be used with spec.chartRef. Annotate the OCIRepository it references with rollout.kuberik.com/rollout instead.", id, helmReleaseChartVersionAnnot)}
 			}
 			if _, hasChart, _ := unstructured.NestedMap(hr.Object, "spec", "chart", "spec"); !hasChart {
-				return nil, &helmReleaseIssue{reasonHelmReleaseInvalidAnnotation,
+				return nil, &deployWriteIssue{reasonHelmReleaseInvalidAnnotation,
 					fmt.Sprintf("HelmRelease %s: %s needs spec.chart.spec.", id, helmReleaseChartVersionAnnot)}
 			}
 			cur, _, _ := unstructured.NestedString(hr.Object, "spec", "chart", "spec", "version")
@@ -210,7 +161,7 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 
 // checkHelmReleaseConflicts dry-runs every HelmRelease write without forcing ownership.
 // When another field manager (typically kustomize-controller applying the manifest from
-// Git) owns a leaf kuberik would write, it returns a helmReleaseIssue and the caller
+// Git) owns a leaf kuberik would write, it returns a deployWriteIssue and the caller
 // must write nothing.
 func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wanted string) error {
 	items, err := listHelmReleases(ctx, r.Client, rollout.Namespace)
@@ -223,35 +174,16 @@ func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollo
 	}
 	for _, w := range writes {
 		dry := w.patch.DeepCopy()
-		err := r.Client.Patch(ctx, dry, client.Apply, client.FieldOwner(helmReleaseFieldManager(rollout.Namespace, rollout.Name)), client.DryRunAll) //nolint:staticcheck // SA1019: server-side apply of unstructured
+		err := r.Client.Patch(ctx, dry, client.Apply, client.FieldOwner(rolloutFieldManager(rollout.Namespace, rollout.Name)), client.DryRunAll) //nolint:staticcheck // SA1019: server-side apply of unstructured
 		if err == nil || onlyLegacyManagerConflict(err) {
 			continue
 		}
 		if apierrors.IsConflict(err) {
-			return &helmReleaseIssue{reasonHelmReleaseFieldConflict, describeFieldConflict(w, err)}
+			return &deployWriteIssue{reasonHelmReleaseFieldConflict, describeFieldConflict("HelmRelease", w.name, w.paths, err)}
 		}
 		return fmt.Errorf("dry-run of HelmRelease %s failed: %w", w.name, err)
 	}
 	return nil
-}
-
-// describeFieldConflict names the HelmRelease, the contested path and the other manager.
-func describeFieldConflict(w helmReleaseWrite, err error) string {
-	path := w.paths[0]
-	manager := "another field manager"
-	if m := conflictManagerPattern.FindStringSubmatch(err.Error()); m != nil {
-		manager = fmt.Sprintf("%q", m[1])
-	}
-	var status apierrors.APIStatus
-	if errors.As(err, &status) && status.Status().Details != nil {
-		for _, c := range status.Status().Details.Causes {
-			if c.Field != "" {
-				path = strings.TrimPrefix(c.Field, ".")
-				break
-			}
-		}
-	}
-	return fmt.Sprintf("HelmRelease %s: %s is also set by %s. Remove it from the manifest in Git so kuberik owns it (set the default in the chart's values.yaml instead).", w.name, path, manager)
 }
 
 // patchHelmReleases writes the wanted release into every HelmRelease annotated for the
@@ -267,7 +199,7 @@ func (r *RolloutReconciler) patchHelmReleases(ctx context.Context, rollout *roll
 		return issue
 	}
 	for _, w := range writes {
-		manager := helmReleaseFieldManager(rollout.Namespace, rollout.Name)
+		manager := rolloutFieldManager(rollout.Namespace, rollout.Name)
 		err := r.Client.Patch(ctx, w.patch.DeepCopy(), client.Apply, client.FieldOwner(manager)) //nolint:staticcheck // SA1019: server-side apply of unstructured
 		if err != nil && onlyLegacyManagerConflict(err) {
 			// First deploy after an upgrade: take over leaves the shared legacy manager owned.
@@ -275,7 +207,7 @@ func (r *RolloutReconciler) patchHelmReleases(ctx context.Context, rollout *roll
 		}
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				return &helmReleaseIssue{reasonHelmReleaseFieldConflict, describeFieldConflict(w, err)}
+				return &deployWriteIssue{reasonHelmReleaseFieldConflict, describeFieldConflict("HelmRelease", w.name, w.paths, err)}
 			}
 			return fmt.Errorf("failed to apply HelmRelease %s: %w", w.name, err)
 		}
