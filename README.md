@@ -31,9 +31,7 @@ spec:
   # ... other spec fields
   postBuild:
     substitute:
-      frontend_version: "1.0.0"  # Managed by frontend-rollout
-      backend_version: "2.0.0"   # Managed by backend-rollout
-      api_version: "3.0.0"       # Managed by api-rollout
+      environment: production  # keeps substitution on; the rollouts add their own keys
 ```
 
 In this example:
@@ -41,9 +39,23 @@ In this example:
 - `backend-rollout` manages the `backend_version` substitute
 - `api-rollout` manages the `api_version` substitute
 
+Each rollout writes only its own variable, with server-side apply under its own field manager
+(`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Do not set these variables in the
+Kustomization you commit; give the manifests a default instead (`${frontend_version:=1.0.0}`). If another field
+manager (for example kustomize-controller applying the Kustomization from Git) owns a variable the rollout writes,
+the deploy writes nothing and the Rollout reports `Ready=False` with reason `KustomizationFieldConflict`.
+Variables written by the shared `rollout-controller` field manager of earlier versions are taken over on the next deploy.
+
 ### OCIRepositories
 
-OCIRepositories use a simpler approach since they only have one modifiable field (tag). Each OCIRepository can be managed by a single rollout.
+An OCIRepository names the one rollout that sets its tag with the `rollout.kuberik.com/rollout` annotation.
+
+The rollout writes only `spec.ref.tag`, with server-side apply under its own field manager
+(`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Every other `spec.ref` field (such as `semver`
+or `digest`) stays yours. Do not set `spec.ref.tag` in the OCIRepository you commit. If another field manager (for example
+Flux applying the OCIRepository from Git) owns it, the deploy writes nothing and the Rollout reports `Ready=False` with
+reason `OCIRepositoryFieldConflict`. A tag written by the shared `rollout-controller` field manager of earlier versions is
+taken over on the next deploy.
 
 #### Example
 
@@ -56,8 +68,7 @@ metadata:
     rollout.kuberik.com/rollout: "my-app-rollout"
 spec:
   # ... other spec fields
-  reference:
-    tag: "latest"  # This will be updated by the referenced rollout
+  # no spec.ref.tag here: the rollout writes it
 ```
 
 ### Annotation Format
@@ -65,7 +76,7 @@ spec:
 - **Kustomizations**: `rollout.kuberik.com/substitute.<variable>.from: <rollout-name>`
 - **OCIRepositories**: `rollout.kuberik.com/rollout`
 
-Each rollout can manage its own substitute in Kustomizations, while OCIRepositories are managed by a single rollout.
+Several rollouts can each write their own substitute in one Kustomization, while an OCIRepository's tag is written by the one rollout its annotation names.
 
 ## Approval gates
 
@@ -544,8 +555,7 @@ metadata:
     rollout.kuberik.com/rollout: "my-app-rollout"  # References the rollout name
 spec:
   url: oci://ghcr.io/myorg/myapp
-  ref:
-    tag: "1.0.0"  # This will be updated by the rollout controller
+  # no spec.ref.tag here: the rollout writes it
 ```
 
 #### Kustomization
@@ -559,7 +569,7 @@ metadata:
 spec:
   postBuild:
     substitute:
-      IMAGE_TAG: "1.0.0"  # This will be updated by the rollout controller
+      environment: production  # IMAGE_TAG is written by the rollout; use ${IMAGE_TAG:=1.0.0} in manifests
 ```
 
 #### Gate bypass
