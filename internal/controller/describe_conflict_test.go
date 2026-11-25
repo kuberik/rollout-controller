@@ -48,6 +48,18 @@ var _ = Describe("describeFieldConflict", func() {
 		Expect(msg).To(Equal(generic("rollout-controller/ns/old-app")))
 	})
 
+	It("names the other manager, not the legacy shared one, when both conflict", func() {
+		err := apierrors.NewApplyConflict([]metav1.StatusCause{
+			{Type: metav1.CauseTypeFieldManagerConflict, Message: `conflict with "rollout-controller" using kustomize.toolkit.fluxcd.io/v1`, Field: ".spec.postBuild.substitute.APP_VERSION"},
+			{Type: metav1.CauseTypeFieldManagerConflict, Message: `conflict with "kustomize-controller" using kustomize.toolkit.fluxcd.io/v1`, Field: ".spec.postBuild.substitute.APP_VERSION"},
+		}, `Apply failed with 2 conflicts: conflicts with "rollout-controller" using kustomize.toolkit.fluxcd.io/v1:
+- .spec.postBuild.substitute.APP_VERSION
+conflicts with "kustomize-controller" using kustomize.toolkit.fluxcd.io/v1:
+- .spec.postBuild.substitute.APP_VERSION`)
+		msg := describeFieldConflict("Kustomization", "ns/k", paths, err)
+		Expect(msg).To(Equal(generic("kustomize-controller")))
+	})
+
 	It("falls back to a neutral name when the manager is unknown", func() {
 		msg := describeFieldConflict("OCIRepository", "ns/o", []string{"spec.ref.tag"}, apierrors.NewConflict(schema.GroupResource{}, "o", nil))
 		Expect(msg).To(HavePrefix("OCIRepository ns/o: spec.ref.tag is also set by another field manager."))
