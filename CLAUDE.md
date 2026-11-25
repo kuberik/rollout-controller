@@ -82,8 +82,8 @@ metadata:
   annotations:
     rollout.kuberik.com/rollout: "my-app-rollout"
 spec:
-  ref:
-    tag: "1.0.0"  # Updated by rollout controller
+  ref: {}  # Do not set tag in Git; the rollout writes spec.ref.tag.
+# If Git also sets spec.ref.tag, the deploy is refused (OCIRepositoryFieldConflict).
 ```
 
 **Kustomization** - multiple rollouts can manage different variables:
@@ -95,8 +95,10 @@ metadata:
 spec:
   postBuild:
     substitute:
-      IMAGE_TAG: "1.0.0"  # Managed by frontend-rollout
-      VERSION: "2.0.0"    # Managed by backend-rollout
+      ENVIRONMENT: production  # any non-rollout key; keeps Flux substitution on
+      # Do not set IMAGE_TAG/VERSION here; each rollout writes its own variable.
+# In the manifests, use a default for the first reconcile: ${IMAGE_TAG:=1.0.0}
+# If Git also sets a rollout's variable, its deploy is refused (KustomizationFieldConflict).
 ```
 
 ### Release Workflow

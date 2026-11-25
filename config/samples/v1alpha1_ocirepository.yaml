@@ -8,5 +8,4 @@ metadata:
 spec:
   url: oci://ghcr.io/myorg/myapp
   interval: 1m0s
-  ref:
-    tag: "1.0.0" # This will be updated by the referenced rollout
+  # no spec.ref.tag here: the rollout writes it

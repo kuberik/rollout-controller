@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -30,7 +29,6 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	k8sptr "k8s.io/utils/ptr"
@@ -42,8 +40,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/internal/releasecatalogue"
 	corev1 "k8s.io/api/core/v1"
@@ -286,6 +282,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 
 		if err := r.deployRelease(ctx, &rollout, *wantedRelease, cat); err != nil {
+			var writeIssue *deployWriteIssue
+			if errors.As(err, &writeIssue) {
+				log.Info("Deploy refused", "reason", writeIssue.Reason, "message", writeIssue.Message)
+				return ctrl.Result{RequeueAfter: writeConflictRequeueSecs * time.Second}, r.updateRolloutStatusOnError(ctx, &rollout, writeIssue.Reason, writeIssue.Message)
+			}
 			log.Error(err, "Failed to deploy release")
 			return ctrl.Result{}, errors.Join(err, r.updateRolloutStatusOnError(ctx, &rollout, "RolloutFailed", err.Error()))
 		}
@@ -915,6 +916,15 @@ func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout
 func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string, cat *catalogue) error {
 	log := logf.FromContext(ctx)
 
+	// Refuse the whole deploy, before any write or in-memory status change, when a
+	// Kustomization or OCIRepository cannot be written (field conflict).
+	if err := r.checkKustomizationConflicts(ctx, rollout, wantedRelease); err != nil {
+		return err
+	}
+	if err := r.checkOCIRepositoryConflicts(ctx, rollout, wantedRelease); err != nil {
+		return err
+	}
+
 	// Check if this deployment was done with gate bypass. A bypass is used only
 	// by a deploy of the build it names; see bypassOnDeploy for clearing.
 	bypass, bypassUsed, clearBypass := bypassOnDeploy(rollout, wantedRelease)
@@ -1151,154 +1161,6 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 				return err
 			}
 		}
-	}
-
-	return nil
-}
-
-// patchOCIRepositories finds OCIRepositories with rollout annotation and patches their tag.
-func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
-	log := logf.FromContext(ctx)
-
-	// List OCIRepositories in the same namespace
-	var ociRepos sourcev1.OCIRepositoryList
-	if err := r.Client.List(ctx, &ociRepos, client.InNamespace(rollout.Namespace)); err != nil {
-		return fmt.Errorf("failed to list OCIRepositories: %w", err)
-	}
-
-	for _, ociRepo := range ociRepos.Items {
-		// Check if this OCIRepository should be managed by this rollout
-		if ociRepo.Annotations == nil {
-			continue
-		}
-
-		rolloutName, hasRolloutAnnotation := ociRepo.Annotations["rollout.kuberik.com/rollout"]
-		if !hasRolloutAnnotation || rolloutName != rollout.Name {
-			continue
-		}
-
-		// Check if the tag needs to be updated
-		currentTag := ""
-		if ociRepo.Spec.Reference != nil && ociRepo.Spec.Reference.Tag != "" {
-			currentTag = ociRepo.Spec.Reference.Tag
-		}
-
-		if currentTag == wantedRelease {
-			log.V(5).Info("OCIRepository tag is already up to date", "name", ociRepo.Name, "tag", wantedRelease)
-			continue
-		}
-
-		// Build a minimal apply object to update only the Reference.Tag using Server-Side Apply
-		var desiredRef sourcev1.OCIRepositoryRef
-		if ociRepo.Spec.Reference != nil {
-			desiredRef = *ociRepo.Spec.Reference.DeepCopy()
-		}
-		desiredRef.Tag = wantedRelease
-
-		unstructuredRef, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desiredRef)
-		if err != nil {
-			return fmt.Errorf("failed to convert OCIRepository reference to unstructured: %w", err)
-		}
-
-		patch := &unstructured.Unstructured{}
-		patch.SetAPIVersion(sourcev1.GroupVersion.String())
-		patch.SetKind("OCIRepository")
-		patch.SetName(ociRepo.Name)
-		patch.SetNamespace(ociRepo.Namespace)
-
-		if err := unstructured.SetNestedMap(patch.Object, unstructuredRef, "spec", "ref"); err != nil {
-			return fmt.Errorf("failed to construct patch for OCIRepository %s: %w", ociRepo.Name, err)
-		}
-
-		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: server-side apply of unstructured; typed Apply() needs ApplyConfigurations
-			return fmt.Errorf("failed to apply OCIRepository %s: %w", ociRepo.Name, err)
-		}
-
-		log.Info("Patched OCIRepository", "name", ociRepo.Name, "tag", wantedRelease)
-	}
-
-	return nil
-}
-
-// patchKustomizations finds Kustomizations with rollout-specific annotations and patches their substitutes.
-// Each rollout should have its own annotation in the format: rollout.kuberik.com/substitute.<variable>.from: <rollout-name>
-// Example: rollout.kuberik.com/substitute.frontend_version.from: "frontend-rollout"
-func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *rolloutv1alpha1.Rollout, wantedRelease string) error {
-	log := logf.FromContext(ctx)
-
-	// List Kustomizations in the same namespace
-	var kustomizations kustomizev1.KustomizationList
-	if err := r.Client.List(ctx, &kustomizations, client.InNamespace(rollout.Namespace)); err != nil {
-		return fmt.Errorf("failed to list Kustomizations: %w", err)
-	}
-
-	for _, kustomization := range kustomizations.Items {
-		// Check if this Kustomization should be managed by this rollout
-		if kustomization.Annotations == nil {
-			continue
-		}
-
-		// Look for rollout-specific substitute annotation in the new format
-		var substituteName string
-		var hasRolloutSubstitute bool
-
-		// Regex pattern to match rollout.kuberik.com/substitute.<variable>.from and extract the variable name
-		substitutePattern := regexp.MustCompile(`^rollout\.kuberik\.com/substitute\.([^.]+)\.from$`)
-
-		// Iterate through annotations to find rollout.kuberik.com/substitute.<variable>.from: <rollout-name>
-		for annotationKey, annotationValue := range kustomization.Annotations {
-			if annotationValue == rollout.Name {
-				matches := substitutePattern.FindStringSubmatch(annotationKey)
-				if len(matches) == 2 {
-					substituteName = matches[1]
-					hasRolloutSubstitute = true
-					break
-				}
-			}
-		}
-
-		if !hasRolloutSubstitute {
-			continue
-		}
-
-		// Check if the substitute needs to be updated
-		currentValue := ""
-		if kustomization.Spec.PostBuild != nil && kustomization.Spec.PostBuild.Substitute != nil {
-			if val, exists := kustomization.Spec.PostBuild.Substitute[substituteName]; exists {
-				currentValue = val
-			}
-		}
-
-		if currentValue == wantedRelease {
-			log.V(5).Info("Kustomization substitute is already up to date", "name", kustomization.Name, "substitute", substituteName, "value", wantedRelease)
-			continue
-		}
-
-		// Patch the Kustomization with the new substitute value using Server-Side Apply.
-		// Preserve existing substitutes by copying them and updating our key.
-		desiredSubs := make(map[string]interface{})
-		if kustomization.Spec.PostBuild != nil && kustomization.Spec.PostBuild.Substitute != nil {
-			for k, v := range kustomization.Spec.PostBuild.Substitute {
-				desiredSubs[k] = v
-			}
-		}
-		desiredSubs[substituteName] = wantedRelease
-
-		patch := &unstructured.Unstructured{}
-		patch.SetAPIVersion(kustomizev1.GroupVersion.String())
-		patch.SetKind("Kustomization")
-		patch.SetName(kustomization.Name)
-		patch.SetNamespace(kustomization.Namespace)
-
-		if err := unstructured.SetNestedMap(patch.Object, desiredSubs, "spec", "postBuild", "substitute"); err != nil {
-			return fmt.Errorf("failed to construct patch for Kustomization %s: %w", kustomization.Name, err)
-		}
-
-		if err := r.Client.Patch(ctx, patch, client.Apply, client.FieldOwner("rollout-controller"), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: server-side apply of unstructured; typed Apply() needs ApplyConfigurations
-			return fmt.Errorf("failed to apply Kustomization %s: %w", kustomization.Name, err)
-		}
-
-		log.Info("Patched Kustomization", "name", kustomization.Name, "substitute", substituteName, "value", wantedRelease)
 	}
 
 	return nil
