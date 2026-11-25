@@ -32,8 +32,6 @@ import (
 // field manager owns the spec.ref.tag the rollout would write.
 const reasonOCIRepositoryFieldConflict = "OCIRepositoryFieldConflict"
 
-const ociRepositoryConflictHint = "Remove spec.ref.tag from the manifest in Git so kuberik owns it (Git must not set it on an OCIRepository annotated for a rollout)."
-
 // ociRepositoryTagPath is the only field the rollout writes on an OCIRepository.
 const ociRepositoryTagPath = "spec.ref.tag"
 
@@ -94,7 +92,7 @@ func (r *RolloutReconciler) checkOCIRepositoryConflicts(ctx context.Context, rol
 			continue
 		}
 		if apierrors.IsConflict(err) {
-			return &deployWriteIssue{reasonOCIRepositoryFieldConflict, describeFieldConflict("OCIRepository", w.name, []string{ociRepositoryTagPath}, ociRepositoryConflictHint, err)}
+			return &deployWriteIssue{reasonOCIRepositoryFieldConflict, describeFieldConflict("OCIRepository", w.name, []string{ociRepositoryTagPath}, err)}
 		}
 		return fmt.Errorf("dry-run of OCIRepository %s failed: %w", w.name, err)
 	}
@@ -119,7 +117,7 @@ func (r *RolloutReconciler) patchOCIRepositories(ctx context.Context, rollout *r
 		}
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				return &deployWriteIssue{reasonOCIRepositoryFieldConflict, describeFieldConflict("OCIRepository", w.name, []string{ociRepositoryTagPath}, ociRepositoryConflictHint, err)}
+				return &deployWriteIssue{reasonOCIRepositoryFieldConflict, describeFieldConflict("OCIRepository", w.name, []string{ociRepositoryTagPath}, err)}
 			}
 			return fmt.Errorf("failed to apply OCIRepository %s: %w", w.name, err)
 		}

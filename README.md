@@ -44,6 +44,12 @@ Each rollout writes only its own variable, with server-side apply under its own 
 Kustomization you commit; give the manifests a default instead (`${frontend_version:=1.0.0}`). If another field
 manager (for example kustomize-controller applying the Kustomization from Git) owns a variable the rollout writes,
 the deploy writes nothing and the Rollout reports `Ready=False` with reason `KustomizationFieldConflict`.
+The message names the variable and the other manager, for example:
+
+```
+Kustomization default/my-app: spec.postBuild.substitute.frontend_version is also set by "kustomize-controller". kuberik does not take over fields another tool sets; stop "kustomize-controller" from setting spec.postBuild.substitute.frontend_version and the deploy continues (kuberik retries every minute).
+```
+
 Variables written by the shared `rollout-controller` field manager of earlier versions are taken over on the next deploy.
 
 ### OCIRepositories
@@ -54,7 +60,7 @@ The rollout writes only `spec.ref.tag`, with server-side apply under its own fie
 (`rollout-controller/<namespace>/<rollout>`) and without forcing ownership. Every other `spec.ref` field (such as `semver`
 or `digest`) stays yours. Do not set `spec.ref.tag` in the OCIRepository you commit. If another field manager (for example
 Flux applying the OCIRepository from Git) owns it, the deploy writes nothing and the Rollout reports `Ready=False` with
-reason `OCIRepositoryFieldConflict`. A tag written by the shared `rollout-controller` field manager of earlier versions is
+reason `OCIRepositoryFieldConflict` and the same kind of message, naming `spec.ref.tag` and the other manager. A tag written by the shared `rollout-controller` field manager of earlier versions is
 taken over on the next deploy.
 
 #### Example

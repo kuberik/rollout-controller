@@ -78,11 +78,11 @@ type deployWriteIssue struct {
 
 func (e *deployWriteIssue) Error() string { return e.Reason + ": " + e.Message }
 
-// describeFieldConflict names the object, the contested path and the other manager, then
-// appends the fix hint for the kind (kind is e.g. "Kustomization"; id is namespace/name).
-func describeFieldConflict(kind, id string, paths []string, hint string, err error) string {
+// describeFieldConflict names the object, the contested path and the other manager, and says
+// the same thing for every manager: kuberik does not take the field over, so whoever else sets
+// it has to stop (kind is e.g. "Kustomization"; id is namespace/name).
+func describeFieldConflict(kind, id string, paths []string, err error) string {
 	path := paths[0]
-	manager := "another field manager"
 	name := ""
 	var status apierrors.APIStatus
 	if errors.As(err, &status) && status.Status().Details != nil {
@@ -104,13 +104,10 @@ func describeFieldConflict(kind, id string, paths []string, hint string, err err
 			name = m[1]
 		}
 	}
+	manager, stopWho := "another field manager", "that manager"
 	if name != "" {
 		manager = fmt.Sprintf("%q", name)
-		// Another rollout's manager: the annotation moved, and that rollout never releases
-		// the field on its own, so Git is not the culprit.
-		if parts := strings.Split(name, "/"); len(parts) == 3 && parts[0] == legacyFieldManager {
-			hint = fmt.Sprintf("Rollout %s wrote it before the annotation moved and still owns it. Release it with a server-side apply under field manager %q of a %s body without the field.", parts[2], name, kind)
-		}
+		stopWho = manager
 	}
-	return fmt.Sprintf("%s %s: %s is also set by %s. %s", kind, id, path, manager, hint)
+	return fmt.Sprintf("%s %s: %s is also set by %s. kuberik does not take over fields another tool sets; stop %s from setting %s and the deploy continues (kuberik retries every minute).", kind, id, path, manager, stopWho, path)
 }

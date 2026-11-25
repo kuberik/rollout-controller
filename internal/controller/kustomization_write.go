@@ -34,8 +34,6 @@ import (
 // field manager owns a substitute variable the rollout would write.
 const reasonKustomizationFieldConflict = "KustomizationFieldConflict"
 
-const kustomizationConflictHint = "Remove the key from spec.postBuild.substitute in Git so kuberik owns it (use ${VAR:=default} in the manifests for a default)."
-
 // kustomizationSubstituteAnnotPattern matches rollout.kuberik.com/substitute.<VAR>.from
 // and captures the variable name.
 var kustomizationSubstituteAnnotPattern = regexp.MustCompile(`^rollout\.kuberik\.com/substitute\.([^.]+)\.from$`)
@@ -124,7 +122,7 @@ func (r *RolloutReconciler) checkKustomizationConflicts(ctx context.Context, rol
 			continue
 		}
 		if apierrors.IsConflict(err) {
-			return &deployWriteIssue{reasonKustomizationFieldConflict, describeFieldConflict("Kustomization", w.name, w.paths, kustomizationConflictHint, err)}
+			return &deployWriteIssue{reasonKustomizationFieldConflict, describeFieldConflict("Kustomization", w.name, w.paths, err)}
 		}
 		return fmt.Errorf("dry-run of Kustomization %s failed: %w", w.name, err)
 	}
@@ -151,7 +149,7 @@ func (r *RolloutReconciler) patchKustomizations(ctx context.Context, rollout *ro
 		}
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				return &deployWriteIssue{reasonKustomizationFieldConflict, describeFieldConflict("Kustomization", w.name, w.paths, kustomizationConflictHint, err)}
+				return &deployWriteIssue{reasonKustomizationFieldConflict, describeFieldConflict("Kustomization", w.name, w.paths, err)}
 			}
 			return fmt.Errorf("failed to apply Kustomization %s: %w", w.name, err)
 		}

@@ -179,7 +179,7 @@ var _ = Describe("OCIRepository write path", func() {
 			Expect(getRollout().Status.History).To(HaveLen(1))
 		})
 
-		It("names the other rollout when its per-rollout manager owns the tag", func() {
+		It("names the other rollout's manager with the same generic message", func() {
 			ociApply(rolloutFieldManager(ns, "b"), map[string]interface{}{"tag": "from-git"})
 			feed.Publish("a-2")
 			_, err := deploy()
@@ -189,7 +189,8 @@ var _ = Describe("OCIRepository write path", func() {
 			c := readyCondition()
 			Expect(c.Reason).To(Equal("OCIRepositoryFieldConflict"))
 			Expect(c.Message).To(ContainSubstring("spec.ref.tag"))
-			Expect(c.Message).To(ContainSubstring("Rollout b wrote it before the annotation moved"))
+			Expect(c.Message).To(ContainSubstring(`is also set by "` + rolloutFieldManager(ns, "b") + `"`))
+			Expect(c.Message).To(ContainSubstring(`kuberik does not take over fields another tool sets; stop "` + rolloutFieldManager(ns, "b") + `" from setting spec.ref.tag`))
 		})
 	})
 
