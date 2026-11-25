@@ -86,16 +86,30 @@ func describeFieldConflict(kind, id string, paths []string, err error) string {
 	name := ""
 	var status apierrors.APIStatus
 	if errors.As(err, &status) && status.Status().Details != nil {
-		// Read the first cause: the error text says "conflicts with" when there are several.
-		for _, c := range status.Status().Details.Causes {
+		// Read the causes, not the error text, which says "conflicts with" when there are several.
+		// Name the first manager that is not the legacy shared one: kuberik takes that one over
+		// itself, so telling the user to stop it would point at the wrong tool.
+		first, picked := -1, -1
+		for i, c := range status.Status().Details.Causes {
+			m := conflictManagerPattern.FindStringSubmatch(c.Message)
+			if first < 0 && (c.Field != "" || m != nil) {
+				first = i
+			}
+			if m != nil && m[1] != legacyFieldManager {
+				picked = i
+				break
+			}
+		}
+		if picked < 0 {
+			picked = first
+		}
+		if picked >= 0 {
+			c := status.Status().Details.Causes[picked]
 			if c.Field != "" {
 				path = strings.TrimPrefix(c.Field, ".")
 			}
 			if m := conflictManagerPattern.FindStringSubmatch(c.Message); m != nil {
 				name = m[1]
-			}
-			if c.Field != "" || name != "" {
-				break
 			}
 		}
 	}
