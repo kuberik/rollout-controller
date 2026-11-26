@@ -154,7 +154,17 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	admitted, blocked := evaluateDependency(consumerRels, contract, providedVersion)
+
+	// The provider may have moved past its newest succeeded release (still
+	// baking, failed). Consumers must also satisfy what runs now.
+	var runningVersion *string
+	runningTag := ""
+	if running, version := runningRelease(provider); running != nil {
+		runningTag = running.Version.Tag
+		runningVersion = &version
+	}
+
+	admitted, blocked := evaluateDependencyRunning(consumerRels, contract, providedVersion, runningVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -203,6 +213,15 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			satisfied.Message = fmt.Sprintf(
 				"Waiting for %s to serve contract %q at a version satisfying release(s) %s (deployed: %s)",
 				providerKey, contract, summarizeTags(blocking), orNone(providedVersion))
+			if runningVersion != nil {
+				if *runningVersion == "" {
+					satisfied.Message += fmt.Sprintf("; the provider's running release %s has no readable contract version and is not a succeeded release; blocked by it: %s",
+						runningTag, runningBlockers(blocked, blocking))
+				} else {
+					satisfied.Message += fmt.Sprintf("; the provider's running release %s (contract version %s) is not a succeeded release; blocked by it: %s",
+						runningTag, *runningVersion, runningBlockers(blocked, blocking))
+				}
+			}
 		}
 	}
 	meta.SetStatusCondition(&dependency.Status.Conditions, satisfied)
@@ -536,4 +555,19 @@ func (r *RolloutDependencyReconciler) consumerReleases(ctx context.Context, cons
 	out := slices.Clone(newer)
 	slices.Reverse(out)
 	return out, nil
+}
+
+// runningBlockers names the blocking releases held back specifically because
+// the provider's running (not yet succeeded) release fails their constraint.
+func runningBlockers(blocked []kuberikcomv1alpha1.BlockedRelease, blocking []string) string {
+	var tags []string
+	for _, release := range blocked {
+		if (release.Reason == "RunningVersionNotSatisfied" || release.Reason == "RunningVersionUnknown") && slices.Contains(blocking, release.Tag) {
+			tags = append(tags, release.Tag)
+		}
+	}
+	if len(tags) == 0 {
+		return "none"
+	}
+	return summarizeTags(tags)
 }
