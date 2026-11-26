@@ -407,6 +407,13 @@ func (r *RolloutReconciler) skipAutoRollback(ctx context.Context, rollout *rollo
 	return r.Status().Update(ctx, rollout)
 }
 
+// rollsBackAutomatically reports whether a build deployed this way can be rolled
+// back automatically. Every deploy made by hand (pin, force deploy, unblock-failed,
+// or one from before kinds were recorded) and a rollback itself never are.
+func rollsBackAutomatically(kind rolloutv1alpha1.DeployKind) bool {
+	return kind == rolloutv1alpha1.DeployKindAutomatic || kind == rolloutv1alpha1.DeployKindGateBypass
+}
+
 // autoRollbackAfterFailedBake runs in the reconcile that wrote history[0] as
 // Failed. It rolls back when a failure reaches the Rollout's severity, to the newest
 // earlier good build that every guard allows, and reports whether it deployed.
@@ -419,9 +426,9 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	failed := rollout.Status.History[0]
 	failedTag := failed.Version.Tag
 
-	switch failed.DeployKind {
-	case rolloutv1alpha1.DeployKindAutomatic, rolloutv1alpha1.DeployKindGateBypass:
-	case rolloutv1alpha1.DeployKindAutoRollback:
+	switch {
+	case rollsBackAutomatically(failed.DeployKind):
+	case failed.DeployKind == rolloutv1alpha1.DeployKindAutoRollback:
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, "An automatic rollback is never rolled back again.")
 	default:
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackManualDeploy,
