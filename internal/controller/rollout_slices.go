@@ -102,6 +102,10 @@ func (c *catalogue) find(tag string) *rolloutv1alpha1.VersionInfo {
 	return nil
 }
 
+// rollbackBarrierKey is the OCI annotation that makes a release a rollback
+// barrier. The slice release carries it in Metadata under the same key.
+const rollbackBarrierKey = "com.kuberik.rollout.rollback-barrier"
+
 // mergeSlices merges slices into one catalogue. Duplicate tags (only possible
 // with two writers) keep the copy from the older slice.
 func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
@@ -145,6 +149,7 @@ func mergeSlices(slicesIn []releasecatalogue.ReleaseSlice) *catalogue {
 				Created:            createdPtr,
 				Requires:           rel.Requires,
 				MetadataUnresolved: rel.MetadataUnresolved,
+				RollbackBarrier:    rel.Metadata[rollbackBarrierKey] == "true",
 			}
 			entries = append(entries, entry{v: v, seq: rel.Sequence})
 			c.firstSeen[rel.Tag] = rel.FirstSeen

@@ -25,18 +25,10 @@ type HealthCheckSpec struct {
 	// Class specifies the type of health check (e.g., 'kustomization')
 	// +optional
 	Class *string `json:"class,omitempty"`
-
-	// RollbackOn lists the kinds of failure that roll back a Rollout that has
-	// spec.autoRollback.enabled. Unset means the default for the check's class;
-	// an empty list means this check never rolls back. CheckError cannot be
-	// listed: a check that fails to run never rolls anything back.
-	// +optional
-	// +kubebuilder:validation:MaxItems=6
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'CheckError')",message="CheckError never rolls back and cannot be listed"
-	RollbackOn *[]FailureKind `json:"rollbackOn,omitempty"`
 }
 
-// FailureKind classifies why a health check failed.
+// FailureKind classifies why a health check failed. It is a display hint only:
+// it never decides whether a Rollout rolls back (severity does).
 // +kubebuilder:validation:Enum=Alert;Incident;ApplyFailed;NotReady;TestFailed;CheckError;Unclassified
 type FailureKind string
 
@@ -57,10 +49,27 @@ const (
 	FailureKindUnclassified FailureKind = "Unclassified"
 )
 
-// RollbackAnnotation on an object a check watches (a RolloutTest, a Job, a
-// Deployment) sets whether its failure rolls a Rollout back: "true" or "false".
-// Any other value is ignored.
-const RollbackAnnotation = "rollout.kuberik.com/rollback"
+// SeverityAnnotation sets how severe a failure is. On an object a check walks
+// (a RolloutTest, a Job, a Deployment, any kind in a Kustomization's inventory) it
+// is the severity of that object's failure. On a HealthCheck it is the default for
+// that check's failures. The object's annotation wins over the HealthCheck's;
+// unmarked is Critical. Values are Critical and Warning; anything else is
+// treated as Critical.
+const SeverityAnnotation = "kuberik.com/severity"
+
+// FailureSeverity is how severe a failure is. A Rollout's
+// spec.autoRollback.severity is the lowest severity that rolls it back.
+// +kubebuilder:validation:Enum=Critical;Warning
+type FailureSeverity string
+
+const (
+	// FailureSeverityCritical is a failure that always warrants a rollback when
+	// automatic rollback is on.
+	FailureSeverityCritical FailureSeverity = "Critical"
+	// FailureSeverityWarning is a failure that rolls back only when the Rollout
+	// asks for Warning.
+	FailureSeverityWarning FailureSeverity = "Warning"
+)
 
 // HealthCheckFailure is one thing that failed, with its kind. Like
 // lastErrorTime it is a witness: it stays after the source recovers and is
@@ -70,19 +79,24 @@ type HealthCheckFailure struct {
 	// +kubebuilder:validation:MaxLength=256
 	Source string `json:"source"`
 
-	// Kind classifies the failure.
-	Kind FailureKind `json:"kind"`
+	// Kind classifies the failure. Display only; it does not decide rollbacks.
+	// +optional
+	Kind FailureKind `json:"kind,omitempty"`
+
+	// Severity is how severe this failure is: Critical or Warning. Providers that
+	// are not the kustomization check fill it from their own signal: the
+	// Prometheus alert's "severity" label (critical = Critical, warning and
+	// anything else = Warning), Datadog monitor/incident priority (P1 and P2 =
+	// Critical, P3 and lower = Warning). Empty means unmarked: the HealthCheck's
+	// kuberik.com/severity annotation applies, else Critical.
+	// +optional
+	Severity FailureSeverity `json:"severity,omitempty"`
 
 	// Reason is the machine reason (RolloutTestFailed, JobFailed,
 	// ProgressDeadlineExceeded, BuildFailed, ...).
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	Reason string `json:"reason,omitempty"`
-
-	// Rollback is the source's own switch, read from the
-	// rollout.kuberik.com/rollback annotation. Nil when the source has none.
-	// +optional
-	Rollback *bool `json:"rollback,omitempty"`
 
 	// Message is one line of detail.
 	// +optional

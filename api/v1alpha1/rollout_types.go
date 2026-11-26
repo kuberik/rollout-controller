@@ -68,6 +68,14 @@ type VersionInfo struct {
 	// whenever the registry is unreachable.
 	// +optional
 	MetadataUnresolved bool `json:"metadataUnresolved,omitempty"`
+
+	// RollbackBarrier is true when this release carries the OCI annotation
+	// "com.kuberik.rollout.rollback-barrier: true" (release-controller publishes it
+	// in the slice release's metadata). Automatic rollback never rolls back past a
+	// barrier: a target is rejected when any release after it, up to and including
+	// the failed one, is a barrier (for example a release that migrated a schema).
+	// +optional
+	RollbackBarrier bool `json:"rollbackBarrier,omitempty"`
 }
 
 // HealthCheckSelectorConfig defines how to select HealthChecks for a rollout.
@@ -178,16 +186,34 @@ type RolloutSpec struct {
 	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
 
 	// AutoRollback turns on rolling back to the last good build when a build
-	// fails its bake because of a failure the health checks say should roll back.
+	// fails its bake with a failure at or above its severity. Unset is Never.
 	// +optional
 	AutoRollback *AutoRollbackSpec `json:"autoRollback,omitempty"`
 }
 
+// RollbackSeverity is the lowest failure severity that rolls a Rollout back.
+// +kubebuilder:validation:Enum=Never;Critical;Warning
+type RollbackSeverity string
+
+const (
+	// RollbackSeverityNever turns automatic rollback off.
+	RollbackSeverityNever RollbackSeverity = "Never"
+	// RollbackSeverityCritical rolls back on a Critical failure.
+	RollbackSeverityCritical RollbackSeverity = "Critical"
+	// RollbackSeverityWarning rolls back on a Warning or Critical failure.
+	RollbackSeverityWarning RollbackSeverity = "Warning"
+)
+
 // AutoRollbackSpec configures automatic rollback.
 type AutoRollbackSpec struct {
-	// Enabled turns automatic rollback on. Off by default.
+	// Severity is the lowest failure severity that rolls this Rollout back to
+	// the last good build: Critical rolls back on Critical failures, Warning on
+	// Warning and Critical ones, Never turns it off. Failures carry their severity
+	// from the kuberik.com/severity annotation or the provider (see
+	// HealthCheckFailure.severity); unmarked is Critical.
+	// +kubebuilder:default=Never
 	// +optional
-	Enabled bool `json:"enabled,omitempty"`
+	Severity RollbackSeverity `json:"severity,omitempty"`
 }
 
 // DeployKind says what caused a deploy, so automation can tell its own deploys
@@ -401,12 +427,6 @@ type FailedHealthCheck struct {
 	// +optional
 	Class string `json:"class,omitempty"`
 
-	// RollbackOn is the check's spec.rollbackOn as resolved when the failure was
-	// recorded (the class default when the check sets none).
-	// +optional
-	// +kubebuilder:validation:MaxItems=8
-	RollbackOn []FailureKind `json:"rollbackOn,omitempty"`
-
 	// Failures lists what failed in this check, each with the decision it led to.
 	// +optional
 	// +kubebuilder:validation:MaxItems=16
@@ -417,8 +437,13 @@ type FailedHealthCheck struct {
 type FailureVerdict struct {
 	// Source names what failed.
 	Source string `json:"source"`
-	// Kind classifies the failure.
-	Kind FailureKind `json:"kind"`
+	// Kind classifies the failure. Display only.
+	// +optional
+	Kind FailureKind `json:"kind,omitempty"`
+	// Severity is the failure's resolved severity: the source object's
+	// kuberik.com/severity annotation, else the HealthCheck's, else Critical.
+	// +optional
+	Severity FailureSeverity `json:"severity,omitempty"`
 	// Reason is the machine reason.
 	// +optional
 	Reason string `json:"reason,omitempty"`
@@ -427,8 +452,11 @@ type FailureVerdict struct {
 	Message string `json:"message,omitempty"`
 	// RollsBack is true when this failure triggers an automatic rollback.
 	RollsBack bool `json:"rollsBack"`
-	// Why is the rule that decided: CheckRollbackOn, NotInRollbackOn,
-	// SourceOptedOut, SourceOptedIn or CheckErrorNever.
+	// Why is the rule that decided: AtOrAboveThreshold (severity reaches the
+	// Rollout's autoRollback.severity), BelowThreshold, CheckErrorNever (a check
+	// that fails to run never rolls back) or PredatesDeploy (first seen before this
+	// deploy started, so not attributed to it).
+	// +kubebuilder:validation:Enum=AtOrAboveThreshold;BelowThreshold;CheckErrorNever;PredatesDeploy
 	Why string `json:"why"`
 }
 
@@ -603,9 +631,10 @@ const (
 	// RolloutDeploymentBlocked means deployment is blocked because health checks are unhealthy.
 	RolloutDeploymentBlocked = "DeploymentBlocked"
 	// RolloutAutoRollback records the outcome of the last automatic rollback
-	// decision. Present only when spec.autoRollback.enabled. True/RolledBack:
-	// the newest deploy is an automatic rollback. False: a failed bake did not
-	// roll back (NotATrigger, ManualDeploy, ManualIntent, NoTarget, DeployError).
+	// decision. Present only when spec.autoRollback.severity is Critical or
+	// Warning. True/RolledBack: the newest deploy is an automatic rollback. False:
+	// a failed bake did not roll back (NotATrigger, ManualDeploy, ManualIntent,
+	// NoTarget, Blocked, DeployError).
 	RolloutAutoRollback = "AutoRollback"
 
 	// RolloutBakeFailureDisabled means health check failures will not fail the current deployment.

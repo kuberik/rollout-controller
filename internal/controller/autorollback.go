@@ -38,6 +38,7 @@ const (
 	autoRollbackManualDeploy = "ManualDeploy"
 	autoRollbackManualIntent = "ManualIntent"
 	autoRollbackNoTarget     = "NoTarget"
+	autoRollbackBlocked      = "Blocked"
 	autoRollbackDeployError  = "DeployError"
 	autoRollbackPending      = "RollbackPending"
 	autoRollbackWaiting      = "WaitingForTests"
@@ -55,12 +56,11 @@ const deferredFailureRequeue = 15 * time.Second
 
 // Why values of a FailureVerdict.
 const (
-	whyCheckRollbackOn = "CheckRollbackOn"
-	whyNotInRollbackOn = "NotInRollbackOn"
-	whySourceOptedOut  = "SourceOptedOut"
-	whySourceOptedIn   = "SourceOptedIn"
-	whyCheckErrorNever = "CheckErrorNever"
-	maxVerdictsListed  = 3
+	whyAtOrAboveThreshold = "AtOrAboveThreshold"
+	whyBelowThreshold     = "BelowThreshold"
+	whyCheckErrorNever    = "CheckErrorNever"
+	whyPredatesDeploy     = "PredatesDeploy"
+	maxVerdictsListed     = 3
 )
 
 // deployOpts changes how deployRelease records a deploy.
@@ -77,64 +77,72 @@ type rollbackPlan struct {
 	sources   string
 }
 
-// defaultRollbackOn is the set of failure kinds that roll back for a check class
-// that does not set spec.rollbackOn.
-func defaultRollbackOn(class string) []rolloutv1alpha1.FailureKind {
-	switch class {
-	case healthCheckClassKustomization:
-		return []rolloutv1alpha1.FailureKind{rolloutv1alpha1.FailureKindApplyFailed, rolloutv1alpha1.FailureKindNotReady,
-			rolloutv1alpha1.FailureKindTestFailed, rolloutv1alpha1.FailureKindUnclassified}
-	case "prometheus-alert", "datadog", "datadog-monitor-crd":
-		return []rolloutv1alpha1.FailureKind{rolloutv1alpha1.FailureKindAlert, rolloutv1alpha1.FailureKindUnclassified}
-	case "datadog-incidents":
-		return nil
+// rollbackThreshold is the severity a Rollout rolls back at, empty when it never does.
+func rollbackThreshold(rollout *rolloutv1alpha1.Rollout) rolloutv1alpha1.RollbackSeverity {
+	if rollout.Spec.AutoRollback == nil {
+		return rolloutv1alpha1.RollbackSeverityNever
 	}
-	return []rolloutv1alpha1.FailureKind{rolloutv1alpha1.FailureKindAlert, rolloutv1alpha1.FailureKindApplyFailed,
-		rolloutv1alpha1.FailureKindNotReady, rolloutv1alpha1.FailureKindTestFailed, rolloutv1alpha1.FailureKindUnclassified}
+	switch s := rollout.Spec.AutoRollback.Severity; s {
+	case rolloutv1alpha1.RollbackSeverityCritical, rolloutv1alpha1.RollbackSeverityWarning:
+		return s
+	}
+	return rolloutv1alpha1.RollbackSeverityNever
 }
 
-// resolvedRollbackOn is the check's rollbackOn with the class default applied.
-func resolvedRollbackOn(hc *rolloutv1alpha1.HealthCheck) []rolloutv1alpha1.FailureKind {
-	if hc.Spec.RollbackOn != nil {
-		return slices.Clone(*hc.Spec.RollbackOn)
+// severityRank orders severities; an unmarked or unknown one is Critical.
+func severityRank(s rolloutv1alpha1.FailureSeverity) int {
+	if s == rolloutv1alpha1.FailureSeverityWarning {
+		return 1
 	}
-	class := ""
-	if hc.Spec.Class != nil {
-		class = *hc.Spec.Class
-	}
-	return defaultRollbackOn(class)
+	return 2
 }
 
-// verdictFor decides one failure. Most specific wins: CheckError never rolls
-// back, then the source's own switch, then the check's rollbackOn.
-func verdictFor(f rolloutv1alpha1.HealthCheckFailure, rollbackOn []rolloutv1alpha1.FailureKind) rolloutv1alpha1.FailureVerdict {
-	v := rolloutv1alpha1.FailureVerdict{Source: f.Source, Kind: f.Kind, Reason: f.Reason, Message: f.Message}
+// reaches reports whether a failure of severity sev rolls back at threshold.
+func reaches(sev rolloutv1alpha1.FailureSeverity, threshold rolloutv1alpha1.RollbackSeverity) bool {
+	switch threshold {
+	case rolloutv1alpha1.RollbackSeverityWarning:
+		return true
+	case rolloutv1alpha1.RollbackSeverityCritical:
+		return severityRank(sev) == 2
+	}
+	return false
+}
+
+// verdictFor decides one failure. sev is already resolved (object annotation,
+// then the check's annotation, then Critical). A check error never rolls back;
+// a failure first seen before cutoff (the deploy or retry) is not this deploy's.
+func verdictFor(f rolloutv1alpha1.HealthCheckFailure, sev rolloutv1alpha1.FailureSeverity, threshold rolloutv1alpha1.RollbackSeverity, cutoff time.Time) rolloutv1alpha1.FailureVerdict {
+	v := rolloutv1alpha1.FailureVerdict{Source: f.Source, Kind: f.Kind, Severity: sev, Reason: f.Reason, Message: f.Message}
 	switch {
 	case f.Kind == rolloutv1alpha1.FailureKindCheckError:
 		v.Why = whyCheckErrorNever
-	case f.Rollback != nil && *f.Rollback:
-		v.RollsBack, v.Why = true, whySourceOptedIn
-	case f.Rollback != nil:
-		v.Why = whySourceOptedOut
-	case slices.Contains(rollbackOn, f.Kind):
-		v.RollsBack, v.Why = true, whyCheckRollbackOn
+	case !f.FirstSeenTime.IsZero() && f.FirstSeenTime.Time.Before(cutoff):
+		v.Why = whyPredatesDeploy
+	case reaches(sev, threshold):
+		v.RollsBack, v.Why = true, whyAtOrAboveThreshold
 	default:
-		v.Why = whyNotInRollbackOn
+		v.Why = whyBelowThreshold
 	}
 	return v
 }
 
-// recordVerdicts fills class, resolved rollbackOn and per-failure verdicts of a
-// failed health check record. extra entries come first (the deploy-timeout path
-// adds NotReady for a check that is not Healthy). A check that recorded no
-// failures counts as one Unclassified failure, so older providers still roll back
-// by their class default.
-func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.HealthCheck, extra []rolloutv1alpha1.HealthCheckFailure) {
+// recordVerdicts fills class and per-failure verdicts of a failed health check
+// record. threshold is the Rollout's severity; with Never the verdicts are
+// recorded as they would be at Critical, so the history shows what turning
+// rollback on would have done. cutoff is the deploy (or retry) time. extra entries
+// come first (the deploy-timeout path adds NotReady for a check that is not
+// Healthy). A check that recorded no failures counts as one Critical failure
+// (unless the HealthCheck carries a kuberik.com/severity annotation), so older
+// providers still roll back.
+func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.HealthCheck, extra []rolloutv1alpha1.HealthCheckFailure,
+	threshold rolloutv1alpha1.RollbackSeverity, cutoff time.Time) {
 	if hc.Spec.Class != nil {
 		rec.Class = *hc.Spec.Class
 	}
-	rollbackOn := resolvedRollbackOn(hc)
-	rec.RollbackOn = rollbackOn
+	if threshold != rolloutv1alpha1.RollbackSeverityCritical && threshold != rolloutv1alpha1.RollbackSeverityWarning {
+		threshold = rolloutv1alpha1.RollbackSeverityCritical
+	}
+	hcSev, hcNote := severityFrom(hc.Annotations)
 	entries := append(slices.Clone(extra), hc.Status.Failures...)
 	if len(entries) == 0 {
 		entries = []rolloutv1alpha1.HealthCheckFailure{{
@@ -147,7 +155,15 @@ func recordVerdicts(rec *rolloutv1alpha1.FailedHealthCheck, hc *rolloutv1alpha1.
 		if len(rec.Failures) == maxFailures {
 			break
 		}
-		rec.Failures = append(rec.Failures, verdictFor(e, rollbackOn))
+		sev := e.Severity
+		if sev == "" {
+			sev = hcSev
+			e.Message = withNote(e.Message, hcNote)
+		}
+		if sev == "" {
+			sev = rolloutv1alpha1.FailureSeverityCritical
+		}
+		rec.Failures = append(rec.Failures, verdictFor(e, sev, threshold, cutoff))
 	}
 }
 
@@ -246,7 +262,7 @@ func withoutHeld(rollout *rolloutv1alpha1.Rollout, in []rolloutv1alpha1.VersionI
 // --- decision -----------------------------------------------------------
 
 func autoRollbackEnabled(rollout *rolloutv1alpha1.Rollout) bool {
-	return rollout.Spec.AutoRollback != nil && rollout.Spec.AutoRollback.Enabled
+	return rollbackThreshold(rollout) != rolloutv1alpha1.RollbackSeverityNever
 }
 
 // pendingManualIntent reports whether a person has asked for a deploy that the
@@ -267,18 +283,81 @@ func pendingManualIntent(rollout *rolloutv1alpha1.Rollout) string {
 	return ""
 }
 
-// rollbackTarget is the newest earlier deploy that baked successfully, other
-// than the failed build itself.
-func rollbackTarget(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.DeploymentHistoryEntry {
+// rollbackCandidates are the earlier builds that baked successfully, newest
+// first, once per tag, other than the failed build and any held build.
+func rollbackCandidates(rollout *rolloutv1alpha1.Rollout) []*rolloutv1alpha1.DeploymentHistoryEntry {
 	failedTag := rollout.Status.History[0].Version.Tag
 	held := failedBakeTags(rollout)
+	seen := map[string]bool{}
+	var out []*rolloutv1alpha1.DeploymentHistoryEntry
 	for i := 1; i < len(rollout.Status.History); i++ {
 		h := &rollout.Status.History[i]
-		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded && h.Version.Tag != failedTag && !held[h.Version.Tag] {
-			return h
+		if h.BakeStatus != nil && *h.BakeStatus == rolloutv1alpha1.BakeStatusSucceeded &&
+			h.Version.Tag != failedTag && !held[h.Version.Tag] && !seen[h.Version.Tag] {
+			seen[h.Version.Tag] = true
+			out = append(out, h)
 		}
 	}
-	return nil
+	return out
+}
+
+// rollbackGuardInput is what a guard sees of one rollback decision.
+type rollbackGuardInput struct {
+	rollout *rolloutv1alpha1.Rollout
+	failed  *rolloutv1alpha1.DeploymentHistoryEntry
+	target  *rolloutv1alpha1.DeploymentHistoryEntry
+	cat     *catalogue
+}
+
+// rollbackGuard says whether a rollback target is allowed. When it is not, reason
+// is a short phrase for the condition message. Guards are evaluated live inside
+// the decision, in order, and every one that rejects a target is named.
+// Dependency guards (PR #81) and rollback gates plug in here.
+type rollbackGuard func(ctx context.Context, in rollbackGuardInput) (ok bool, reason string)
+
+// rollbackGuards are the guards every automatic rollback passes.
+func (r *RolloutReconciler) rollbackGuards() []rollbackGuard {
+	return []rollbackGuard{barrierGuard}
+}
+
+// barrierGuard rejects a target when any release after it, up to and including the
+// failed one, carries the rollback-barrier annotation. Releases are read from the
+// catalogue (between the target's and the failed tag's positions) and from history
+// (the entries deployed after the target), so a barrier that has left the catalogue
+// still counts.
+func barrierGuard(_ context.Context, in rollbackGuardInput) (bool, string) {
+	targetTag, failedTag := in.target.Version.Tag, in.failed.Version.Tag
+	if in.failed.Version.RollbackBarrier {
+		return false, "the failed release " + failedTag + " is a rollback barrier"
+	}
+	for i := range in.rollout.Status.History {
+		h := &in.rollout.Status.History[i]
+		if h == in.target {
+			break
+		}
+		if h.Version.RollbackBarrier {
+			return false, h.Version.Tag + " is a rollback barrier"
+		}
+	}
+	if in.cat != nil {
+		ti, fi := -1, -1
+		for i, v := range in.cat.releases {
+			switch v.Tag {
+			case targetTag:
+				ti = i
+			case failedTag:
+				fi = i
+			}
+		}
+		if ti >= 0 && fi > ti {
+			for _, v := range in.cat.releases[ti+1 : fi+1] {
+				if v.RollbackBarrier {
+					return false, v.Tag + " is a rollback barrier"
+				}
+			}
+		}
+	}
+	return true, ""
 }
 
 // rollbackTrigger returns the sources whose failure rolls back, and a line per
@@ -292,26 +371,22 @@ func rollbackTrigger(failed []rolloutv1alpha1.FailedHealthCheck) (sources []stri
 				}
 				continue
 			}
-			declined = append(declined, fmt.Sprintf("%s (%s, %s)", v.Source, v.Kind, whyText(v.Why)))
+			declined = append(declined, fmt.Sprintf("%s (%s)", v.Source, whyText(v)))
 		}
 	}
 	return sources, declined
 }
 
-func whyText(why string) string {
-	switch why {
-	case whySourceOptedOut:
-		return "opted out on the source"
-	case whySourceOptedIn:
-		return "opted in on the source"
-	case whyNotInRollbackOn:
-		return "kind not in the check's rollbackOn"
-	case whyCheckRollbackOn:
-		return "kind in the check's rollbackOn"
+func whyText(v rolloutv1alpha1.FailureVerdict) string {
+	switch v.Why {
+	case whyBelowThreshold:
+		return string(v.Severity) + " is below the Rollout's severity"
 	case whyCheckErrorNever:
 		return "check errors never roll back"
+	case whyPredatesDeploy:
+		return "first seen before this deploy"
 	}
-	return why
+	return v.Why
 }
 
 func listFew(items []string) string {
@@ -333,8 +408,9 @@ func (r *RolloutReconciler) skipAutoRollback(ctx context.Context, rollout *rollo
 }
 
 // autoRollbackAfterFailedBake runs in the reconcile that wrote history[0] as
-// Failed. It rolls back when every rule holds (see the checks below) and reports
-// whether it deployed. Gates are not evaluated: a rollback runs during a freeze.
+// Failed. It rolls back when a failure reaches the Rollout's severity, to the newest
+// earlier good build that every guard allows, and reports whether it deployed.
+// Forward gates are not evaluated: a rollback runs during a freeze.
 func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) (bool, error) {
 	if !autoRollbackEnabled(rollout) || len(rollout.Status.History) == 0 {
 		return false, nil
@@ -364,10 +440,24 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, msg)
 	}
 
-	target := rollbackTarget(rollout)
-	if target == nil {
+	candidates := rollbackCandidates(rollout)
+	if len(candidates) == 0 {
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNoTarget,
 			fmt.Sprintf("%s failed but no earlier build baked successfully to roll back to.", failedTag))
+	}
+	var target *rolloutv1alpha1.DeploymentHistoryEntry
+	var rejected []string
+	for _, cand := range candidates {
+		ok, reason := r.passGuards(ctx, rollbackGuardInput{rollout: rollout, failed: &rollout.Status.History[0], target: cand, cat: cat})
+		if ok {
+			target = cand
+			break
+		}
+		rejected = append(rejected, cand.Version.Tag+": "+reason)
+	}
+	if target == nil {
+		return false, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
+			fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(rejected)))
 	}
 
 	plan := &rollbackPlan{failedID: ptrValue(failed.ID), failedTag: failedTag, sources: listFew(sources)}
@@ -410,6 +500,16 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 		log.Error(serr, "Failed to record the rollback deploy error")
 	}
 	return false, derr
+}
+
+// passGuards runs the guards in order and stops at the first that rejects.
+func (r *RolloutReconciler) passGuards(ctx context.Context, in rollbackGuardInput) (bool, string) {
+	for _, g := range r.rollbackGuards() {
+		if ok, reason := g(ctx, in); !ok {
+			return false, reason
+		}
+	}
+	return true, ""
 }
 
 // rollbackRecorded reports whether history already holds the rollback of the plan's failed build.

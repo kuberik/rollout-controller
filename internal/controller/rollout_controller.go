@@ -738,7 +738,7 @@ func snapshotObservations(in []rolloutv1alpha1.HealthCheckObservation) []rollout
 
 // collectFailedHealthChecks collects all health checks that have failed after the deployment time.
 // It returns health checks that have LastErrorTime after deployTime.
-func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
+func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time, threshold rolloutv1alpha1.RollbackSeverity) []rolloutv1alpha1.FailedHealthCheck {
 	var failedHealthChecks []rolloutv1alpha1.FailedHealthCheck
 
 	for _, hc := range allHealthChecks {
@@ -751,7 +751,7 @@ func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv
 			if hc.Status.Message != nil {
 				failedHC.Message = hc.Status.Message
 			}
-			recordVerdicts(&failedHC, &hc, nil)
+			recordVerdicts(&failedHC, &hc, nil, threshold, deployTime)
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 		}
 	}
@@ -761,7 +761,7 @@ func (r *RolloutReconciler) collectFailedHealthChecks(allHealthChecks []rolloutv
 
 // collectUnhealthyHealthChecks collects all health checks that are not healthy or don't meet bake start requirements.
 // This is used when deploy timeout occurs before bake can start.
-func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time) []rolloutv1alpha1.FailedHealthCheck {
+func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rolloutv1alpha1.HealthCheck, deployTime time.Time, threshold rolloutv1alpha1.RollbackSeverity) []rolloutv1alpha1.FailedHealthCheck {
 	var failedHealthChecks []rolloutv1alpha1.FailedHealthCheck
 
 	for _, hc := range allHealthChecks {
@@ -779,7 +779,7 @@ func (r *RolloutReconciler) collectUnhealthyHealthChecks(allHealthChecks []rollo
 				failedHC.Message = &msg
 			}
 			// A check that is not Healthy at the deadline did not become ready.
-			recordVerdicts(&failedHC, &hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(&hc)})
+			recordVerdicts(&failedHC, &hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(&hc)}, threshold, deployTime)
 			failedHealthChecks = append(failedHealthChecks, failedHC)
 			continue
 		}
@@ -1340,7 +1340,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 
 				// Collect unhealthy health checks that prevented bake from starting.
 				// errorCutoff excludes pre-retry stale failures from the record.
-				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff)
+				currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff, rollbackThreshold(rollout))
 
 				meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 					Type:               rolloutv1alpha1.RolloutReady,
@@ -1405,7 +1405,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			currentEntry.BakeEndTime = &metav1.Time{Time: now}
 
 			// Collect all failed health checks with their messages
-			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, errorCutoff)
+			currentEntry.FailedHealthChecks = r.collectFailedHealthChecks(allHealthChecks, errorCutoff, rollbackThreshold(rollout))
 
 			meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 				Type:               rolloutv1alpha1.RolloutReady,
@@ -1542,7 +1542,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 					currentEntry.BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
 					currentEntry.BakeStatusMessage = &failMsg
 					currentEntry.BakeEndTime = &metav1.Time{Time: now}
-					currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff)
+					currentEntry.FailedHealthChecks = r.collectUnhealthyHealthChecks(allHealthChecks, errorCutoff, rollbackThreshold(rollout))
 					meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 						Type:               rolloutv1alpha1.RolloutReady,
 						Status:             metav1.ConditionFalse,

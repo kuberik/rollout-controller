@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -69,18 +70,30 @@ func failureSource(kind, namespace, name string) string {
 	return kind + " " + namespace + "/" + name
 }
 
-// rollbackSwitch reads rollout.kuberik.com/rollback from annotations: "true" and
-// "false" are switches, anything else (or absent) is nil.
-func rollbackSwitch(annotations map[string]string) *bool {
-	switch annotations[rolloutv1alpha1.RollbackAnnotation] {
-	case "true":
-		t := true
-		return &t
-	case "false":
-		f := false
-		return &f
+// severityFrom reads kuberik.com/severity from annotations. An absent annotation
+// gives "" (unmarked). A value other than Critical or Warning is treated as
+// Critical, and note says so for the failure's message.
+func severityFrom(annotations map[string]string) (sev rolloutv1alpha1.FailureSeverity, note string) {
+	v, ok := annotations[rolloutv1alpha1.SeverityAnnotation]
+	if !ok {
+		return "", ""
 	}
-	return nil
+	switch rolloutv1alpha1.FailureSeverity(v) {
+	case rolloutv1alpha1.FailureSeverityCritical, rolloutv1alpha1.FailureSeverityWarning:
+		return rolloutv1alpha1.FailureSeverity(v), ""
+	}
+	return rolloutv1alpha1.FailureSeverityCritical, fmt.Sprintf("unknown %s %q, treated as Critical", rolloutv1alpha1.SeverityAnnotation, short(v))
+}
+
+// withNote puts a note in front of a failure message, where truncation spares it.
+func withNote(msg, note string) string {
+	if note == "" {
+		return msg
+	}
+	if msg == "" {
+		return note
+	}
+	return note + ": " + msg
 }
 
 // conditionReason returns the reason of the named condition, empty when absent.
@@ -114,10 +127,11 @@ func short(s string) string {
 // failure entry. derived is true for a Kruise Rollout stalled on a failed test:
 // the test is the failure, the Rollout only shows it.
 func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, msg string, now metav1.Time) (f rolloutv1alpha1.HealthCheckFailure, derived bool) {
+	sev, note := severityFrom(obj.GetAnnotations())
 	f = rolloutv1alpha1.HealthCheckFailure{
 		Source:        failureSource(gk.Kind, obj.GetNamespace(), obj.GetName()),
-		Rollback:      rollbackSwitch(obj.GetAnnotations()),
-		Message:       observation.Message(msg),
+		Severity:      sev,
+		Message:       observation.Message(withNote(msg, note)),
 		FirstSeenTime: now,
 	}
 	switch {
@@ -150,7 +164,7 @@ func classifyFailedObject(obj *unstructured.Unstructured, gk schema.GroupKind, m
 
 // dropDerived removes the Kruise Rollout entries whose RolloutTests are in the
 // inventory, whatever phase those tests are in: the tests decide, each by its own
-// switch. derivedIdx maps an entry to its Kruise Rollout key (namespace/name);
+// severity. derivedIdx maps an entry to its Kruise Rollout key (namespace/name);
 // testedRollouts holds namespace/spec.rolloutName of every RolloutTest walked.
 // dropped reports whether any entry was removed.
 func dropDerived(entries []rolloutv1alpha1.HealthCheckFailure, derivedIdx map[int]string, testedRollouts map[string]bool) (out []rolloutv1alpha1.HealthCheckFailure, dropped bool) {
@@ -212,9 +226,10 @@ func inventoryFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kus
 func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kustomizev1.Kustomization, now metav1.Time) (failures []rolloutv1alpha1.HealthCheckFailure, deferred bool) {
 	src := failureSource(failureSourceKustomizationLabel, ks.Namespace, ks.Name)
 	own := func(kind rolloutv1alpha1.FailureKind, reason, msg string) ([]rolloutv1alpha1.HealthCheckFailure, bool) {
+		sev, note := severityFrom(ks.GetAnnotations())
 		return []rolloutv1alpha1.HealthCheckFailure{{
-			Source: src, Kind: kind, Reason: reason, Message: observation.Message(msg),
-			Rollback: rollbackSwitch(ks.GetAnnotations()), FirstSeenTime: now,
+			Source: src, Kind: kind, Reason: reason, Message: observation.Message(withNote(msg, note)),
+			Severity: sev, FirstSeenTime: now,
 		}}, false
 	}
 	ready := meta.FindStatusCondition(ks.Status.Conditions, fluxmeta.ReadyCondition)
@@ -227,8 +242,7 @@ func classifyKustomizationFailures(ctx context.Context, c client.Reader, ks *kus
 	}
 	// A Kruise Rollout stalled on its tests is explained by those tests, whatever
 	// phase they are in right now. Falling back to the Kustomization's own entry
-	// here would add a failure that rolls back by the class default and override a
-	// test's rollback: "false".
+	// here would add a failure of its own and override the test's severity.
 	if found, explained := inventoryFailures(ctx, c, ks, now); len(found) > 0 || explained {
 		return found, len(found) == 0
 	}
