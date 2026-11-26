@@ -204,7 +204,6 @@ var _ = Describe("KustomizationHealth with wait: true", func() {
 
 	Describe("new source revision that fails to apply", func() {
 		for _, reason := range []string{fluxmeta.HealthCheckFailedReason, fluxmeta.BuildFailedReason} {
-			reason := reason
 			It("stays unhealthy with LastErrorTime ("+reason+")", func() {
 				setSource("v2", metav1.ConditionTrue, 0)
 				setConditions(metav1.Condition{Type: fluxmeta.ReadyCondition, Status: metav1.ConditionFalse, Reason: reason, Message: "failed"})
