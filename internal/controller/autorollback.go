@@ -42,6 +42,7 @@ const (
 	autoRollbackDeployError  = "DeployError"
 	autoRollbackPending      = "RollbackPending"
 	autoRollbackWaiting      = "WaitingForTests"
+	autoRollbackWaitingGates = "WaitingForGateRefresh"
 )
 
 // deferredFailureGrace is how long a Rollout waits for the sources a deferred
@@ -307,17 +308,19 @@ type rollbackGuardInput struct {
 	failed  *rolloutv1alpha1.DeploymentHistoryEntry
 	target  *rolloutv1alpha1.DeploymentHistoryEntry
 	cat     *catalogue
+	// gates are the Rollback gates that reference the Rollout.
+	gates []rolloutv1alpha1.RolloutGate
 }
 
 // rollbackGuard says whether a rollback target is allowed. When it is not, reason
 // is a short phrase for the condition message. Guards are evaluated live inside
 // the decision, in order, and every one that rejects a target is named.
-// Dependency guards (PR #81) and rollback gates plug in here.
+// Dependency guards (PR #81) plug in here: add a rollbackGuard to rollbackGuards.
 type rollbackGuard func(ctx context.Context, in rollbackGuardInput) (ok bool, reason string)
 
 // rollbackGuards are the guards every automatic rollback passes.
 func (r *RolloutReconciler) rollbackGuards() []rollbackGuard {
-	return []rollbackGuard{barrierGuard}
+	return []rollbackGuard{barrierGuard, gateGuard}
 }
 
 // barrierGuard rejects a target when any release after it, up to and including the
@@ -418,9 +421,12 @@ func rollsBackAutomatically(kind rolloutv1alpha1.DeployKind) bool {
 // Failed. It rolls back when a failure reaches the Rollout's severity, to the newest
 // earlier good build that every guard allows, and reports whether it deployed.
 // Forward gates are not evaluated: a rollback runs during a freeze.
-func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) (bool, error) {
+//
+// When it must wait (a labeled Rollback gate has not answered the refresh request) it returns a requeue delay and
+// leaves the AutoRollback condition Unknown/WaitingForGateRefresh.
+func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rollout *rolloutv1alpha1.Rollout, cat *catalogue) (rolledBack bool, requeue time.Duration, err error) {
 	if !autoRollbackEnabled(rollout) || len(rollout.Status.History) == 0 {
-		return false, nil
+		return false, 0, nil
 	}
 	log := logf.FromContext(ctx)
 	failed := rollout.Status.History[0]
@@ -429,13 +435,13 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	switch {
 	case rollsBackAutomatically(failed.DeployKind):
 	case failed.DeployKind == rolloutv1alpha1.DeployKindAutoRollback:
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, "An automatic rollback is never rolled back again.")
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, "An automatic rollback is never rolled back again.")
 	default:
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackManualDeploy,
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackManualDeploy,
 			fmt.Sprintf("%s was deployed by hand (pin, force deploy, unblock or before deploy kinds were recorded); rolling back is left to you.", failedTag))
 	}
 	if why := pendingManualIntent(rollout); why != "" {
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackManualIntent, "Not rolling back: "+why+".")
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackManualIntent, "Not rolling back: "+why+".")
 	}
 
 	sources, declined := rollbackTrigger(failed.FailedHealthChecks)
@@ -444,18 +450,33 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 		if len(declined) > 0 {
 			msg = "No failure that rolls back: " + listFew(declined) + "."
 		}
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, msg)
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, msg)
 	}
 
 	candidates := rollbackCandidates(rollout)
 	if len(candidates) == 0 {
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNoTarget,
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackNoTarget,
 			fmt.Sprintf("%s failed but no earlier build baked successfully to roll back to.", failedTag))
+	}
+	gates, gerr := r.rollbackGatesFor(ctx, rollout)
+	if gerr != nil {
+		return false, 0, gerr
+	}
+	if pending, perr := r.requestGateRefresh(ctx, gates, ptrValue(failed.ID)); perr != nil {
+		return false, 0, perr
+	} else if len(pending) > 0 {
+		wait, werr := r.waitForRollbackGates(ctx, rollout, pending)
+		if werr != nil || wait > 0 {
+			return false, wait, werr
+		}
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
+			fmt.Sprintf("%s failed but rollback gate %s did not refresh (waited %s); not rolling back.",
+				failedTag, listFew(pending), strings.TrimSuffix(rollbackGateGrace.String(), "0s")))
 	}
 	var target *rolloutv1alpha1.DeploymentHistoryEntry
 	var rejected []string
 	for _, cand := range candidates {
-		ok, reason := r.passGuards(ctx, rollbackGuardInput{rollout: rollout, failed: &rollout.Status.History[0], target: cand, cat: cat})
+		ok, reason := r.passGuards(ctx, rollbackGuardInput{rollout: rollout, failed: &rollout.Status.History[0], target: cand, cat: cat, gates: gates})
 		if ok {
 			target = cand
 			break
@@ -463,7 +484,7 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 		rejected = append(rejected, cand.Version.Tag+": "+reason)
 	}
 	if target == nil {
-		return false, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
+		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
 			fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(rejected)))
 	}
 
@@ -483,30 +504,67 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 			Message: fmt.Sprintf("Rolling back %s to %s (%s).", failedTag, target.Version.Tag, plan.sources),
 		})
 		if err := r.Status().Update(ctx, rollout); err != nil {
-			return false, err
+			return false, 0, err
 		}
 	}
 
 	derr := r.deployRelease(ctx, rollout, target.Version.Tag, cat, deployOpts{rollback: plan})
 	if derr == nil {
-		return true, nil
+		return true, 0, nil
 	}
 	log.Error(derr, "Automatic rollback failed to deploy")
 	fresh := &rolloutv1alpha1.Rollout{}
 	if gerr := r.Get(ctx, client.ObjectKeyFromObject(rollout), fresh); gerr != nil {
-		return false, derr
+		return false, 0, derr
 	}
 	if rollbackRecorded(fresh, plan) {
 		// The rollback happened: Flux points at the target and history says so. What
 		// failed afterwards (clearing annotations) is bookkeeping and must not turn
 		// RolledBack into DeployError.
-		return true, nil
+		return true, 0, nil
 	}
 	if serr := r.skipAutoRollback(ctx, fresh, autoRollbackDeployError,
 		fmt.Sprintf("Rolling back %s to %s failed, retrying: %v", failedTag, target.Version.Tag, derr)); serr != nil {
 		log.Error(serr, "Failed to record the rollback deploy error")
 	}
-	return false, derr
+	return false, 0, derr
+}
+
+// waitForRollbackGates holds the decision while stale Rollback gates get
+// evaluated again. It returns how long to wait before looking again, or 0 when the
+// grace has run out. The wait starts when the AutoRollback condition first reads
+// WaitingForGateRefresh and is written only on a change.
+func (r *RolloutReconciler) waitForRollbackGates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, stale []string) (time.Duration, error) {
+	msg := fmt.Sprintf("Waiting up to %s for rollback gate %s to refresh for the failed deploy.",
+		strings.TrimSuffix(rollbackGateGrace.String(), "0s"), listFew(stale))
+	now := r.now()
+	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	if c == nil || c.Reason != autoRollbackWaitingGates {
+		// Remove first so the transition time restarts: SetStatusCondition keeps it
+		// when only the reason changes.
+		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackWaitingGates, Message: msg,
+			LastTransitionTime: metav1.NewTime(now),
+		})
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return 0, err
+		}
+		return min(rollbackGateGrace, deferredFailureRequeue), nil
+	}
+	left := rollbackGateGrace - now.Sub(c.LastTransitionTime.Time)
+	if left <= 0 {
+		return 0, nil
+	}
+	if c.Message != msg {
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackWaitingGates, Message: msg,
+		})
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return 0, err
+		}
+	}
+	return min(max(left, time.Second), deferredFailureRequeue), nil
 }
 
 // passGuards runs the guards in order and stops at the first that rejects.
@@ -540,7 +598,7 @@ func pendingAutoRollback(rollout *rolloutv1alpha1.Rollout) bool {
 		return false
 	}
 	c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
-	return c != nil && (c.Reason == autoRollbackPending || c.Reason == autoRollbackDeployError)
+	return c != nil && (c.Reason == autoRollbackPending || c.Reason == autoRollbackDeployError || c.Reason == autoRollbackWaitingGates)
 }
 
 func ptrValue(p *int64) int64 {
