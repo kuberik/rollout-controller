@@ -766,7 +766,7 @@ var _ = Describe("Slices mode reader", func() {
 			oci := &sourcev1.OCIRepository{
 				ObjectMeta: metav1.ObjectMeta{Name: "oci", Namespace: ns,
 					Annotations: map[string]string{"rollout.kuberik.com/rollout": "sl"}},
-				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/test/app", Interval: metav1.Duration{Duration: time.Minute},
+				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/test/app", Interval: &metav1.Duration{Duration: time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
 			Expect(k8sClient.Create(ctx, oci)).To(Succeed())
