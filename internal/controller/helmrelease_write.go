@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -39,6 +40,8 @@ const (
 	// Reasons set on the Rollout's Ready condition when a HelmRelease cannot be written.
 	reasonHelmReleaseFieldConflict     = "HelmReleaseFieldConflict"
 	reasonHelmReleaseInvalidAnnotation = "HelmReleaseInvalidAnnotation"
+	// Another manager keeps Helm's own upgrade remediation on (see helmUpgradeRemediates).
+	reasonHelmReleaseRemediationConflict = "HelmReleaseRemediationConflict"
 
 	helmReleaseChartVersionAnnot = "rollout.kuberik.com/chart-version.from"
 )
@@ -151,6 +154,15 @@ func planHelmReleaseWrites(rollout *rolloutv1alpha1.Rollout, wanted string, item
 			}
 		}
 
+		// Turn off Helm's own upgrade remediation, so a failed upgrade is not rolled back
+		// behind the Rollout's back: its health checks and rollback decide. Unset means off,
+		// so only a HelmRelease that remediates needs a write for it.
+		_ = unstructured.SetNestedField(patch.Object, int64(0), helmRemediationPath("retries")...)
+		_ = unstructured.SetNestedField(patch.Object, false, helmRemediationPath("remediateLastFailure")...)
+		if helmUpgradeRemediates(hr) {
+			changed = append(changed, "spec.upgrade.remediation")
+		}
+
 		if len(changed) == 0 {
 			continue
 		}
@@ -179,7 +191,7 @@ func (r *RolloutReconciler) checkHelmReleaseConflicts(ctx context.Context, rollo
 			continue
 		}
 		if apierrors.IsConflict(err) {
-			return &deployWriteIssue{reasonHelmReleaseFieldConflict, describeFieldConflict("HelmRelease", w.name, w.paths, err)}
+			return helmReleaseConflict(w, err)
 		}
 		return fmt.Errorf("dry-run of HelmRelease %s failed: %w", w.name, err)
 	}
@@ -207,13 +219,60 @@ func (r *RolloutReconciler) patchHelmReleases(ctx context.Context, rollout *roll
 		}
 		if err != nil {
 			if apierrors.IsConflict(err) {
-				return &deployWriteIssue{reasonHelmReleaseFieldConflict, describeFieldConflict("HelmRelease", w.name, w.paths, err)}
+				return helmReleaseConflict(w, err)
 			}
 			return fmt.Errorf("failed to apply HelmRelease %s: %w", w.name, err)
 		}
 		log.Info("Patched HelmRelease", "name", w.name, "paths", w.paths, "value", wantedRelease)
 	}
 	return nil
+}
+
+func helmRemediationPath(leaf string) []string {
+	return []string{"spec", "upgrade", "remediation", leaf}
+}
+
+// helmUpgradeRemediates reports whether helm-controller would remediate a failed upgrade of
+// hr: retries other than 0 (negative is unlimited), or remediateLastFailure true, which
+// remediates once even with no retries.
+func helmUpgradeRemediates(hr *unstructured.Unstructured) bool {
+	if v, ok, _ := unstructured.NestedFieldNoCopy(hr.Object, helmRemediationPath("retries")...); ok {
+		switch n := v.(type) {
+		case int64:
+			if n != 0 {
+				return true
+			}
+		case float64:
+			if n != 0 {
+				return true
+			}
+		}
+	}
+	last, _, _ := unstructured.NestedBool(hr.Object, helmRemediationPath("remediateLastFailure")...)
+	return last
+}
+
+// helmReleaseConflict turns a server-side-apply conflict on w into the deploy issue. A conflict
+// on spec.upgrade.remediation means another manager keeps Helm's own remediation on.
+func helmReleaseConflict(w helmReleaseWrite, err error) *deployWriteIssue {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) && status.Status().Details != nil {
+		for _, c := range status.Status().Details.Causes {
+			field := strings.TrimPrefix(c.Field, ".")
+			if !strings.HasPrefix(field, "spec.upgrade.remediation.") {
+				continue
+			}
+			manager, stopWho := "another field manager", "that manager"
+			if m := conflictManagerPattern.FindStringSubmatch(c.Message); m != nil {
+				manager = fmt.Sprintf("%q", m[1])
+				stopWho = manager
+			}
+			return &deployWriteIssue{reasonHelmReleaseRemediationConflict, fmt.Sprintf(
+				"HelmRelease %s: %s is also set by %s. kuberik turns off Helm's upgrade remediation so that only the Rollout rolls back; have %s set spec.upgrade.remediation.retries: 0 and remediateLastFailure: false, or remove them, and the deploy continues (kuberik retries every minute).",
+				w.name, field, manager, stopWho)}
+		}
+	}
+	return &deployWriteIssue{reasonHelmReleaseFieldConflict, describeFieldConflict("HelmRelease", w.name, w.paths, err)}
 }
 
 // HelmReleaseGroupKind is the Flux HelmRelease kind, for RESTMapper checks in main.

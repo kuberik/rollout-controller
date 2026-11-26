@@ -227,6 +227,79 @@ var _ = Describe("HelmRelease write path", func() {
 			Expect(getRollout().Status.History).To(HaveLen(1))
 		})
 
+		gitHRWithRemediation := func(remediation map[string]interface{}) *unstructured.Unstructured {
+			return newHR(ns, map[string]string{"rollout.kuberik.com/values.image.tag.from": "shop"},
+				helmSpec(map[string]interface{}{"upgrade": map[string]interface{}{"remediation": remediation}}))
+		}
+		refusedForRemediation := func(field string) {
+			res, err := reconcileRollout()
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			ExpectWithOffset(1, res.RequeueAfter).To(Equal(time.Minute))
+			ExpectWithOffset(1, nestedStr(getHR(ns), "spec", "values", "image", "tag")).To(BeEmpty())
+			got := &sourcev1.OCIRepository{}
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(oci), got)).To(Succeed())
+			ExpectWithOffset(1, got.Spec.Reference.Tag).To(Equal("old"))
+			ro := getRollout()
+			ExpectWithOffset(1, ro.Status.History).To(BeEmpty())
+			ready := meta.FindStatusCondition(ro.Status.Conditions, rolloutv1alpha1.RolloutReady)
+			ExpectWithOffset(1, ready).NotTo(BeNil())
+			ExpectWithOffset(1, ready.Status).To(Equal(metav1.ConditionFalse))
+			ExpectWithOffset(1, ready.Reason).To(Equal("HelmReleaseRemediationConflict"))
+			ExpectWithOffset(1, ready.Message).To(ContainSubstring(field))
+			ExpectWithOffset(1, ready.Message).To(ContainSubstring(`"kustomize-controller"`))
+			ExpectWithOffset(1, ready.Message).To(ContainSubstring("retries: 0"))
+		}
+
+		It("turns off Helm's upgrade remediation when nobody else sets it", func() {
+			applyAs("kustomize-controller", gitHR(map[string]interface{}{"image": map[string]interface{}{"repository": "ghcr.io/x/shop"}}))
+			feed.Publish("2.0.0")
+			_, err := reconcileRollout()
+			Expect(err).NotTo(HaveOccurred())
+			hr := getHR(ns)
+			Expect(nestedStr(hr, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
+			retries, found, _ := unstructured.NestedInt64(hr.Object, "spec", "upgrade", "remediation", "retries")
+			Expect(found).To(BeTrue())
+			Expect(retries).To(BeZero())
+			last, found, _ := unstructured.NestedBool(hr.Object, "spec", "upgrade", "remediation", "remediateLastFailure")
+			Expect(found).To(BeTrue())
+			Expect(last).To(BeFalse())
+		})
+
+		It("refuses while Git sets upgrade retries, then deploys once Git sets 0", func() {
+			applyAs("kustomize-controller", gitHRWithRemediation(map[string]interface{}{"retries": int64(3)}))
+			feed.Publish("2.0.0")
+			refusedForRemediation("spec.upgrade.remediation.retries")
+			Expect(nestedStr(getHR(ns), "spec", "upgrade", "remediation", "strategy")).To(BeEmpty())
+
+			By("sharing the field when Git sets the same values")
+			applyAs("kustomize-controller", gitHRWithRemediation(map[string]interface{}{"retries": int64(0), "remediateLastFailure": false}))
+			_, err := reconcileRollout()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nestedStr(getHR(ns), "spec", "values", "image", "tag")).To(Equal("2.0.0"))
+			Expect(getRollout().Status.History).To(HaveLen(1))
+		})
+
+		It("refuses while Git sets remediateLastFailure: true", func() {
+			applyAs("kustomize-controller", gitHRWithRemediation(map[string]interface{}{"remediateLastFailure": true}))
+			feed.Publish("2.0.0")
+			refusedForRemediation("spec.upgrade.remediation.remediateLastFailure")
+		})
+
+		It("allows the uninstall strategy and install remediation once upgrade remediation is off", func() {
+			hr := gitHRWithRemediation(map[string]interface{}{"strategy": "uninstall"})
+			_ = unstructured.SetNestedField(hr.Object, int64(2), "spec", "install", "remediation", "retries")
+			applyAs("kustomize-controller", hr)
+			feed.Publish("2.0.0")
+			_, err := reconcileRollout()
+			Expect(err).NotTo(HaveOccurred())
+			got := getHR(ns)
+			Expect(nestedStr(got, "spec", "values", "image", "tag")).To(Equal("2.0.0"))
+			Expect(nestedStr(got, "spec", "upgrade", "remediation", "strategy")).To(Equal("uninstall"))
+			installRetries, _, _ := unstructured.NestedInt64(got.Object, "spec", "install", "remediation", "retries")
+			Expect(installRetries).To(Equal(int64(2)))
+			Expect(getRollout().Status.History).To(HaveLen(1))
+		})
+
 		It("co-exists when Git owns a different leaf", func() {
 			applyAs("kustomize-controller", gitHR(map[string]interface{}{"image": map[string]interface{}{"repository": "ghcr.io/x/shop"}}))
 			feed.Publish("2.0.0")
