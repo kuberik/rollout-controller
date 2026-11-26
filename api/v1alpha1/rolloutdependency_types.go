@@ -80,7 +80,29 @@ type RolloutDependencySpec struct {
 	// Defaults to the name of the provider Rollout.
 	// +optional
 	Contract *string `json:"contract,omitempty"`
+
+	// ProviderRollback says what an automatic rollback of the provider may do
+	// to this consumer. Allow (the default) rolls the provider back even when the
+	// consumer's running build requires more of the contract than the target
+	// serves. Block never rolls the provider back below what that build requires.
+	// +kubebuilder:default=Allow
+	// +optional
+	ProviderRollback ProviderRollbackPolicy `json:"providerRollback,omitempty"`
 }
+
+// ProviderRollbackPolicy says what an automatic rollback of a provider may do
+// to a consumer that depends on it.
+// +kubebuilder:validation:Enum=Block;Allow
+type ProviderRollbackPolicy string
+
+const (
+	// ProviderRollbackBlock opts this edge out: never rolls the provider back to
+	// a build that breaks the consumer.
+	ProviderRollbackBlock ProviderRollbackPolicy = "Block"
+	// ProviderRollbackAllow rolls the provider back even when the consumer's
+	// running build requires more than the target serves.
+	ProviderRollbackAllow ProviderRollbackPolicy = "Allow"
+)
 
 // ContractName returns the contract name this dependency gates on, falling back
 // to the provider Rollout name when not explicitly set.
