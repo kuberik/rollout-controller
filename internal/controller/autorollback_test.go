@@ -65,11 +65,7 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 		},
 	}
 	if !o.disabled {
-		sev := o.severity
-		if sev == "" {
-			sev = rolloutv1alpha1.RollbackSeverityCritical
-		}
-		spec.AutoRollback = &rolloutv1alpha1.AutoRollbackSpec{Severity: sev}
+		spec.AutoRollback = &rolloutv1alpha1.AutoRollbackSpec{MinSeverity: o.severity}
 	}
 	if o.deployTimeout != nil {
 		spec.DeployTimeout = &metav1.Duration{Duration: *o.deployTimeout}
@@ -404,8 +400,8 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(e.condition(ctx).Message).To(ContainSubstring("RolloutTest app/flaky"))
 	})
 
-	It("severity Never does nothing and sets no condition, but records the verdicts as they would be", func() {
-		e = newArEnv(ctx, arOpts{severity: rolloutv1alpha1.RollbackSeverityNever})
+	It("without autoRollback does nothing and sets no condition, but records the verdicts as Critical would", func() {
+		e = newArEnv(ctx, arOpts{disabled: true})
 		e.deployV2(ctx)
 		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		e.reconcile(ctx)
@@ -416,12 +412,12 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(h[0].FailedHealthChecks[0].Failures[0].RollsBack).To(BeTrue())
 	})
 
-	It("defaults autoRollback.severity to Never in the API server", func() {
+	It("defaults autoRollback.minSeverity to Critical in the API server", func() {
 		ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{GenerateName: "def-", Namespace: "default"},
 			Spec: rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "x"}, AutoRollback: &rolloutv1alpha1.AutoRollbackSpec{}}}
 		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
 		defer func() { _ = k8sClient.Delete(ctx, ro) }()
-		Expect(ro.Spec.AutoRollback.Severity).To(Equal(rolloutv1alpha1.RollbackSeverityNever))
+		Expect(ro.Spec.AutoRollback.MinSeverity).To(Equal(rolloutv1alpha1.RollbackSeverityCritical))
 	})
 
 	It("holds with Blocked when the failed release is a rollback barrier", func() {

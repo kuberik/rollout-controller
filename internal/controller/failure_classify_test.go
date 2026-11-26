@@ -261,7 +261,7 @@ func TestSeverityPrecedenceObjectOverCheckOverCritical(t *testing.T) {
 	// With Never the verdicts are recorded as they would be at Critical.
 	hc.Annotations = nil
 	rec = rolloutv1alpha1.FailedHealthCheck{}
-	recordVerdicts(&rec, hc, nil, rolloutv1alpha1.RollbackSeverityNever, time.Time{})
+	recordVerdicts(&rec, hc, nil, "", time.Time{})
 	g.Expect(rec.Failures[0].RollsBack).To(BeTrue())
 }
 

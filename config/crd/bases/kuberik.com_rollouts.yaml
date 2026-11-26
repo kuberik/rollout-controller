@@ -70,18 +70,19 @@ spec:
               autoRollback:
                 description: |-
                   AutoRollback turns on rolling back to the last good build when a build
-                  fails its bake with a failure at or above its severity. Unset is Never.
+                  fails its bake with a failure at or above autoRollback.minSeverity.
+                  Present means on (`autoRollback: {}` rolls back on Critical failures);
+                  absent means off.
                 properties:
-                  severity:
-                    default: Never
+                  minSeverity:
+                    default: Critical
                     description: |-
-                      Severity is the lowest failure severity that rolls this Rollout back to
-                      the last good build: Critical rolls back on Critical failures, Warning on
-                      Warning and Critical ones, Never turns it off. Failures carry their severity
-                      from the kuberik.com/severity annotation or the provider (see
+                      MinSeverity is the lowest failure severity that rolls this Rollout back
+                      to the last good build: Critical rolls back on Critical failures, Warning
+                      on Warning and Critical ones. Failures carry their severity from the
+                      kuberik.com/severity annotation or the provider (see
                       HealthCheckFailure.severity); unmarked is Critical.
                     enum:
-                    - Never
                     - Critical
                     - Warning
                     type: string

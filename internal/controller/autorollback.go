@@ -77,16 +77,16 @@ type rollbackPlan struct {
 	sources   string
 }
 
-// rollbackThreshold is the severity a Rollout rolls back at, empty when it never does.
+// rollbackThreshold is the severity a Rollout rolls back at: empty when
+// autoRollback is absent (off), Critical when minSeverity is unset or unknown.
 func rollbackThreshold(rollout *rolloutv1alpha1.Rollout) rolloutv1alpha1.RollbackSeverity {
 	if rollout.Spec.AutoRollback == nil {
-		return rolloutv1alpha1.RollbackSeverityNever
+		return ""
 	}
-	switch s := rollout.Spec.AutoRollback.Severity; s {
-	case rolloutv1alpha1.RollbackSeverityCritical, rolloutv1alpha1.RollbackSeverityWarning:
+	if s := rollout.Spec.AutoRollback.MinSeverity; s == rolloutv1alpha1.RollbackSeverityWarning {
 		return s
 	}
-	return rolloutv1alpha1.RollbackSeverityNever
+	return rolloutv1alpha1.RollbackSeverityCritical
 }
 
 // severityRank orders severities; an unmarked or unknown one is Critical.
@@ -127,7 +127,7 @@ func verdictFor(f rolloutv1alpha1.HealthCheckFailure, sev rolloutv1alpha1.Failur
 }
 
 // recordVerdicts fills class and per-failure verdicts of a failed health check
-// record. threshold is the Rollout's severity; with Never the verdicts are
+// record. threshold is the Rollout's minSeverity; when autoRollback is off the verdicts are
 // recorded as they would be at Critical, so the history shows what turning
 // rollback on would have done. cutoff is the deploy (or retry) time. extra entries
 // come first (the deploy-timeout path adds NotReady for a check that is not
@@ -262,7 +262,7 @@ func withoutHeld(rollout *rolloutv1alpha1.Rollout, in []rolloutv1alpha1.VersionI
 // --- decision -----------------------------------------------------------
 
 func autoRollbackEnabled(rollout *rolloutv1alpha1.Rollout) bool {
-	return rollbackThreshold(rollout) != rolloutv1alpha1.RollbackSeverityNever
+	return rollbackThreshold(rollout) != ""
 }
 
 // pendingManualIntent reports whether a person has asked for a deploy that the

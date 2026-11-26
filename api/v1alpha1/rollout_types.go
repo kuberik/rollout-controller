@@ -186,18 +186,19 @@ type RolloutSpec struct {
 	HealthCheckSelector *HealthCheckSelectorConfig `json:"healthCheckSelector,omitempty"`
 
 	// AutoRollback turns on rolling back to the last good build when a build
-	// fails its bake with a failure at or above its severity. Unset is Never.
+	// fails its bake with a failure at or above autoRollback.minSeverity.
+	// Present means on (`autoRollback: {}` rolls back on Critical failures);
+	// absent means off.
 	// +optional
 	AutoRollback *AutoRollbackSpec `json:"autoRollback,omitempty"`
 }
 
 // RollbackSeverity is the lowest failure severity that rolls a Rollout back.
-// +kubebuilder:validation:Enum=Never;Critical;Warning
+// It takes the same values as a failure's severity.
+// +kubebuilder:validation:Enum=Critical;Warning
 type RollbackSeverity string
 
 const (
-	// RollbackSeverityNever turns automatic rollback off.
-	RollbackSeverityNever RollbackSeverity = "Never"
 	// RollbackSeverityCritical rolls back on a Critical failure.
 	RollbackSeverityCritical RollbackSeverity = "Critical"
 	// RollbackSeverityWarning rolls back on a Warning or Critical failure.
@@ -206,14 +207,14 @@ const (
 
 // AutoRollbackSpec configures automatic rollback.
 type AutoRollbackSpec struct {
-	// Severity is the lowest failure severity that rolls this Rollout back to
-	// the last good build: Critical rolls back on Critical failures, Warning on
-	// Warning and Critical ones, Never turns it off. Failures carry their severity
-	// from the kuberik.com/severity annotation or the provider (see
+	// MinSeverity is the lowest failure severity that rolls this Rollout back
+	// to the last good build: Critical rolls back on Critical failures, Warning
+	// on Warning and Critical ones. Failures carry their severity from the
+	// kuberik.com/severity annotation or the provider (see
 	// HealthCheckFailure.severity); unmarked is Critical.
-	// +kubebuilder:default=Never
+	// +kubebuilder:default=Critical
 	// +optional
-	Severity RollbackSeverity `json:"severity,omitempty"`
+	MinSeverity RollbackSeverity `json:"minSeverity,omitempty"`
 }
 
 // DeployKind says what caused a deploy, so automation can tell its own deploys
