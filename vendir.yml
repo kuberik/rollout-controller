@@ -6,6 +6,12 @@ directories:
       - path: ocirepositories
         http:
           url: https://raw.githubusercontent.com/fluxcd/source-controller/refs/tags/v1.10.2/config/crd/bases/source.toolkit.fluxcd.io_ocirepositories.yaml
+      - path: gitrepositories
+        http:
+          url: https://raw.githubusercontent.com/fluxcd/source-controller/refs/tags/v1.10.2/config/crd/bases/source.toolkit.fluxcd.io_gitrepositories.yaml
+      - path: buckets
+        http:
+          url: https://raw.githubusercontent.com/fluxcd/source-controller/refs/tags/v1.10.2/config/crd/bases/source.toolkit.fluxcd.io_buckets.yaml
       - path: kustomizations
         http:
           url: https://raw.githubusercontent.com/fluxcd/kustomize-controller/refs/tags/v1.10.2/config/crd/bases/kustomize.toolkit.fluxcd.io_kustomizations.yaml
