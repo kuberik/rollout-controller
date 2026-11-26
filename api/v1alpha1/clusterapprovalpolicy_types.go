@@ -88,5 +88,5 @@ type ClusterApprovalPolicyList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ClusterApprovalPolicy{}, &ClusterApprovalPolicyList{})
+	register(&ClusterApprovalPolicy{}, &ClusterApprovalPolicyList{})
 }

@@ -63,5 +63,5 @@ type RolloutApprovalList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&RolloutApproval{}, &RolloutApprovalList{})
+	register(&RolloutApproval{}, &RolloutApprovalList{})
 }

@@ -92,7 +92,7 @@ var _ = Describe("OCIRepository write path", func() {
 			if mf.Manager != manager || mf.FieldsV1 == nil {
 				continue
 			}
-			raw := string(mf.FieldsV1.Raw)
+			raw := mf.FieldsV1.GetRawString()
 			if strings.Contains(raw, `"f:ref":{`) && strings.Contains(raw, `"f:`+field+`":{}`) {
 				return true
 			}

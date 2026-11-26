@@ -252,8 +252,9 @@ var _ = Describe("Slices mode reader", func() {
 	passing := func(b bool) *bool { return &b }
 
 	It("trims status.candidates to 64: the deployed pick and pins first, then the K newest, then named tags newest first", func() {
-		var rs []releasecatalogue.Release
-		for _, r := range trainRels(200, time.Minute) {
+		train := trainRels(200, time.Minute)
+		rs := make([]releasecatalogue.Release, 0, len(train))
+		for _, r := range train {
 			rs = append(rs, releasecatalogue.Release{Sequence: int64(len(rs) + 1), Tag: r.tag, Created: metav1.NewTime(r.created)})
 		}
 		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: rs}})
@@ -376,7 +377,7 @@ var _ = Describe("Slices mode reader", func() {
 		newGateNamed("a-freeze", "sl", nil, passing(false))
 		newGateNamed("b-allow", "sl", []string{"r0012", "r0013"}, nil)
 		s := reconcileOnce(sliceR(false, 3), "sl")
-		got := []string{}
+		got := make([]string, 0, len(s.Status.Candidates))
 		for _, c := range s.Status.Candidates {
 			got = append(got, c.Tag)
 		}
@@ -397,7 +398,7 @@ var _ = Describe("Slices mode reader", func() {
 	It("keeps force-deploy, wantedVersion and bypass pins outside K in the working set", func() {
 		rels := trainRels(30, time.Hour)
 		cat := mergeSlices([]releasecatalogue.ReleaseSlice{{Releases: func() []releasecatalogue.Release {
-			var out []releasecatalogue.Release
+			out := make([]releasecatalogue.Release, 0, len(rels))
 			for _, r := range rels {
 				out = append(out, releasecatalogue.Release{Sequence: int64(len(out) + 1), Tag: r.tag, Created: metav1.NewTime(r.created)})
 			}
@@ -501,7 +502,7 @@ var _ = Describe("Slices mode reader", func() {
 		blockedNow := func() []string {
 			d := &rolloutv1alpha1.RolloutDependency{}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), d)).To(Succeed())
-			var out []string
+			out := make([]string, 0, len(d.Status.BlockedReleases))
 			for _, b := range d.Status.BlockedReleases {
 				out = append(out, b.Tag)
 			}
@@ -623,8 +624,9 @@ var _ = Describe("Slices mode reader", func() {
 			Source:     "a",
 		}
 		Eventually(func() []string {
-			var names []string
-			for _, q := range r.findRolloutsForReleaseSource(ctx, slice) {
+			rollouts := r.findRolloutsForReleaseSource(ctx, slice)
+			names := make([]string, 0, len(rollouts))
+			for _, q := range rollouts {
 				names = append(names, q.Name)
 			}
 			return names
@@ -838,7 +840,7 @@ var _ = Describe("Slices mode reader", func() {
 		Expect(got.Status.ReleaseSource).NotTo(BeNil())
 		Expect(got.Status.ReleaseSource.Name).To(Equal("src"))
 		Expect(tagsOfCandidates(got.Status.Candidates)).To(Equal([]string{"r0006", "r0005", "r0004"}))
-		sliceTags := []string{}
+		sliceTags := make([]string, 0, len(rels))
 		for _, r := range rels {
 			sliceTags = append(sliceTags, r.tag)
 		}

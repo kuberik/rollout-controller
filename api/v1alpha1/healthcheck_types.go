@@ -166,5 +166,5 @@ type HealthCheckList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&HealthCheck{}, &HealthCheckList{})
+	register(&HealthCheck{}, &HealthCheckList{})
 }

@@ -127,7 +127,7 @@ var _ = Describe("Kustomization write path", func() {
 	// owns reports whether the manager's managed-fields entry on the Kustomization lists the substitute key.
 	owns := func(manager, key string) bool {
 		for _, mf := range getKs().GetManagedFields() {
-			if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(string(mf.FieldsV1.Raw), `"f:`+key+`"`) {
+			if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(mf.FieldsV1.GetRawString(), `"f:`+key+`"`) {
 				return true
 			}
 		}

@@ -49,6 +49,12 @@ import (
 // annotationTrue is the value of boolean annotations such as unblock-failed.
 const annotationTrue = "true"
 
+// Ready condition and event reasons for the end of the bake time.
+const (
+	reasonBakeTimePassed = "BakeTimePassed"
+	reasonBakeTimeFailed = "BakeTimeFailed"
+)
+
 type Clock interface {
 	Now() time.Time
 }
@@ -1228,13 +1234,13 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 					Type:               rolloutv1alpha1.RolloutReady,
 					Status:             metav1.ConditionFalse,
 					LastTransitionTime: metav1.Now(),
-					Reason:             "BakeTimeFailed",
+					Reason:             reasonBakeTimeFailed,
 					Message:            "Deploy timeout reached before bake could start (health checks did not become healthy in time).",
 				})
 
 				// Emit event for deploy timeout
 				if r.Recorder != nil {
-					r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", "Deploy timeout reached before bake could start (health checks did not become healthy in time).")
+					r.Recorder.Event(rollout, corev1.EventTypeWarning, reasonBakeTimeFailed, "Deploy timeout reached before bake could start (health checks did not become healthy in time).")
 				}
 
 				return ctrl.Result{}, r.Status().Update(ctx, rollout)
@@ -1281,13 +1287,13 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionFalse,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "BakeTimeFailed",
+				Reason:             reasonBakeTimeFailed,
 				Message:            errorMsg,
 			})
 
 			// Emit event for bake time failure
 			if r.Recorder != nil {
-				r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", errorMsg)
+				r.Recorder.Event(rollout, corev1.EventTypeWarning, reasonBakeTimeFailed, errorMsg)
 			}
 
 			err := r.Status().Update(ctx, rollout)
@@ -1409,11 +1415,11 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 						Type:               rolloutv1alpha1.RolloutReady,
 						Status:             metav1.ConditionFalse,
 						LastTransitionTime: metav1.Now(),
-						Reason:             "BakeTimeFailed",
+						Reason:             reasonBakeTimeFailed,
 						Message:            failMsg,
 					})
 					if r.Recorder != nil {
-						r.Recorder.Event(rollout, corev1.EventTypeWarning, "BakeTimeFailed", failMsg)
+						r.Recorder.Event(rollout, corev1.EventTypeWarning, reasonBakeTimeFailed, failMsg)
 					}
 					return ctrl.Result{}, r.Status().Update(ctx, rollout)
 				}
@@ -1466,13 +1472,13 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 				Type:               rolloutv1alpha1.RolloutReady,
 				Status:             metav1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
-				Reason:             "BakeTimePassed",
+				Reason:             reasonBakeTimePassed,
 				Message:            "Bake time completed successfully (no errors within bake time).",
 			})
 
 			// Emit event for successful bake time
 			if r.Recorder != nil {
-				r.Recorder.Event(rollout, corev1.EventTypeNormal, "BakeTimePassed", "Bake time completed successfully (no errors within bake time).")
+				r.Recorder.Event(rollout, corev1.EventTypeNormal, reasonBakeTimePassed, "Bake time completed successfully (no errors within bake time).")
 			}
 
 			return ctrl.Result{}, r.Status().Update(ctx, rollout)
@@ -1488,7 +1494,7 @@ func (r *RolloutReconciler) handleBakeTime(ctx context.Context, namespace string
 			Type:               rolloutv1alpha1.RolloutReady,
 			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
-			Reason:             "BakeTimePassed",
+			Reason:             reasonBakeTimePassed,
 			Message:            "Bake completed (no bake time configured).",
 		})
 

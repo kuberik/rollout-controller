@@ -82,5 +82,5 @@ type ApprovalPolicyList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ApprovalPolicy{}, &ApprovalPolicyList{})
+	register(&ApprovalPolicy{}, &ApprovalPolicyList{})
 }

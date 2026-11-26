@@ -178,5 +178,5 @@ type RolloutScheduleList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&RolloutSchedule{}, &RolloutScheduleList{})
+	register(&RolloutSchedule{}, &RolloutScheduleList{})
 }

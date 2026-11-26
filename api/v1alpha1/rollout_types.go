@@ -551,5 +551,5 @@ const (
 )
 
 func init() {
-	SchemeBuilder.Register(&Rollout{}, &RolloutList{})
+	register(&Rollout{}, &RolloutList{})
 }

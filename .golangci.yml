@@ -1,50 +1,15 @@
+version: "2"
 run:
-  timeout: 5m
   allow-parallel-runners: true
-
-issues:
-  # don't skip warning about doc comments
-  # don't exclude the default set of lint
-  exclude-use-default: false
-  # restore some of the defaults
-  # (fill in the rest as needed)
-  exclude-rules:
-    - path: "api/*"
-      linters:
-        - lll
-    - path: "internal/*"
-      linters:
-        - dupl
-        - lll
-    # Known-large reconcile paths in rollout_controller.go. Splitting them is a
-    # behavioural refactor that deserves its own change; the threshold stays at
-    # the default 30 for every other function. Remove an entry once its
-    # function is split up.
-    - path: internal/controller/rollout_controller\.go
-      linters:
-        - gocyclo
-      text: "of func `\\(\\*RolloutReconciler\\)\\.(Reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high"
-    # Deprecated Rollout fields that are still referenced until they are removed:
-    #   AvailableReleases, ReleaseCandidates, GatedReleaseCandidates: shapeReleaseStatus
-    #     clears them on every reconcile, and the tests assert they stay empty.
-    #   ReleasesImagePolicy: shapeReleaseStatus reads it to raise
-    #     ReleasesImagePolicyIgnored, and the tests set it.
-    # Nothing references AvailableReleasesRetentionDays or AvailableReleasesMinCount.
-    - linters:
-        - staticcheck
-      text: "SA1019: .*\\.(AvailableReleases|ReleaseCandidates|GatedReleaseCandidates|ReleasesImagePolicy) is deprecated"
 linters:
-  disable-all: true
+  default: none
   enable:
+    - copyloopvar
     - dupl
     - errcheck
-    - copyloopvar
     - ginkgolinter
     - goconst
     - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - lll
@@ -53,12 +18,63 @@ linters:
     - prealloc
     - revive
     - staticcheck
-    - typecheck
     - unconvert
     - unparam
     - unused
-
-linters-settings:
-  revive:
+  settings:
+    revive:
+      rules:
+        - name: comment-spacings
+    staticcheck:
+      # v1 ran staticcheck (SA) and gosimple (S) only; v2 folds stylecheck (ST)
+      # and quickfix (QF) into staticcheck. Keep the v1 set.
+      checks:
+        - all
+        - -ST*
+        - -QF*
+  exclusions:
+    generated: lax
     rules:
-      - name: comment-spacings
+      - linters:
+          - lll
+        path: api/*
+      - linters:
+          - dupl
+          - lll
+        path: internal/*
+      # Tests repeat literal reasons and names on purpose; keep them readable.
+      - linters:
+          - goconst
+        path: _test\.go
+      # Known-large reconcile paths in rollout_controller.go. Splitting them is a
+      # behavioural refactor that deserves its own change; the threshold stays at
+      # the default 30 for every other function. Remove an entry once its
+      # function is split up.
+      - linters:
+          - gocyclo
+        path: internal/controller/rollout_controller\.go
+        text: of func `\(\*RolloutReconciler\)\.(Reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high
+      # Deprecated Rollout fields that are still referenced until they are removed:
+      #   AvailableReleases, ReleaseCandidates, GatedReleaseCandidates: shapeReleaseStatus
+      #     clears them on every reconcile, and the tests assert they stay empty.
+      #   ReleasesImagePolicy: shapeReleaseStatus reads it to raise
+      #     ReleasesImagePolicyIgnored, and the tests set it.
+      #   AvailableReleasesRetentionDays, AvailableReleasesMinCount: only the
+      #     tests set them, to prove they are ignored.
+      - linters:
+          - staticcheck
+        text: 'SA1019: .*\.(AvailableReleases|ReleaseCandidates|GatedReleaseCandidates|ReleasesImagePolicy|AvailableReleasesRetentionDays|AvailableReleasesMinCount) is deprecated'
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
