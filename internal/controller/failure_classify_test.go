@@ -126,13 +126,12 @@ func TestClassifierRows(t *testing.T) {
 func TestKruiseRolloutIsDerivedFromItsTests(t *testing.T) {
 	g := NewWithT(t)
 	kr := kruiseStalled("app", "canary", "RolloutTestFailed")
-	test := forRollout(rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.RollbackAnnotation: "false"}), "canary")
+	test := forRollout(rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}), "canary")
 
 	got := classify(ksWith("HealthCheckFailed", kr, test), kr, test)
 	g.Expect(kindsOf(got)).To(Equal([]string{"RolloutTest app/smoke|TestFailed|RolloutTestFailed"}),
 		"the stalled Kruise Rollout adds no entry of its own when its test is in the same check")
-	g.Expect(got[0].Rollback).NotTo(BeNil())
-	g.Expect(*got[0].Rollback).To(BeFalse())
+	g.Expect(got[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityWarning), "the test's severity decides")
 
 	got = classify(ksWith("HealthCheckFailed", kr), kr)
 	g.Expect(kindsOf(got)).To(Equal([]string{"Rollout app/canary|TestFailed|RolloutTestFailed"}),
@@ -159,54 +158,155 @@ func TestKustomizationOwnFailures(t *testing.T) {
 	g.Expect(got[0].Kind).To(Equal(rolloutv1alpha1.FailureKindUnclassified))
 
 	ks := ksWith("BuildFailed")
-	ks.Annotations = map[string]string{rolloutv1alpha1.RollbackAnnotation: "true"}
+	ks.Annotations = map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}
 	got = classify(ks)
-	g.Expect(got[0].Rollback).NotTo(BeNil())
-	g.Expect(*got[0].Rollback).To(BeTrue())
+	g.Expect(got[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityWarning))
 }
 
-func TestRollbackSwitchIgnoresOtherValues(t *testing.T) {
+func TestSeverityFromAnnotations(t *testing.T) {
 	g := NewWithT(t)
-	for _, v := range []string{"", "yes", "True", "1"} {
-		g.Expect(rollbackSwitch(map[string]string{rolloutv1alpha1.RollbackAnnotation: v})).To(BeNil(), v)
+	sev, note := severityFrom(nil)
+	g.Expect(sev).To(BeEmpty(), "unmarked")
+	g.Expect(note).To(BeEmpty())
+	for _, v := range []string{"Critical", "Warning"} {
+		sev, note = severityFrom(map[string]string{rolloutv1alpha1.SeverityAnnotation: v})
+		g.Expect(string(sev)).To(Equal(v))
+		g.Expect(note).To(BeEmpty())
 	}
-	g.Expect(rollbackSwitch(nil)).To(BeNil())
+	for _, v := range []string{"", "warning", "High", "true"} {
+		sev, note = severityFrom(map[string]string{rolloutv1alpha1.SeverityAnnotation: v})
+		g.Expect(sev).To(Equal(rolloutv1alpha1.FailureSeverityCritical), "unknown %q is Critical", v)
+		g.Expect(note).To(ContainSubstring("treated as Critical"))
+	}
+
+	obj := rolloutTestFailed("app", "smoke", map[string]string{rolloutv1alpha1.SeverityAnnotation: "urgent"})
+	got := classify(ksWith("", obj), obj)
+	g.Expect(got[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityCritical))
+	g.Expect(got[0].Message).To(ContainSubstring("unknown kuberik.com/severity"))
 }
 
-func TestVerdictPrecedence(t *testing.T) {
+func TestVerdictBySeverityAndThreshold(t *testing.T) {
 	g := NewWithT(t)
-	yes, no := true, false
-	kinds := func(k ...rolloutv1alpha1.FailureKind) []rolloutv1alpha1.FailureKind { return k }
-	tf, nr, ce := rolloutv1alpha1.FailureKindTestFailed, rolloutv1alpha1.FailureKindNotReady, rolloutv1alpha1.FailureKindCheckError
+	crit, warn := rolloutv1alpha1.FailureSeverityCritical, rolloutv1alpha1.FailureSeverityWarning
+	atCrit, atWarn := rolloutv1alpha1.RollbackSeverityCritical, rolloutv1alpha1.RollbackSeverityWarning
+	deploy := time.Now()
+	before := metav1.NewTime(deploy.Add(-time.Minute))
+	after := metav1.NewTime(deploy.Add(time.Minute))
 
 	for _, tc := range []struct {
-		name       string
-		f          rolloutv1alpha1.HealthCheckFailure
-		rollbackOn []rolloutv1alpha1.FailureKind
-		rolls      bool
-		why        string
+		name  string
+		f     rolloutv1alpha1.HealthCheckFailure
+		sev   rolloutv1alpha1.FailureSeverity
+		at    rolloutv1alpha1.RollbackSeverity
+		rolls bool
+		why   string
 	}{
-		{"kind in list", rolloutv1alpha1.HealthCheckFailure{Kind: tf}, kinds(tf), true, whyCheckRollbackOn},
-		{"kind not in list", rolloutv1alpha1.HealthCheckFailure{Kind: nr}, kinds(rolloutv1alpha1.FailureKindApplyFailed, tf), false, whyNotInRollbackOn},
-		{"empty list never", rolloutv1alpha1.HealthCheckFailure{Kind: tf}, kinds(), false, whyNotInRollbackOn},
-		{"source off beats list", rolloutv1alpha1.HealthCheckFailure{Kind: tf, Rollback: &no}, kinds(tf), false, whySourceOptedOut},
-		{"source on beats list", rolloutv1alpha1.HealthCheckFailure{Kind: tf, Rollback: &yes}, kinds(rolloutv1alpha1.FailureKindApplyFailed), true, whySourceOptedIn},
-		{"check error never, even on", rolloutv1alpha1.HealthCheckFailure{Kind: ce, Rollback: &yes}, kinds(ce), false, whyCheckErrorNever},
+		{"critical at critical", rolloutv1alpha1.HealthCheckFailure{}, crit, atCrit, true, whyAtOrAboveThreshold},
+		{"warning at critical", rolloutv1alpha1.HealthCheckFailure{}, warn, atCrit, false, whyBelowThreshold},
+		{"warning at warning", rolloutv1alpha1.HealthCheckFailure{}, warn, atWarn, true, whyAtOrAboveThreshold},
+		{"critical at warning", rolloutv1alpha1.HealthCheckFailure{}, crit, atWarn, true, whyAtOrAboveThreshold},
+		{"check error never, even critical at warning", rolloutv1alpha1.HealthCheckFailure{Kind: rolloutv1alpha1.FailureKindCheckError}, crit, atWarn, false, whyCheckErrorNever},
+		{"first seen before the deploy is not attributed", rolloutv1alpha1.HealthCheckFailure{FirstSeenTime: before}, crit, atCrit, false, whyPredatesDeploy},
+		{"first seen after the deploy counts", rolloutv1alpha1.HealthCheckFailure{FirstSeenTime: after}, crit, atCrit, true, whyAtOrAboveThreshold},
+		{"no first seen time counts", rolloutv1alpha1.HealthCheckFailure{}, crit, atCrit, true, whyAtOrAboveThreshold},
 	} {
-		v := verdictFor(tc.f, tc.rollbackOn)
+		v := verdictFor(tc.f, tc.sev, tc.at, deploy)
 		g.Expect(v.RollsBack).To(Equal(tc.rolls), tc.name)
 		g.Expect(v.Why).To(Equal(tc.why), tc.name)
+		g.Expect(v.Severity).To(Equal(tc.sev), tc.name)
 	}
 }
 
-func TestClassDefaults(t *testing.T) {
+func TestSeverityPrecedenceObjectOverCheckOverCritical(t *testing.T) {
 	g := NewWithT(t)
-	g.Expect(defaultRollbackOn("kustomization")).To(ConsistOf(
-		rolloutv1alpha1.FailureKindApplyFailed, rolloutv1alpha1.FailureKindNotReady,
-		rolloutv1alpha1.FailureKindTestFailed, rolloutv1alpha1.FailureKindUnclassified))
-	g.Expect(defaultRollbackOn("prometheus-alert")).To(ConsistOf(rolloutv1alpha1.FailureKindAlert, rolloutv1alpha1.FailureKindUnclassified))
-	g.Expect(defaultRollbackOn("datadog-incidents")).To(BeEmpty())
-	g.Expect(defaultRollbackOn("")).To(HaveLen(5))
+	hc := &rolloutv1alpha1.HealthCheck{}
+	hc.Namespace, hc.Name = "app", "hc"
+	critical := rolloutv1alpha1.RollbackSeverityCritical
+	failures := []rolloutv1alpha1.HealthCheckFailure{
+		{Source: "A", Kind: rolloutv1alpha1.FailureKindTestFailed},
+		{Source: "B", Kind: rolloutv1alpha1.FailureKindTestFailed, Severity: rolloutv1alpha1.FailureSeverityCritical},
+	}
+	hc.Status.Failures = failures
+
+	var rec rolloutv1alpha1.FailedHealthCheck
+	recordVerdicts(&rec, hc, nil, critical, time.Time{})
+	g.Expect(rec.Failures[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityCritical), "unmarked, no check default")
+
+	hc.Annotations = map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil, critical, time.Time{})
+	g.Expect(rec.Failures[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityWarning), "the check's annotation is the default")
+	g.Expect(rec.Failures[0].RollsBack).To(BeFalse())
+	g.Expect(rec.Failures[1].Severity).To(Equal(rolloutv1alpha1.FailureSeverityCritical), "the object's own severity wins")
+	g.Expect(rec.Failures[1].RollsBack).To(BeTrue())
+
+	hc.Annotations = map[string]string{rolloutv1alpha1.SeverityAnnotation: "bogus"}
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil, critical, time.Time{})
+	g.Expect(rec.Failures[0].Severity).To(Equal(rolloutv1alpha1.FailureSeverityCritical))
+	g.Expect(rec.Failures[0].Message).To(ContainSubstring("treated as Critical"))
+
+	// An old provider (no failures) is one Critical failure unless the check is annotated.
+	hc.Status.Failures = nil
+	hc.Annotations = nil
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil, critical, time.Time{})
+	g.Expect(rec.Failures).To(HaveLen(1))
+	g.Expect(rec.Failures[0].RollsBack).To(BeTrue())
+	hc.Annotations = map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil, critical, time.Time{})
+	g.Expect(rec.Failures[0].RollsBack).To(BeFalse())
+
+	// With Never the verdicts are recorded as they would be at Critical.
+	hc.Annotations = nil
+	rec = rolloutv1alpha1.FailedHealthCheck{}
+	recordVerdicts(&rec, hc, nil, rolloutv1alpha1.RollbackSeverityNever, time.Time{})
+	g.Expect(rec.Failures[0].RollsBack).To(BeTrue())
+}
+
+func TestBarrierGuard(t *testing.T) {
+	g := NewWithT(t)
+	ok, bad := string(rolloutv1alpha1.BakeStatusSucceeded), string(rolloutv1alpha1.BakeStatusFailed)
+	entry := func(tag string, st string, barrier bool) rolloutv1alpha1.DeploymentHistoryEntry {
+		return rolloutv1alpha1.DeploymentHistoryEntry{Version: rolloutv1alpha1.VersionInfo{Tag: tag, RollbackBarrier: barrier}, BakeStatus: &st}
+	}
+	rel := func(tag string, barrier bool) rolloutv1alpha1.VersionInfo {
+		return rolloutv1alpha1.VersionInfo{Tag: tag, RollbackBarrier: barrier}
+	}
+	run := func(hist []rolloutv1alpha1.DeploymentHistoryEntry, cat *catalogue, target int) (bool, string) {
+		ro := &rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: hist}}
+		return barrierGuard(context.Background(), rollbackGuardInput{rollout: ro, failed: &ro.Status.History[0], target: &ro.Status.History[target], cat: cat})
+	}
+
+	hist := []rolloutv1alpha1.DeploymentHistoryEntry{entry("v4", bad, false), entry("v3", ok, false), entry("v2", ok, false)}
+	cat := &catalogue{releases: []rolloutv1alpha1.VersionInfo{rel("v1", false), rel("v2", false), rel("v3", false), rel("v4", false)}}
+	allowed, _ := run(hist, cat, 2)
+	g.Expect(allowed).To(BeTrue(), "no barrier anywhere")
+
+	cat.releases[2] = rel("v3", true)
+	allowed, why := run(hist, cat, 2)
+	g.Expect(allowed).To(BeFalse(), "a barrier release between target and failed in the catalogue")
+	g.Expect(why).To(ContainSubstring("v3"))
+	allowed, _ = run(hist, cat, 1)
+	g.Expect(allowed).To(BeTrue(), "rolling back to the barrier itself passes it")
+
+	cat.releases[2] = rel("v3", false)
+	cat.releases[1] = rel("v2", true)
+	allowed, _ = run(hist, cat, 2)
+	g.Expect(allowed).To(BeTrue(), "a barrier at the target is not crossed")
+
+	cat.releases[3] = rel("v4", true)
+	allowed, why = run(hist, cat, 1)
+	g.Expect(allowed).To(BeFalse(), "the failed release being a barrier rejects every target")
+	g.Expect(why).To(ContainSubstring("v4"))
+
+	// A barrier that left the catalogue still counts through history.
+	hist = []rolloutv1alpha1.DeploymentHistoryEntry{entry("v4", bad, false), entry("v3", ok, true), entry("v2", ok, false)}
+	allowed, _ = run(hist, &catalogue{}, 2)
+	g.Expect(allowed).To(BeFalse())
+	allowed, _ = run(hist, nil, 1)
+	g.Expect(allowed).To(BeTrue())
 }
 
 func TestMergeFailuresKeepsFirstSeenAndCaps(t *testing.T) {

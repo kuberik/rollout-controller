@@ -41,8 +41,10 @@ type arEnv struct {
 
 type arOpts struct {
 	disabled      bool
+	severity      rolloutv1alpha1.RollbackSeverity // default Critical
 	class         string
-	rollbackOn    *[]rolloutv1alpha1.FailureKind
+	hcAnnotations map[string]string
+	barrierV2     bool // v2 carries the rollback-barrier annotation
 	deployTimeout *time.Duration
 	noPrevious    bool
 }
@@ -53,7 +55,7 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 	ExpectWithOffset(1, k8sClient.Create(ctx, ns)).To(Succeed())
 	e.ns = ns.Name
 	e.feed = newTestFeed(e.ns, "feed")
-	e.feed.Publish("v1", "v2")
+	e.feed.PublishInfo(rolloutv1alpha1.VersionInfo{Tag: "v1"}, rolloutv1alpha1.VersionInfo{Tag: "v2", RollbackBarrier: o.barrierV2})
 
 	spec := rolloutv1alpha1.RolloutSpec{
 		ReleaseSourceRef: &corev1.LocalObjectReference{Name: "feed"},
@@ -63,7 +65,11 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 		},
 	}
 	if !o.disabled {
-		spec.AutoRollback = &rolloutv1alpha1.AutoRollbackSpec{Enabled: true}
+		sev := o.severity
+		if sev == "" {
+			sev = rolloutv1alpha1.RollbackSeverityCritical
+		}
+		spec.AutoRollback = &rolloutv1alpha1.AutoRollbackSpec{Severity: sev}
 	}
 	if o.deployTimeout != nil {
 		spec.DeployTimeout = &metav1.Duration{Duration: *o.deployTimeout}
@@ -85,8 +91,8 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 		class = healthCheckClassKustomization
 	}
 	hc := &rolloutv1alpha1.HealthCheck{
-		ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: e.ns, Labels: map[string]string{"app": "test-app"}},
-		Spec:       rolloutv1alpha1.HealthCheckSpec{Class: &class, RollbackOn: o.rollbackOn},
+		ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: e.ns, Labels: map[string]string{"app": "test-app"}, Annotations: o.hcAnnotations},
+		Spec:       rolloutv1alpha1.HealthCheckSpec{Class: &class},
 	}
 	ExpectWithOffset(1, k8sClient.Create(ctx, hc)).To(Succeed())
 	e.hcKey = types.NamespacedName{Name: "hc", Namespace: e.ns}
@@ -138,20 +144,18 @@ func (e *arEnv) condition(ctx context.Context) *metav1.Condition {
 	return meta.FindStatusCondition(e.get(ctx).Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
 }
 
-func fail(source string, kind rolloutv1alpha1.FailureKind, rollback *bool) rolloutv1alpha1.HealthCheckFailure {
-	return rolloutv1alpha1.HealthCheckFailure{Source: source, Kind: kind, Reason: "Test", Rollback: rollback}
+func fail(source string, kind rolloutv1alpha1.FailureKind, sev rolloutv1alpha1.FailureSeverity) rolloutv1alpha1.HealthCheckFailure {
+	return rolloutv1alpha1.HealthCheckFailure{Source: source, Kind: kind, Reason: "Test", Severity: sev}
 }
 
-// kindList is a non-nil list, empty when called with no kinds.
-func kindList(k ...rolloutv1alpha1.FailureKind) *[]rolloutv1alpha1.FailureKind {
-	out := append([]rolloutv1alpha1.FailureKind{}, k...)
-	return &out
-}
+const (
+	crit = rolloutv1alpha1.FailureSeverityCritical
+	warn = rolloutv1alpha1.FailureSeverityWarning
+)
 
 var _ = Describe("Automatic rollback", func() {
 	ctx := context.Background()
 	var e *arEnv
-	yes, no := true, false
 
 	AfterEach(func() { e.cleanup(ctx) })
 
@@ -185,7 +189,7 @@ var _ = Describe("Automatic rollback", func() {
 		e.deployV2(ctx)
 		Expect(e.get(ctx).Status.History[0].DeployKind).To(Equal(rolloutv1alpha1.DeployKindAutomatic))
 
-		e.failHC(ctx, fail("RolloutTest app/smoke", rolloutv1alpha1.FailureKindTestFailed, nil))
+		e.failHC(ctx, fail("RolloutTest app/smoke", rolloutv1alpha1.FailureKindTestFailed, ""))
 		e.reconcile(ctx)
 
 		expectRolledBack()
@@ -198,9 +202,8 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(h[1].FailedHealthChecks).To(HaveLen(1))
 		fhc := h[1].FailedHealthChecks[0]
 		Expect(fhc.Class).To(Equal("kustomization"))
-		Expect(fhc.RollbackOn).To(ContainElement(rolloutv1alpha1.FailureKindTestFailed))
 		Expect(fhc.Failures).To(ConsistOf(rolloutv1alpha1.FailureVerdict{
-			Source: "RolloutTest app/smoke", Kind: rolloutv1alpha1.FailureKindTestFailed, Reason: "Test", RollsBack: true, Why: whyCheckRollbackOn}))
+			Source: "RolloutTest app/smoke", Kind: rolloutv1alpha1.FailureKindTestFailed, Severity: crit, Reason: "Test", RollsBack: true, Why: whyAtOrAboveThreshold}))
 		Eventually(e.rec.Events).Should(Receive(ContainSubstring("AutoRollback")))
 	})
 
@@ -236,7 +239,7 @@ var _ = Describe("Automatic rollback", func() {
 		}
 		failV2 := func() {
 			e.deployV2(ctx)
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		}
 		rollbackEntries := func() int {
 			n := 0
@@ -301,7 +304,7 @@ var _ = Describe("Automatic rollback", func() {
 			ro := e.get(ctx)
 			ro.Annotations = map[string]string{"rollout.kuberik.com/deploy-message": "stale"}
 			Expect(k8sClient.Update(ctx, ro)).To(Succeed())
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			calls := failOnce(false)
 
 			e.reconcile(ctx)
@@ -336,14 +339,14 @@ var _ = Describe("Automatic rollback", func() {
 	It("never chains: a rollback that is itself marked failed is left alone", func() {
 		e = newArEnv(ctx, arOpts{})
 		e.deployV2(ctx)
-		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		e.reconcile(ctx)
 		expectRolledBack()
 
 		ro := e.get(ctx)
 		ro.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
 		ro.Status.History[0].FailedHealthChecks = []rolloutv1alpha1.FailedHealthCheck{{Name: "hc", Namespace: e.ns,
-			Failures: []rolloutv1alpha1.FailureVerdict{{Source: "x", Kind: rolloutv1alpha1.FailureKindApplyFailed, RollsBack: true, Why: whyCheckRollbackOn}}}}
+			Failures: []rolloutv1alpha1.FailureVerdict{{Source: "x", Kind: rolloutv1alpha1.FailureKindApplyFailed, RollsBack: true, Why: whyAtOrAboveThreshold}}}}
 		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 		cat, _, _, err := e.r.resolveReleases(ctx, ro, logf.FromContext(ctx))
 		Expect(err).NotTo(HaveOccurred())
@@ -354,7 +357,7 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(e.condition(ctx).Reason).To(Equal(autoRollbackNotATrigger))
 	})
 
-	DescribeTable("decides by the precedence of check switch, source switch and kind",
+	DescribeTable("decides by severity against the Rollout's threshold",
 		func(o arOpts, failures []rolloutv1alpha1.HealthCheckFailure, rolls bool, reason string) {
 			e = newArEnv(ctx, o)
 			e.deployV2(ctx)
@@ -366,42 +369,74 @@ var _ = Describe("Automatic rollback", func() {
 				expectSkipped(reason)
 			}
 		},
-		Entry("kind in the class default rolls back", arOpts{},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil)}, true, ""),
-		Entry("NotReady is not in [ApplyFailed TestFailed] (T45)", arOpts{rollbackOn: kindList(rolloutv1alpha1.FailureKindApplyFailed, rolloutv1alpha1.FailureKindTestFailed)},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("Deployment app/web", rolloutv1alpha1.FailureKindNotReady, nil)}, false, autoRollbackNotATrigger),
-		Entry("rollbackOn [] never rolls back (T49)", arOpts{rollbackOn: kindList()},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil)}, false, autoRollbackNotATrigger),
-		Entry("a provider that records no failures counts as Unclassified and rolls back (T48)", arOpts{}, nil, true, ""),
-		Entry("a test that opted out fails alone: bake fails, no rollback", arOpts{},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, &no)}, false, autoRollbackNotATrigger),
-		Entry("an opted-out test and a rolling-back test both fail: rolls back", arOpts{},
+		Entry("an unmarked failure is Critical and rolls back at Critical", arOpts{},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, "")}, true, ""),
+		Entry("a Warning failure does not roll back at Critical", arOpts{},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, warn)}, false, autoRollbackNotATrigger),
+		Entry("a Warning failure rolls back at Warning", arOpts{severity: rolloutv1alpha1.RollbackSeverityWarning},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, warn)}, true, ""),
+		Entry("a Critical failure rolls back at Warning", arOpts{severity: rolloutv1alpha1.RollbackSeverityWarning},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, crit)}, true, ""),
+		Entry("a provider that records no failures counts as one Critical failure", arOpts{}, nil, true, ""),
+		Entry("no failures, but the HealthCheck is annotated Warning: below Critical", arOpts{hcAnnotations: map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}},
+			nil, false, autoRollbackNotATrigger),
+		Entry("the HealthCheck's Warning is the default for its unmarked failures", arOpts{hcAnnotations: map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("Deployment app/web", rolloutv1alpha1.FailureKindNotReady, "")}, false, autoRollbackNotATrigger),
+		Entry("an object's Critical wins over the HealthCheck's Warning", arOpts{hcAnnotations: map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"}},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/checkout", rolloutv1alpha1.FailureKindTestFailed, crit)}, true, ""),
+		Entry("a Warning test and a Critical test both fail: rolls back", arOpts{},
 			[]rolloutv1alpha1.HealthCheckFailure{
-				fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, &no),
-				fail("RolloutTest app/checkout", rolloutv1alpha1.FailureKindTestFailed, nil)}, true, ""),
-		Entry("a source that opts in overrides a list without its kind", arOpts{rollbackOn: kindList(rolloutv1alpha1.FailureKindApplyFailed)},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("RolloutTest app/checkout", rolloutv1alpha1.FailureKindTestFailed, &yes)}, true, ""),
-		Entry("CheckError never rolls back, even when the source opts in", arOpts{},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("HealthCheck x", rolloutv1alpha1.FailureKindCheckError, &yes)}, false, autoRollbackNotATrigger),
-		Entry("datadog-incidents rolls back nothing by default", arOpts{class: "datadog-incidents"},
-			[]rolloutv1alpha1.HealthCheckFailure{fail("Incident 4", rolloutv1alpha1.FailureKindIncident, nil)}, false, autoRollbackNotATrigger),
+				fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, warn),
+				fail("RolloutTest app/checkout", rolloutv1alpha1.FailureKindTestFailed, "")}, true, ""),
+		Entry("CheckError never rolls back, even Critical", arOpts{severity: rolloutv1alpha1.RollbackSeverityWarning},
+			[]rolloutv1alpha1.HealthCheckFailure{fail("HealthCheck x", rolloutv1alpha1.FailureKindCheckError, crit)}, false, autoRollbackNotATrigger),
 	)
 
-	It("records the verdict and why for a test that opted out", func() {
+	It("records severity and BelowThreshold for a Warning failure at Critical", func() {
 		e = newArEnv(ctx, arOpts{})
 		e.deployV2(ctx)
-		e.failHC(ctx, fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, &no))
+		e.failHC(ctx, fail("RolloutTest app/flaky", rolloutv1alpha1.FailureKindTestFailed, warn))
 		e.reconcile(ctx)
 		v := e.get(ctx).Status.History[0].FailedHealthChecks[0].Failures[0]
 		Expect(v.RollsBack).To(BeFalse())
-		Expect(v.Why).To(Equal(whySourceOptedOut))
+		Expect(v.Severity).To(Equal(warn))
+		Expect(v.Why).To(Equal(whyBelowThreshold))
 		Expect(e.condition(ctx).Message).To(ContainSubstring("RolloutTest app/flaky"))
+	})
+
+	It("severity Never does nothing and sets no condition, but records the verdicts as they would be", func() {
+		e = newArEnv(ctx, arOpts{severity: rolloutv1alpha1.RollbackSeverityNever})
+		e.deployV2(ctx)
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
+		e.reconcile(ctx)
+		h := e.get(ctx).Status.History
+		Expect(h).To(HaveLen(2))
+		Expect(*h[0].BakeStatus).To(Equal(rolloutv1alpha1.BakeStatusFailed))
+		Expect(e.condition(ctx)).To(BeNil())
+		Expect(h[0].FailedHealthChecks[0].Failures[0].RollsBack).To(BeTrue())
+	})
+
+	It("defaults autoRollback.severity to Never in the API server", func() {
+		ro := &rolloutv1alpha1.Rollout{ObjectMeta: metav1.ObjectMeta{GenerateName: "def-", Namespace: "default"},
+			Spec: rolloutv1alpha1.RolloutSpec{ReleaseSourceRef: &corev1.LocalObjectReference{Name: "x"}, AutoRollback: &rolloutv1alpha1.AutoRollbackSpec{}}}
+		Expect(k8sClient.Create(ctx, ro)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, ro) }()
+		Expect(ro.Spec.AutoRollback.Severity).To(Equal(rolloutv1alpha1.RollbackSeverityNever))
+	})
+
+	It("holds with Blocked when the failed release is a rollback barrier", func() {
+		e = newArEnv(ctx, arOpts{barrierV2: true})
+		e.deployV2(ctx)
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
+		e.reconcile(ctx)
+		expectSkipped(autoRollbackBlocked)
+		Expect(e.condition(ctx).Message).To(And(ContainSubstring("v1"), ContainSubstring("rollback barrier")))
 	})
 
 	It("does nothing when autoRollback is not enabled, and sets no condition", func() {
 		e = newArEnv(ctx, arOpts{disabled: true})
 		e.deployV2(ctx)
-		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		e.reconcile(ctx)
 		h := e.get(ctx).Status.History
 		Expect(h).To(HaveLen(2))
@@ -413,7 +448,7 @@ var _ = Describe("Automatic rollback", func() {
 		e = newArEnv(ctx, arOpts{noPrevious: true})
 		e.reconcile(ctx) // first deploy: v2
 		Expect(e.get(ctx).Status.History).To(HaveLen(1))
-		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		e.reconcile(ctx)
 		h := e.get(ctx).Status.History
 		Expect(h).To(HaveLen(1))
@@ -429,7 +464,7 @@ var _ = Describe("Automatic rollback", func() {
 				RolloutRef: &corev1.LocalObjectReference{Name: "app"}, Passing: k8sptr.To(false)},
 		}
 		Expect(k8sClient.Create(ctx, gate)).To(Succeed())
-		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+		e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 		e.reconcile(ctx)
 		expectRolledBack()
 	})
@@ -449,7 +484,7 @@ var _ = Describe("Automatic rollback", func() {
 			e.deployV2(ctx)
 			Expect(e.get(ctx).Status.History[0].DeployKind).To(Equal(rolloutv1alpha1.DeployKindGateBypass))
 
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			expectRolledBack()
 		})
@@ -462,7 +497,7 @@ var _ = Describe("Automatic rollback", func() {
 			e.deployV2(ctx)
 			Expect(e.get(ctx).Status.History[0].DeployKind).To(Equal(rolloutv1alpha1.DeployKindPin))
 
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			expectSkipped(autoRollbackManualDeploy)
 		})
@@ -475,7 +510,7 @@ var _ = Describe("Automatic rollback", func() {
 			e.deployV2(ctx)
 			Expect(e.get(ctx).Status.History[0].DeployKind).To(Equal(rolloutv1alpha1.DeployKindForceDeploy))
 
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			expectSkipped(autoRollbackManualDeploy)
 		})
@@ -486,7 +521,7 @@ var _ = Describe("Automatic rollback", func() {
 			ro := e.get(ctx)
 			ro.Status.History[0].DeployKind = ""
 			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			expectSkipped(autoRollbackManualDeploy)
 		})
@@ -499,7 +534,7 @@ var _ = Describe("Automatic rollback", func() {
 			Expect(k8sClient.Update(ctx, ro)).To(Succeed())
 			ro.Status.History[0].BakeStatus = k8sptr.To(rolloutv1alpha1.BakeStatusFailed)
 			ro.Status.History[0].FailedHealthChecks = []rolloutv1alpha1.FailedHealthCheck{{Name: "hc", Namespace: e.ns,
-				Failures: []rolloutv1alpha1.FailureVerdict{{Source: "x", Kind: rolloutv1alpha1.FailureKindApplyFailed, RollsBack: true, Why: whyCheckRollbackOn}}}}
+				Failures: []rolloutv1alpha1.FailureVerdict{{Source: "x", Kind: rolloutv1alpha1.FailureKindApplyFailed, RollsBack: true, Why: whyAtOrAboveThreshold}}}}
 			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 			cat, _, _, err := e.r.resolveReleases(ctx, ro, logf.FromContext(ctx))
 			Expect(err).NotTo(HaveOccurred())
@@ -544,7 +579,7 @@ var _ = Describe("Automatic rollback", func() {
 		It("keeps automatic selection off it, shows failedBake, and lets a newer build through", func() {
 			e = newArEnv(ctx, arOpts{})
 			e.deployV2(ctx)
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			expectRolledBack()
 			bakeRollback()
@@ -566,7 +601,7 @@ var _ = Describe("Automatic rollback", func() {
 		It("is released by naming the build", func() {
 			e = newArEnv(ctx, arOpts{})
 			e.deployV2(ctx)
-			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, nil))
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
 			e.reconcile(ctx)
 			bakeRollback()
 
@@ -581,7 +616,7 @@ var _ = Describe("Automatic rollback", func() {
 	})
 })
 
-var _ = Describe("HealthCheck rollbackOn and failures", func() {
+var _ = Describe("HealthCheck failures", func() {
 	ctx := context.Background()
 	var ns string
 
@@ -592,44 +627,6 @@ var _ = Describe("HealthCheck rollbackOn and failures", func() {
 	})
 	AfterEach(func() {
 		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})).To(Succeed())
-	})
-
-	rawRollbackOn := func(name string) ([]interface{}, bool) {
-		u := &unstructured.Unstructured{}
-		u.SetAPIVersion("kuberik.com/v1alpha1")
-		u.SetKind("HealthCheck")
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, u)).To(Succeed())
-		v, found, err := unstructured.NestedSlice(u.Object, "spec", "rollbackOn")
-		Expect(err).NotTo(HaveOccurred())
-		return v, found
-	}
-
-	It("round-trips an empty rollbackOn distinctly from an unset one", func() {
-		unset := &rolloutv1alpha1.HealthCheck{ObjectMeta: metav1.ObjectMeta{Name: "unset", Namespace: ns}}
-		empty := &rolloutv1alpha1.HealthCheck{ObjectMeta: metav1.ObjectMeta{Name: "empty", Namespace: ns},
-			Spec: rolloutv1alpha1.HealthCheckSpec{RollbackOn: kindList()}}
-		Expect(k8sClient.Create(ctx, unset)).To(Succeed())
-		Expect(k8sClient.Create(ctx, empty)).To(Succeed())
-
-		got := &rolloutv1alpha1.HealthCheck{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "unset"}, got)).To(Succeed())
-		Expect(got.Spec.RollbackOn).To(BeNil())
-		_, found := rawRollbackOn("unset")
-		Expect(found).To(BeFalse())
-
-		raw, found := rawRollbackOn("empty")
-		got = &rolloutv1alpha1.HealthCheck{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "empty"}, got)).To(Succeed())
-		Expect(got.Spec.RollbackOn).NotTo(BeNil())
-		Expect(*got.Spec.RollbackOn).To(BeEmpty())
-		Expect(found).To(BeTrue())
-		Expect(raw).To(BeEmpty())
-	})
-
-	It("rejects CheckError in rollbackOn", func() {
-		hc := &rolloutv1alpha1.HealthCheck{ObjectMeta: metav1.ObjectMeta{Name: "bad", Namespace: ns},
-			Spec: rolloutv1alpha1.HealthCheckSpec{RollbackOn: kindList(rolloutv1alpha1.FailureKindCheckError)}}
-		Expect(k8sClient.Create(ctx, hc)).NotTo(Succeed())
 	})
 
 	It("keeps failures after the source recovers and clears them with the reset (T44)", func() {
@@ -844,8 +841,8 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 		Expect(d.e.condition(ctx).Reason).To(Equal(autoRollbackRolledBack))
 	})
 
-	It("does not roll back when the failing test opted out", func() {
-		d := setup(map[string]string{"rollout.kuberik.com/rollback": "false"})
+	It("does not roll back when the failing test is a Warning", func() {
+		d := setup(map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"})
 		defer d.e.cleanup(ctx)
 		d.e.reconcile(ctx)
 		d.e.clock.Add(time.Minute)
@@ -859,12 +856,12 @@ var _ = Describe("A kustomization failure left to the RolloutTests", func() {
 		Expect(fs).To(HaveLen(1))
 		Expect(fs[0].Kind).To(Equal(rolloutv1alpha1.FailureKindTestFailed))
 		Expect(fs[0].RollsBack).To(BeFalse())
-		Expect(fs[0].Why).To(Equal(whySourceOptedOut))
+		Expect(fs[0].Why).To(Equal(whyBelowThreshold))
 		Expect(d.e.condition(ctx).Reason).To(Equal(autoRollbackNotATrigger))
 	})
 
 	It("treats the failure as unclassified and rolls back once the grace passes with no report", func() {
-		d := setup(map[string]string{"rollout.kuberik.com/rollback": "false"})
+		d := setup(map[string]string{rolloutv1alpha1.SeverityAnnotation: "Warning"})
 		defer d.e.cleanup(ctx)
 		d.e.reconcile(ctx)
 		Expect(*d.e.get(ctx).Status.History[0].BakeStatus).NotTo(Equal(rolloutv1alpha1.BakeStatusFailed))
@@ -887,7 +884,7 @@ func TestRecordVerdictsKeepFallback(t *testing.T) {
 	hc.Namespace, hc.Name = "app", "hc"
 
 	var rec rolloutv1alpha1.FailedHealthCheck
-	recordVerdicts(&rec, hc, nil)
+	recordVerdicts(&rec, hc, nil, rolloutv1alpha1.RollbackSeverityCritical, time.Time{})
 	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindUnclassified || !rec.Failures[0].RollsBack {
 		t.Fatalf("a check with no failures keeps the Unclassified fallback, got %+v", rec.Failures)
 	}
@@ -896,13 +893,13 @@ func TestRecordVerdictsKeepFallback(t *testing.T) {
 	// records, a check with no entries still gets the fallback.
 	hc.Status.FailuresDeferred = true
 	rec = rolloutv1alpha1.FailedHealthCheck{}
-	recordVerdicts(&rec, hc, nil)
+	recordVerdicts(&rec, hc, nil, rolloutv1alpha1.RollbackSeverityCritical, time.Time{})
 	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindUnclassified {
 		t.Fatalf("a deferred check that never reported keeps the fallback, got %+v", rec.Failures)
 	}
 
 	rec = rolloutv1alpha1.FailedHealthCheck{}
-	recordVerdicts(&rec, hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(hc)})
+	recordVerdicts(&rec, hc, []rolloutv1alpha1.HealthCheckFailure{notReadyEntry(hc)}, rolloutv1alpha1.RollbackSeverityCritical, time.Time{})
 	if len(rec.Failures) != 1 || rec.Failures[0].Kind != rolloutv1alpha1.FailureKindNotReady {
 		t.Fatalf("extra entries replace the fallback, got %+v", rec.Failures)
 	}
@@ -1000,9 +997,9 @@ func TestHeldSurvivesCancelledEntries(t *testing.T) {
 	g.Expect(*got[2].BakeStatus).To(Equal(failed))
 	g.Expect(failedBakeTags(&rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: got}})).To(HaveKey("A3"))
 
-	// rollbackTarget never picks a baked entry of a held tag.
+	// rollbackCandidates never lists a baked entry of a held tag.
 	h3 := []rolloutv1alpha1.DeploymentHistoryEntry{e("X", &failed), e("B", &failed), e("B", &ok), e("good", &ok)}
-	tgt := rollbackTarget(&rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: h3}})
-	g.Expect(tgt).NotTo(BeNil())
-	g.Expect(tgt.Version.Tag).To(Equal("good"))
+	cands := rollbackCandidates(&rolloutv1alpha1.Rollout{Status: rolloutv1alpha1.RolloutStatus{History: h3}})
+	g.Expect(cands).To(HaveLen(1))
+	g.Expect(cands[0].Version.Tag).To(Equal("good"))
 }
