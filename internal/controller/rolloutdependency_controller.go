@@ -164,7 +164,7 @@ func (r *RolloutDependencyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		runningVersion = &version
 	}
 
-	admitted, blocked := evaluateDependencyRunning(consumerRels, contract, providedVersion, runningVersion)
+	admitted, blocked := evaluateDependency(consumerRels, contract, providedVersion, runningVersion)
 
 	gateName, err := r.syncGate(ctx, dependency, consumerName, admitted)
 	if err != nil {
@@ -567,7 +567,7 @@ func runningBlockers(blocked []kuberikcomv1alpha1.BlockedRelease, blocking []str
 		}
 	}
 	if len(tags) == 0 {
-		return "none"
+		return orNone("")
 	}
 	return summarizeTags(tags)
 }
