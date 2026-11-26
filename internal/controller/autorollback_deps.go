@@ -156,14 +156,14 @@ func (r *RolloutReconciler) chooseRollbackTarget(ctx context.Context, rollout *r
 	if err != nil {
 		return rollbackChoice{}, err
 	}
-	ch := walkCandidates(ctx, rollout, candidates, r.rollbackGuards(), rollbackGuardInput{
+	ch := walkCandidates(ctx, candidates, r.rollbackGuards(), rollbackGuardInput{
 		rollout: rollout, failed: &rollout.Status.History[0], cat: cat, gates: gates, deps: dv,
 	})
 	return ch, dv.err
 }
 
 // walkCandidates is the decision: the newest candidate every guard allows.
-func walkCandidates(ctx context.Context, rollout *rolloutv1alpha1.Rollout, candidates []*rolloutv1alpha1.DeploymentHistoryEntry,
+func walkCandidates(ctx context.Context, candidates []*rolloutv1alpha1.DeploymentHistoryEntry,
 	guards []rollbackGuard, in rollbackGuardInput) rollbackChoice {
 	ch := rollbackChoice{onlyDependencies: true, sel: rolloutv1alpha1.RollbackSelection{UsualTarget: candidates[0].Version.Tag}}
 	for _, cand := range candidates {
@@ -365,4 +365,26 @@ func rollbackSelectionOf(plan *rollbackPlan) *rolloutv1alpha1.RollbackSelection 
 	}
 	capped := rollbacksafety.Cap(*plan.selection.DeepCopy())
 	return &capped
+}
+
+// recordBlockedRollback stores why no earlier build was chosen and ends the
+// decision with the AutoRollback condition. The record stays on the history
+// entry, so it explains itself after the consumer moves.
+func (r *RolloutReconciler) recordBlockedRollback(ctx context.Context, rollout *rolloutv1alpha1.Rollout, ch rollbackChoice) error {
+	failedTag := rollout.Status.History[0].Version.Tag
+	sel := ch.sel
+	stored := rollbacksafety.Cap(sel)
+	if len(stored.Skipped) > 0 || len(stored.BlockedBy) > 0 {
+		rollout.Status.History[0].AutoRollback = &rolloutv1alpha1.RollbackSelection{
+			UsualTarget: stored.UsualTarget, Skipped: stored.Skipped, BlockedBy: stored.BlockedBy,
+		}
+		rollout.Status.AutoRollback = &rolloutv1alpha1.AutoRollbackStatus{
+			For: failedTag, RollbackSelection: stored, EvaluatedTime: metav1.NewTime(r.now()),
+		}
+	}
+	if ch.onlyDependencies && len(sel.BlockedBy) > 0 {
+		return r.skipAutoRollback(ctx, rollout, blockedConditionReason(sel), blockedMessage(rollout, sel))
+	}
+	return r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
+		fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(ch.rejected)))
 }

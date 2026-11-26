@@ -60,7 +60,8 @@ func rollout(ns, name string, history ...rolloutv1alpha1.DeploymentHistoryEntry)
 	return r
 }
 
-func dep(ns, name, consumer, providerNS, provider string, policy rolloutv1alpha1.ProviderRollbackPolicy) rolloutv1alpha1.RolloutDependency {
+func dep(ns, name, consumer, providerNS, provider string,
+	policy rolloutv1alpha1.ProviderRollbackPolicy) rolloutv1alpha1.RolloutDependency {
 	d := rolloutv1alpha1.RolloutDependency{}
 	d.Namespace, d.Name = ns, name
 	d.Spec.RolloutRef.Name = consumer
@@ -75,11 +76,13 @@ const ok = rolloutv1alpha1.BakeStatusSucceeded
 func needs(c string) map[string]string { return map[string]string{"ledger": c} }
 
 // check is what the rollback guards see of one candidate.
-func check(p *rolloutv1alpha1.Rollout, c rolloutv1alpha1.VersionInfo, w *world) (all, blocking []rolloutv1alpha1.DependencyBreak) {
+func check(p *rolloutv1alpha1.Rollout, c rolloutv1alpha1.VersionInfo,
+	w *world) (all, blocking []rolloutv1alpha1.DependencyBreak) {
 	all = append(ConsumerBreaks(p, c, w.deps, w.find), TargetRequires(p, c, w.deps, w.find)...)
 	return all, Blocking(all)
 }
 
+//nolint:lll // table rows
 func TestConsumerChecks(t *testing.T) {
 	v5 := build("t5", "5.1.0", nil)
 	v6 := build("t6", "6.0.0", nil)

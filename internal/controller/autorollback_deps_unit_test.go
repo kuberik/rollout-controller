@@ -123,7 +123,7 @@ func TestWalkCandidatesSkipsWhatABlockEdgeRefuses(t *testing.T) {
 		dep.Spec.Contract = k8sptr.To("ledger")
 		dep.Spec.ProviderRollback = edge
 		dv := newDependencyView([]rolloutv1alpha1.RolloutDependency{dep}, find)
-		return walkCandidates(context.Background(), provider, rollbackCandidates(provider),
+		return walkCandidates(context.Background(), rollbackCandidates(provider),
 			[]rollbackGuard{consumerRequiresGuard, targetRequiresGuard},
 			rollbackGuardInput{rollout: provider, failed: &provider.Status.History[0], deps: dv})
 	}

@@ -24,7 +24,6 @@ import (
 	"time"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
-	"github.com/kuberik/rollout-controller/pkg/rollbacksafety"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -499,22 +498,7 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	}
 	target, sel := choice.target, choice.sel
 	if target == nil {
-		stored := rollbacksafety.Cap(sel)
-		if len(stored.Skipped) > 0 || len(stored.BlockedBy) > 0 {
-			// The record stays on the history entry, so it explains itself after
-			// the consumer moves.
-			rollout.Status.History[0].AutoRollback = &rolloutv1alpha1.RollbackSelection{
-				UsualTarget: stored.UsualTarget, Skipped: stored.Skipped, BlockedBy: stored.BlockedBy,
-			}
-			rollout.Status.AutoRollback = &rolloutv1alpha1.AutoRollbackStatus{
-				For: failedTag, RollbackSelection: stored, EvaluatedTime: metav1.NewTime(r.now()),
-			}
-		}
-		if choice.onlyDependencies && len(sel.BlockedBy) > 0 {
-			return false, 0, r.skipAutoRollback(ctx, rollout, blockedConditionReason(sel), blockedMessage(rollout, sel))
-		}
-		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
-			fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(choice.rejected)))
+		return false, 0, r.recordBlockedRollback(ctx, rollout, choice)
 	}
 
 	plan := &rollbackPlan{failedID: ptrValue(failed.ID), failedTag: failedTag, sources: listFew(sources), selection: &sel}
