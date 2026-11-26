@@ -127,7 +127,7 @@ var _ = Describe("Kustomization write path", func() {
 	// owns reports whether the manager's managed-fields entry on the Kustomization lists the substitute key.
 	owns := func(manager, key string) bool {
 		for _, mf := range getKs().GetManagedFields() {
-			if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(string(mf.FieldsV1.Raw), `"f:`+key+`"`) {
+			if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(mf.FieldsV1.GetRawString(), `"f:`+key+`"`) {
 				return true
 			}
 		}
@@ -199,7 +199,7 @@ var _ = Describe("Kustomization write path", func() {
 			ksApply("kustomize-controller", annots, map[string]interface{}{"VAR_A": "from-git"})
 			oci = &sourcev1.OCIRepository{
 				ObjectMeta: metav1.ObjectMeta{Name: "oci", Namespace: ns, Annotations: map[string]string{"rollout.kuberik.com/rollout": "a"}},
-				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/app", Interval: metav1.Duration{Duration: time.Minute},
+				Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/app", Interval: &metav1.Duration{Duration: time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{Tag: "old"}},
 			}
 			seedLegacyOCIRepository(oci)

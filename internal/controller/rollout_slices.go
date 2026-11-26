@@ -672,9 +672,9 @@ func deriveReadyFromHistory(rollout *rolloutv1alpha1.Rollout) {
 	switch *e.BakeStatus {
 	case rolloutv1alpha1.BakeStatusSucceeded:
 		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionTrue, Reason: "BakeTimePassed", Message: msg})
+			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionTrue, Reason: reasonBakeTimePassed, Message: msg})
 	case rolloutv1alpha1.BakeStatusFailed:
 		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
-			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionFalse, Reason: "BakeTimeFailed", Message: msg})
+			Type: rolloutv1alpha1.RolloutReady, Status: metav1.ConditionFalse, Reason: reasonBakeTimeFailed, Message: msg})
 	}
 }

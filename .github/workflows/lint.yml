@@ -18,7 +18,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Run linter
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.63.4
-          install-mode: "goinstall"
+          version: v2.15.0
+          # Build with the Go from go.mod: release binaries are built with an
+          # older Go and refuse to lint go 1.27 modules.
+          install-mode: goinstall

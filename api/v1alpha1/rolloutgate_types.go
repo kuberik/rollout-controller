@@ -62,5 +62,5 @@ type RolloutGateList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&RolloutGate{}, &RolloutGateList{})
+	register(&RolloutGate{}, &RolloutGateList{})
 }

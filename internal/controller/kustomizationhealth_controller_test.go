@@ -32,9 +32,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/fluxcd/cli-utils/pkg/object"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
-	"sigs.k8s.io/cli-utils/pkg/object"
 )
 
 var _ = Describe("KustomizationHealth Controller", func() {

@@ -1181,7 +1181,7 @@ var _ = Describe("Rollout Controller", func() {
 				},
 				Spec: sourcev1.OCIRepositorySpec{
 					URL:      "oci://ghcr.io/test/app",
-					Interval: metav1.Duration{Duration: 1 * time.Minute},
+					Interval: &metav1.Duration{Duration: 1 * time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{
 						Tag: "old-tag",
 					},
@@ -1227,7 +1227,7 @@ var _ = Describe("Rollout Controller", func() {
 				},
 				Spec: sourcev1.OCIRepositorySpec{
 					URL:      "oci://ghcr.io/test/app",
-					Interval: metav1.Duration{Duration: 1 * time.Minute},
+					Interval: &metav1.Duration{Duration: 1 * time.Minute},
 					Reference: &sourcev1.OCIRepositoryRef{
 						Tag: "old-tag",
 					},

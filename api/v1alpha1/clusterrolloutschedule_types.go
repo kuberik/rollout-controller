@@ -110,5 +110,5 @@ type ClusterRolloutScheduleList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ClusterRolloutSchedule{}, &ClusterRolloutScheduleList{})
+	register(&ClusterRolloutSchedule{}, &ClusterRolloutScheduleList{})
 }

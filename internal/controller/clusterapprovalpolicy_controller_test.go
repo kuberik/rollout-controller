@@ -75,9 +75,8 @@ var _ = Describe("ClusterApprovalPolicy Controller", func() {
 	}
 
 	BeforeEach(func() {
-		namespaces = nil
 		scope = string(types.UID(approvalTestNamespace(ctx, nil))) // unique per spec
-		namespaces = append(namespaces, scope)
+		namespaces = []string{scope}
 		policyName = "cap-" + scope
 	})
 	AfterEach(func() {

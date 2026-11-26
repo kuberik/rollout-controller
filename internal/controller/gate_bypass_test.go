@@ -50,7 +50,7 @@ func TestApplyGatesPartialBypass(t *testing.T) {
 	}
 	cands := []rolloutv1alpha1.VersionInfo{{Tag: "2"}, {Tag: "1"}}
 	tags := func(v []rolloutv1alpha1.VersionInfo) []string {
-		out := []string{}
+		out := make([]string, 0, len(v))
 		for _, x := range v {
 			out = append(out, x.Tag)
 		}

@@ -210,5 +210,5 @@ type RolloutDependencyList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&RolloutDependency{}, &RolloutDependencyList{})
+	register(&RolloutDependency{}, &RolloutDependencyList{})
 }
