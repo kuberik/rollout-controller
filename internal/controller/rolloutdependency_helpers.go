@@ -145,24 +145,6 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 // recent rollback targets addressable.
 const maxPublishedReleases = 50
 
-// evaluateDependency partitions a consumer's releases into those admitted by
-// this dependency and those blocked by it.
-//
-// A release is admitted when it declares no requirement on the contract, or
-// when the provider's deployed contract version satisfies the constraint the
-// release places on it. When the provider has no known contract version yet,
-// every release that requires the contract is blocked.
-//
-// providedVersion is the provider's deployed contract version, or "" when it is
-// not known.
-func evaluateDependency(
-	releases []rolloutv1alpha1.VersionInfo,
-	contract string,
-	providedVersion string,
-) (admitted []string, blocked []rolloutv1alpha1.BlockedRelease) {
-	return evaluateDependencyRunning(releases, contract, providedVersion, nil)
-}
-
 // runningRelease returns the provider's newest history entry — what the
 // provider is actually running — when it is NOT the entry deployedRelease
 // returns, i.e. when the provider has moved on to a release that is still
@@ -187,21 +169,24 @@ func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.Deployme
 	return newestEntry, ""
 }
 
-// evaluateDependencyRunning is evaluateDependency with an additional check
-// against what the provider is running right now.
+// evaluateDependency partitions a consumer's releases into those admitted by
+// this dependency and those blocked by it.
 //
-// A consumer is admitted only when its constraint holds for BOTH the newest
-// succeeded provider entry (providedVersion) and, when it differs, the
-// provider's History[0] (runningVersion). Otherwise a provider that deployed a
-// newer, still-baking (or failed) version would admit consumers against a
-// contract version that is not what is serving traffic. runningVersion is nil
-// when History[0] is the succeeded entry; a pointer to "" when History[0] is a
-// different entry whose contract version is unknown (blocked: unknown is not
-// evidence).
+// A release is admitted when it declares no requirement on the contract, or
+// when the provider's contract version satisfies the constraint the release
+// places on it. When the provider has no known contract version yet, every
+// release that requires the contract is blocked.
+//
+// providedVersion is the contract version of the provider's newest succeeded
+// entry, or "" when it is not known. runningVersion is nil when History[0] is
+// that entry; otherwise it points at History[0]'s contract version ("" when
+// unknown: blocked, unknown is not evidence). A release must satisfy both, so a
+// provider that deployed a newer, still-baking (or failed) version does not
+// admit consumers against a contract version that is not serving traffic.
 //
 // This only narrows the admitted list; it never touches the consumer's image
 // stream or candidate resolution.
-func evaluateDependencyRunning(
+func evaluateDependency(
 	releases []rolloutv1alpha1.VersionInfo,
 	contract string,
 	providedVersion string,

@@ -295,7 +295,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			if r, v := runningRelease(p); r != nil {
 				running = &v
 			}
-			return evaluateDependencyRunning(consumers, "db", provided, running)
+			return evaluateDependency(consumers, "db", provided, running)
 		}
 
 		It("has no running release for an empty history or when History[0] succeeded", func() {
@@ -361,6 +361,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", nil), release("v2", map[string]string{"other": "9.9.9"})},
 				"db", "",
+				nil,
 			)
 			Expect(admitted).To(ConsistOf("v1", "v2"))
 			Expect(blocked).To(BeEmpty())
@@ -370,6 +371,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", map[string]string{"db": "1.0.0"})},
 				"db", "",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked).To(HaveLen(1))
@@ -385,6 +387,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 					release("v3", map[string]string{"db": "^2.0.0"}),
 				},
 				"db", "1.178.0",
+				nil,
 			)
 			Expect(admitted).To(Equal([]string{"v1", "v2"}))
 			Expect(blocked).To(HaveLen(1))
@@ -397,6 +400,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{{Tag: "v1", MetadataUnresolved: true}},
 				"db", "1.0.0",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked).To(HaveLen(1))
@@ -408,7 +412,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			for i := 0; i < maxPublishedReleases+10; i++ {
 				releases = append(releases, release(fmt.Sprintf("v%d", i), nil))
 			}
-			admitted, _ := evaluateDependency(releases, "db", "1.0.0")
+			admitted, _ := evaluateDependency(releases, "db", "1.0.0", nil)
 			Expect(admitted).To(HaveLen(maxPublishedReleases))
 			Expect(admitted[len(admitted)-1]).To(Equal(fmt.Sprintf("v%d", maxPublishedReleases+9)))
 		})
@@ -417,6 +421,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", map[string]string{"db": "latest"})},
 				"db", "1.0.0",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked[0].Reason).To(Equal("InvalidVersion"))
