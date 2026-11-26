@@ -8,3 +8,7 @@ rules:
   - apiGroups: [kuberik.com]
     resources: [rolloutapprovals]
     verbs: [get, list, watch, create, delete]
+  # kuberik approve reads the Rollout for the approval's ownerReference uid.
+  - apiGroups: [kuberik.com]
+    resources: [rollouts]
+    verbs: [get]
