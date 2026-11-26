@@ -24,6 +24,7 @@ import (
 	"time"
 
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	"github.com/kuberik/rollout-controller/pkg/rollbacksafety"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,6 +77,8 @@ type rollbackPlan struct {
 	failedID  int64
 	failedTag string
 	sources   string
+	// selection is how the target was chosen against the dependencies.
+	selection *rolloutv1alpha1.RollbackSelection
 }
 
 // rollbackThreshold is the severity a Rollout rolls back at: empty when
@@ -310,17 +313,18 @@ type rollbackGuardInput struct {
 	cat     *catalogue
 	// gates are the Rollback gates that reference the Rollout.
 	gates []rolloutv1alpha1.RolloutGate
+	// deps is what the dependency guards read and record; nil skips them.
+	deps *dependencyView
 }
 
 // rollbackGuard says whether a rollback target is allowed. When it is not, reason
 // is a short phrase for the condition message. Guards are evaluated live inside
-// the decision, in order, and every one that rejects a target is named.
-// Dependency guards (PR #81) plug in here: add a rollbackGuard to rollbackGuards.
+// the decision, in order, and the first one that rejects a target is named.
 type rollbackGuard func(ctx context.Context, in rollbackGuardInput) (ok bool, reason string)
 
 // rollbackGuards are the guards every automatic rollback passes.
 func (r *RolloutReconciler) rollbackGuards() []rollbackGuard {
-	return []rollbackGuard{barrierGuard, gateGuard}
+	return []rollbackGuard{barrierGuard, gateGuard, consumerRequiresGuard, targetRequiresGuard}
 }
 
 // barrierGuard rejects a target when any release after it, up to and including the
@@ -431,6 +435,9 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	log := logf.FromContext(ctx)
 	failed := rollout.Status.History[0]
 	failedTag := failed.Version.Tag
+	// The bake is over: the preview made while it ran ends with this decision
+	// (a rollback stopped by a dependency writes its own below).
+	rollout.Status.AutoRollback = nil
 
 	switch {
 	case rollsBackAutomatically(failed.DeployKind):
@@ -473,22 +480,44 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 			fmt.Sprintf("%s failed but rollback gate %s did not refresh (waited %s); not rolling back.",
 				failedTag, listFew(pending), strings.TrimSuffix(rollbackGateGrace.String(), "0s")))
 	}
-	var target *rolloutv1alpha1.DeploymentHistoryEntry
-	var rejected []string
-	for _, cand := range candidates {
-		ok, reason := r.passGuards(ctx, rollbackGuardInput{rollout: rollout, failed: &rollout.Status.History[0], target: cand, cat: cat, gates: gates})
-		if ok {
-			target = cand
-			break
+	// Persist that a decision is owed before reading the dependencies: a failed
+	// read returns an error and the next reconcile decides again (see
+	// pendingAutoRollback) instead of the decision being lost.
+	if c := meta.FindStatusCondition(rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback); c == nil ||
+		(c.Reason != autoRollbackPending && c.Reason != autoRollbackDeployError && c.Reason != autoRollbackWaitingGates) {
+		meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
+			Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionUnknown, Reason: autoRollbackPending,
+			Message: fmt.Sprintf("Choosing a rollback target for %s (%s).", failedTag, listFew(sources)),
+		})
+		if err := r.Status().Update(ctx, rollout); err != nil {
+			return false, 0, err
 		}
-		rejected = append(rejected, cand.Version.Tag+": "+reason)
 	}
+	choice, cerr := r.chooseRollbackTarget(ctx, rollout, cat, gates)
+	if cerr != nil {
+		return false, 0, cerr
+	}
+	target, sel := choice.target, choice.sel
 	if target == nil {
+		stored := rollbacksafety.Cap(sel)
+		if len(stored.Skipped) > 0 || len(stored.BlockedBy) > 0 {
+			// The record stays on the history entry, so it explains itself after
+			// the consumer moves.
+			rollout.Status.History[0].AutoRollback = &rolloutv1alpha1.RollbackSelection{
+				UsualTarget: stored.UsualTarget, Skipped: stored.Skipped, BlockedBy: stored.BlockedBy,
+			}
+			rollout.Status.AutoRollback = &rolloutv1alpha1.AutoRollbackStatus{
+				For: failedTag, RollbackSelection: stored, EvaluatedTime: metav1.NewTime(r.now()),
+			}
+		}
+		if choice.onlyDependencies && len(sel.BlockedBy) > 0 {
+			return false, 0, r.skipAutoRollback(ctx, rollout, blockedConditionReason(sel), blockedMessage(rollout, sel))
+		}
 		return false, 0, r.skipAutoRollback(ctx, rollout, autoRollbackBlocked,
-			fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(rejected)))
+			fmt.Sprintf("%s failed but no earlier build may be rolled back to: %s.", failedTag, listFew(choice.rejected)))
 	}
 
-	plan := &rollbackPlan{failedID: ptrValue(failed.ID), failedTag: failedTag, sources: listFew(sources)}
+	plan := &rollbackPlan{failedID: ptrValue(failed.ID), failedTag: failedTag, sources: listFew(sources), selection: &sel}
 	log.Info("Automatic rollback", "failed", failedTag, "target", target.Version.Tag, "sources", plan.sources)
 
 	// Persist the decision before touching Flux. If the deploy or its status write
@@ -567,16 +596,6 @@ func (r *RolloutReconciler) waitForRollbackGates(ctx context.Context, rollout *r
 	return min(max(left, time.Second), deferredFailureRequeue), nil
 }
 
-// passGuards runs the guards in order and stops at the first that rejects.
-func (r *RolloutReconciler) passGuards(ctx context.Context, in rollbackGuardInput) (bool, string) {
-	for _, g := range r.rollbackGuards() {
-		if ok, reason := g(ctx, in); !ok {
-			return false, reason
-		}
-	}
-	return true, ""
-}
-
 // rollbackRecorded reports whether history already holds the rollback of the plan's failed build.
 func rollbackRecorded(rollout *rolloutv1alpha1.Rollout, plan *rollbackPlan) bool {
 	if len(rollout.Status.History) == 0 {
@@ -630,7 +649,7 @@ func deployKindOf(rollback, pinned, force, unblock, bypass bool) rolloutv1alpha1
 func (r *RolloutReconciler) recordRollback(rollout *rolloutv1alpha1.Rollout, plan *rollbackPlan, target string) {
 	meta.SetStatusCondition(&rollout.Status.Conditions, metav1.Condition{
 		Type: rolloutv1alpha1.RolloutAutoRollback, Status: metav1.ConditionTrue, Reason: autoRollbackRolledBack,
-		Message: fmt.Sprintf("%s failed bake (%s); rolled back to %s.", plan.failedTag, plan.sources, target),
+		Message: fmt.Sprintf("%s failed bake (%s); rolled back to %s.", plan.failedTag, plan.sources, target) + skippedSuffix(plan.selection),
 	})
 	if r.Recorder != nil {
 		r.Recorder.Event(rollout, corev1.EventTypeNormal, "AutoRollback",
