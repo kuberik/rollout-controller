@@ -511,6 +511,18 @@ var _ = Describe("Automatic rollback", func() {
 			expectSkipped(autoRollbackManualDeploy)
 		})
 
+		It("an unblock-failed deploy is deliberate and never rolls back", func() {
+			e = newArEnv(ctx, arOpts{})
+			e.deployV2(ctx)
+			ro := e.get(ctx)
+			ro.Status.History[0].DeployKind = rolloutv1alpha1.DeployKindUnblock
+			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
+			e.failHC(ctx, fail("Kustomization app/ks", rolloutv1alpha1.FailureKindApplyFailed, ""))
+			e.reconcile(ctx)
+			expectSkipped(autoRollbackManualDeploy)
+			Expect(e.get(ctx).Status.History).To(HaveLen(2))
+		})
+
 		It("a deploy from before deploy kinds were recorded is treated as manual", func() {
 			e = newArEnv(ctx, arOpts{})
 			e.deployV2(ctx)

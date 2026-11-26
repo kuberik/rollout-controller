@@ -420,12 +420,12 @@ func (r *RolloutReconciler) autoRollbackAfterFailedBake(ctx context.Context, rol
 	failedTag := failed.Version.Tag
 
 	switch failed.DeployKind {
-	case rolloutv1alpha1.DeployKindAutomatic, rolloutv1alpha1.DeployKindGateBypass, rolloutv1alpha1.DeployKindUnblock:
+	case rolloutv1alpha1.DeployKindAutomatic, rolloutv1alpha1.DeployKindGateBypass:
 	case rolloutv1alpha1.DeployKindAutoRollback:
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackNotATrigger, "An automatic rollback is never rolled back again.")
 	default:
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackManualDeploy,
-			fmt.Sprintf("%s was deployed by hand (pin, force deploy or before deploy kinds were recorded); rolling back is left to you.", failedTag))
+			fmt.Sprintf("%s was deployed by hand (pin, force deploy, unblock or before deploy kinds were recorded); rolling back is left to you.", failedTag))
 	}
 	if why := pendingManualIntent(rollout); why != "" {
 		return false, r.skipAutoRollback(ctx, rollout, autoRollbackManualIntent, "Not rolling back: "+why+".")
