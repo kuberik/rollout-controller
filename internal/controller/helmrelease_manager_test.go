@@ -62,7 +62,7 @@ var _ = Describe("HelmRelease RBAC and field managers", func() {
 		// owns reports whether the manager has a managed-fields entry mentioning field.
 		owns := func(manager, field string) bool {
 			for _, mf := range getHR(ns).GetManagedFields() {
-				if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(string(mf.FieldsV1.Raw), `"f:`+field+`"`) {
+				if mf.Manager == manager && mf.FieldsV1 != nil && strings.Contains(mf.FieldsV1.GetRawString(), `"f:`+field+`"`) {
 					return true
 				}
 			}

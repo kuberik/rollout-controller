@@ -44,12 +44,14 @@ const (
 	reasonHelmReleaseRemediationConflict = "HelmReleaseRemediationConflict"
 
 	helmReleaseChartVersionAnnot = "rollout.kuberik.com/chart-version.from"
+
+	helmToolkitGroup = "helm.toolkit.fluxcd.io"
 )
 
 var (
-	helmReleaseGroupKind = schema.GroupKind{Group: "helm.toolkit.fluxcd.io", Kind: "HelmRelease"}
-	helmReleaseGVK       = schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
-	helmReleaseListGVK   = schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmReleaseList"}
+	helmReleaseGroupKind = schema.GroupKind{Group: helmToolkitGroup, Kind: "HelmRelease"}
+	helmReleaseGVK       = schema.GroupVersionKind{Group: helmToolkitGroup, Version: "v2", Kind: "HelmRelease"}
+	helmReleaseListGVK   = schema.GroupVersionKind{Group: helmToolkitGroup, Version: "v2", Kind: "HelmReleaseList"}
 
 	helmValuesAnnotPattern = regexp.MustCompile(`^rollout\.kuberik\.com/values\.(.+)\.from$`)
 )

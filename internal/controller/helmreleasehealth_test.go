@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
@@ -128,7 +129,7 @@ var _ = Describe("helmrelease health class", func() {
 			setOCI := func(observedGen int64, revision string) {
 				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(oci), oci)).To(Succeed())
 				oci.Status.ObservedGeneration = observedGen
-				oci.Status.Artifact = &sourcev1.Artifact{Path: "p", URL: "http://x/p", Revision: revision, Digest: "sha256:aa", LastUpdateTime: metav1.Now()}
+				oci.Status.Artifact = &fluxmeta.Artifact{Path: "p", URL: "http://x/p", Revision: revision, Digest: "sha256:aa", LastUpdateTime: metav1.Now()}
 				ExpectWithOffset(1, k8sClient.Status().Update(ctx, oci)).To(Succeed())
 			}
 			setHR := func(attempted, chart string) {
@@ -177,7 +178,7 @@ var _ = Describe("helmrelease health class", func() {
 
 				oci = &sourcev1.OCIRepository{
 					ObjectMeta: metav1.ObjectMeta{Name: "chart", Namespace: ns, Annotations: map[string]string{"rollout.kuberik.com/rollout": "shop"}},
-					Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/chart", Interval: metav1.Duration{Duration: time.Minute},
+					Spec: sourcev1.OCIRepositorySpec{URL: "oci://ghcr.io/x/chart", Interval: &metav1.Duration{Duration: time.Minute},
 						Reference: &sourcev1.OCIRepositoryRef{Tag: "2.0.0"}},
 				}
 				Expect(k8sClient.Create(ctx, oci)).To(Succeed())
