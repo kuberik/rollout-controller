@@ -53,7 +53,7 @@ linters:
       - linters:
           - gocyclo
         path: internal/controller/rollout_controller\.go
-        text: of func `\(\*RolloutReconciler\)\.(Reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high
+        text: of func `\(\*RolloutReconciler\)\.(Reconcile|reconcile|deployRelease|parseOCIManifest|handleBakeTime)` is high
       # Deprecated Rollout fields that are still referenced until they are removed:
       #   AvailableReleases, ReleaseCandidates, GatedReleaseCandidates: shapeReleaseStatus
       #     clears them on every reconcile, and the tests assert they stay empty.
