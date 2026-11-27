@@ -217,6 +217,105 @@ type AutoRollbackSpec struct {
 	MinSeverity RollbackSeverity `json:"minSeverity,omitempty"`
 }
 
+// DependencyBreak is one dependency a rollback target would break.
+type DependencyBreak struct {
+	// Kind is ConsumerRequires (the target does not serve what a running consumer
+	// needs) or TargetRequires (the target needs a contract version its provider
+	// does not serve now).
+	// +kubebuilder:validation:Enum=ConsumerRequires;TargetRequires
+	Kind string `json:"kind"`
+
+	// Rollout and Namespace name the other side: the consumer (ConsumerRequires)
+	// or the provider (TargetRequires).
+	Rollout   string `json:"rollout"`
+	Namespace string `json:"namespace"`
+
+	// Dependency is the RolloutDependency; it lives in the consumer's namespace.
+	Dependency string `json:"dependency"`
+
+	// Contract is the contract name the dependency gates on.
+	Contract string `json:"contract"`
+
+	// Requires is the constraint, verbatim. Empty when it could not be read.
+	// +optional
+	Requires string `json:"requires,omitempty"`
+
+	// Version is, for ConsumerRequires, the consumer's running build (its OCI
+	// version, else its tag); for TargetRequires, the contract version the
+	// provider serves now (empty when unknown).
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Reason is ConstraintNotSatisfied, RequirementUnreadable, InvalidVersion or
+	// ProviderVersionUnknown.
+	Reason string `json:"reason"`
+
+	// DeployKind is how the consumer's running build was deployed (ConsumerRequires
+	// only), so a build deployed by hand can be said so.
+	// +optional
+	DeployKind DeployKind `json:"deployKind,omitempty"`
+
+	// Allowed is true when the edge allows rolling back under this consumer
+	// (providerRollback is Allow or unset), so this break does not stop the rollback.
+	// Only an unreadable requirement of a target is ever Allowed for TargetRequires.
+	// +optional
+	Allowed bool `json:"allowed,omitempty"`
+}
+
+// SkippedRollbackTarget is an earlier good build an automatic rollback passed over.
+type SkippedRollbackTarget struct {
+	// Tag is the image tag of the skipped build.
+	Tag string `json:"tag"`
+
+	// Version is its OCI version, when it has one.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Breaks are the dependencies that stopped it (Allowed=false only).
+	// +kubebuilder:validation:MaxItems=8
+	Breaks []DependencyBreak `json:"breaks"`
+}
+
+// RollbackSelection is how an automatic rollback target was chosen against the
+// dependencies.
+type RollbackSelection struct {
+	// UsualTarget is the newest earlier good build before dependency checks (tag).
+	// Empty when there is none.
+	// +optional
+	UsualTarget string `json:"usualTarget,omitempty"`
+
+	// Target is the build chosen (tag): the newest earlier good build that breaks no
+	// blocking dependency. Empty when there is none.
+	// +optional
+	Target string `json:"target,omitempty"`
+
+	// Skipped lists the earlier good builds passed over, newest first.
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Skipped []SkippedRollbackTarget `json:"skipped,omitempty"`
+
+	// BlockedBy is, when Target is empty, what the usual target would break.
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	BlockedBy []DependencyBreak `json:"blockedBy,omitempty"`
+
+	// Allowed lists running consumers that Target breaks but whose edge allows it.
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Allowed []DependencyBreak `json:"allowed,omitempty"`
+}
+
+// AutoRollbackStatus is where an automatic rollback would go for the newest deploy.
+type AutoRollbackStatus struct {
+	// For is the tag of history[0], the build this evaluation is for.
+	For string `json:"for"`
+
+	RollbackSelection `json:",inline"`
+
+	// EvaluatedTime is when the evaluation last changed.
+	EvaluatedTime metav1.Time `json:"evaluatedTime"`
+}
+
 // DeployKind says what caused a deploy, so automation can tell its own deploys
 // from a person's.
 // +kubebuilder:validation:Enum=Automatic;GateBypass;Unblock;Pin;ForceDeploy;AutoRollback
@@ -341,6 +440,12 @@ type RolloutStatus struct {
 	// Each entry contains the version deployed and the timestamp of the deployment.
 	// +optional
 	History []DeploymentHistoryEntry `json:"history,omitempty"`
+
+	// AutoRollback is where an automatic rollback would go for the newest deploy,
+	// written while it bakes (and after a failed bake that a dependency stopped from
+	// rolling back). Cleared when automatic rollback is off or the build baked.
+	// +optional
+	AutoRollback *AutoRollbackStatus `json:"autoRollback,omitempty"`
 
 	// Deprecated: ignored; no longer written (cleared on reconcile). Read
 	// status.candidates and the ReleaseSlice catalogue instead. Removed in the next release.
@@ -566,6 +671,12 @@ type DeploymentHistoryEntry struct {
 	// RollbackOf is the ID of the history entry this deploy rolled back.
 	// +optional
 	RollbackOf *int64 `json:"rollbackOf,omitempty"`
+
+	// AutoRollback records how the target of an automatic rollback was chosen
+	// against the dependencies (on the rollback entry), or what stopped a rollback
+	// (on the failed entry).
+	// +optional
+	AutoRollback *RollbackSelection `json:"autoRollback,omitempty"`
 }
 
 // ApprovalRecord is a copy of the RolloutApproval that allowed a deployment,
@@ -635,7 +746,7 @@ const (
 	// decision. Present only when spec.autoRollback.severity is Critical or
 	// Warning. True/RolledBack: the newest deploy is an automatic rollback. False:
 	// a failed bake did not roll back (NotATrigger, ManualDeploy, ManualIntent,
-	// NoTarget, Blocked, DeployError).
+	// NoTarget, Blocked, ConsumerRequires, TargetRequires, DeployError).
 	RolloutAutoRollback = "AutoRollback"
 
 	// RolloutBakeFailureDisabled means health check failures will not fail the current deployment.

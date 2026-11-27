@@ -87,6 +87,7 @@ type RolloutReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rollouts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutgates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kuberik.com,resources=rolloutdependencies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=rolloutapprovals,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=healthchecks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kuberik.com,resources=releasesources,verbs=get;list;watch
@@ -98,6 +99,22 @@ type RolloutReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	if err != nil {
+		return res, err
+	}
+	// A failed build whose rollback a dependency stopped is looked at again, so
+	// status.autoRollback shows when the rollback becomes safe.
+	if res.RequeueAfter == 0 || res.RequeueAfter > blockedRollbackRequeue {
+		fresh := &rolloutv1alpha1.Rollout{}
+		if r.Get(ctx, req.NamespacedName, fresh) == nil && blockedRollback(fresh) {
+			res.RequeueAfter = blockedRollbackRequeue
+		}
+	}
+	return res, nil
+}
+
+func (r *RolloutReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	rollout := rolloutv1alpha1.Rollout{}
@@ -147,6 +164,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if !autoRollbackEnabled(&rollout) {
 		meta.RemoveStatusCondition(&rollout.Status.Conditions, rolloutv1alpha1.RolloutAutoRollback)
+	}
+	// The preview is informational: a failed read leaves it as it was and the
+	// rest of the reconcile (the bake, the decision) goes on.
+	if err := r.refreshRollbackPreview(ctx, &rollout, cat); err != nil {
+		log.Error(err, "Failed to evaluate the automatic rollback preview")
 	}
 
 	// Update status once with both release candidates and gated release candidates
@@ -1121,11 +1143,14 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		Approval:          approval,
 		DeployKind:        deployKind,
 		RollbackOf:        rollbackOf,
+		AutoRollback:      rollbackSelectionOf(opt.rollback),
 		BakeStatus:        bakeStatus,
 		BakeStatusMessage: bakeStatusMsg,
 		BakeStartTime:     nil, // Will be set when healthchecks become healthy
 		BakeEndTime:       nil, // Will be set when bake completes (succeeds, fails, or times out)
 	}}, rollout.Status.History...)
+	// A new deploy ends the evaluation made for the build before it.
+	rollout.Status.AutoRollback = nil
 	// Limit history size if specified
 	versionHistoryLimit := int32(10) // default value
 	if rollout.Spec.VersionHistoryLimit != nil {
