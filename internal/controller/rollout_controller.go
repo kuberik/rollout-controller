@@ -367,6 +367,14 @@ func (r *RolloutReconciler) reconcile(ctx context.Context, req ctrl.Request) (ct
 			"wantedVersion", *wantedRelease,
 			"currentVersion", rollout.Status.History[0].Version,
 			"bakeStatus", rollout.Status.History[0].BakeStatus)
+
+		// A force-deploy to the version that is already running has nothing to deploy, so
+		// deployRelease never runs and never consumes the one-shot annotations. Clear them
+		// here, otherwise the rollout stays in manual mode and skips health checks forever.
+		if err := r.clearConsumedForceDeploy(ctx, &rollout, *wantedRelease); err != nil {
+			log.Error(err, "Failed to clear force deploy annotations for already deployed version")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// If this is a manual deployment with bake time configuration, ensure we requeue to monitor bake time
@@ -951,6 +959,20 @@ func (r *RolloutReconciler) hasManualDeployment(rollout *rolloutv1alpha1.Rollout
 	return false
 }
 
+// clearConsumedForceDeploy removes the one-shot force-deploy, deploy-message and deploy-user
+// annotations when the force-deploy target equals the given (already deployed) version.
+func (r *RolloutReconciler) clearConsumedForceDeploy(ctx context.Context, rollout *rolloutv1alpha1.Rollout, version string) error {
+	if rollout.Annotations == nil || rollout.Annotations["rollout.kuberik.com/force-deploy"] != version {
+		return nil
+	}
+	// Optimistic lock: a concurrent user edit of force-deploy must not be silently dropped.
+	patch := client.MergeFromWithOptions(rollout.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
+	delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
+	delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
+	return r.Client.Patch(ctx, rollout, patch)
+}
+
 // selectWantedRelease determines the wanted release based on spec, status, and gated candidates.
 func (r *RolloutReconciler) selectWantedRelease(rollout *rolloutv1alpha1.Rollout, releases, gatedReleaseCandidates []rolloutv1alpha1.VersionInfo) (*string, error) {
 	// Check for WantedVersion in spec first (highest priority)
@@ -1247,7 +1269,9 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Clear annotations based on deployment type
 	if forceDeployUsed {
 		// Clear both force-deploy, deploy-message, and deploy-user annotations when force deploy was used
-		patch := client.MergeFrom(rollout.DeepCopy())
+		// Optimistic lock: a concurrent user edit of force-deploy must not be silently dropped.
+		// On conflict the reconcile requeues and the already-deployed branch clears it.
+		patch := client.MergeFromWithOptions(rollout.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		delete(rollout.Annotations, "rollout.kuberik.com/force-deploy")
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-message")
 		delete(rollout.Annotations, "rollout.kuberik.com/deploy-user")
