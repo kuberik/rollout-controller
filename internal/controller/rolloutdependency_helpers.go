@@ -47,6 +47,10 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 	return rollbacksafety.DeployedRelease(rollout)
 }
 
+func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.DeploymentHistoryEntry, string) {
+	return rollbacksafety.RunningRelease(rollout)
+}
+
 // maxPublishedReleases bounds the admitted and blocked lists this dependency
 // publishes.
 //
@@ -57,30 +61,6 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 // walks toward the API server's object size limit. Keeping the newest N leaves
 // recent rollback targets addressable.
 const maxPublishedReleases = 50
-
-// runningRelease returns the provider's newest history entry — what the
-// provider is actually running — when it is NOT the entry deployedRelease
-// returns, i.e. when the provider has moved on to a release that is still
-// baking, failed, or was cancelled. It returns nil when History[0] is itself the
-// newest succeeded entry (nothing extra to check) or the history is empty.
-//
-// The second return value is that entry's contract version, "" when it carries
-// no parseable one.
-func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.DeploymentHistoryEntry, string) {
-	if len(rollout.Status.History) == 0 {
-		return nil, ""
-	}
-	newestEntry := &rollout.Status.History[0]
-	if deployed := deployedRelease(rollout); deployed == newestEntry {
-		return nil, ""
-	}
-	if newestEntry.Version.Version != nil {
-		if triple, err := contractTriple(*newestEntry.Version.Version); err == nil {
-			return newestEntry, triple.String()
-		}
-	}
-	return newestEntry, ""
-}
 
 // evaluateDependency partitions a consumer's releases into those admitted by
 // this dependency and those blocked by it.
