@@ -26,8 +26,10 @@ import (
 	"github.com/fluxcd/cli-utils/pkg/object"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	rolloutv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	"github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -52,6 +54,7 @@ type KustomizationHealthReconciler struct {
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kuberik.com,resources=kustomizationhealths/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=ocirepositories;gitrepositories;buckets;externalartifacts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=*,verbs=get;list;watch
 // +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
 
@@ -111,6 +114,20 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		healthStatus, message, errorTime, observations = r.checkKustomizationHealth(ctx, kustomization, now)
 	}
+	if healthStatus == rolloutv1alpha1.HealthStatusHealthy {
+		// The checks below may only downgrade a would-be Healthy result to Pending. They must
+		// never override Unhealthy (a failing new revision keeps its error and LastErrorTime,
+		// since Flux sets lastAppliedRevision only after apply and health succeed) and Pending
+		// stays Pending.
+		if kustomization.Spec.Suspend {
+			// A suspended Kustomization keeps its last Ready=True while nothing new is applied.
+			healthStatus = rolloutv1alpha1.HealthStatusPending
+			message = fmt.Sprintf("Kustomization pending (Suspended): %s/%s is suspended, so new revisions are not applied", kustomization.Namespace, kustomization.Name)
+		} else if pending, msg := r.checkSourceRevisionApplied(ctx, kustomization); pending {
+			healthStatus = rolloutv1alpha1.HealthStatusPending
+			message = msg
+		}
+	}
 	// An Unhealthy result always says what failed, even when there is no Ready condition to quote.
 	if healthStatus == rolloutv1alpha1.HealthStatusUnhealthy && len(observations) == 0 {
 		o := observation.State("Kustomization "+kustomization.Namespace+"/"+kustomization.Name, false, now)
@@ -126,6 +143,65 @@ func (r *KustomizationHealthReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	// Update the health check status
 	return r.writeHealthCheckStatusWithFailures(ctx, healthCheck, healthStatus, message, errorTime, observations, failures, deferred)
+}
+
+// checkSourceRevisionApplied reports whether the Kustomization is still behind the revision
+// its source currently serves. The rollout controller deploys by changing the source's
+// spec.ref.tag, so the source artifact is the witness for what was deployed. Every Flux
+// source kind (OCIRepository, GitRepository, Bucket, HelmChart, ExternalArtifact) exposes
+// the same Ready condition and status.artifact.revision, so the source is read generically.
+// A source that cannot be read (missing, RBAC, CRD not installed) is Pending, never
+// healthy: failing open would let an unverified revision count as applied. A pending
+// result never carries an error time.
+func (r *KustomizationHealthReconciler) checkSourceRevisionApplied(ctx context.Context, ks *kustomizev1.Kustomization) (bool, string) {
+	ref := ks.Spec.SourceRef
+	ns := ref.Namespace
+	if ns == "" {
+		ns = ks.Namespace
+	}
+	key := client.ObjectKey{Namespace: ns, Name: ref.Name}
+	name := fmt.Sprintf("%s %s/%s", ref.Kind, key.Namespace, key.Name)
+
+	src := &unstructured.Unstructured{}
+	// Always read source.toolkit.fluxcd.io/v1 by kind, as Flux itself does; sourceRef.apiVersion is ignored.
+	gv := schema.GroupVersion{Group: sourcev1.GroupVersion.Group, Version: sourcev1.GroupVersion.Version}
+	src.SetGroupVersionKind(gv.WithKind(ref.Kind))
+	if err := r.Get(ctx, key, src); err != nil {
+		switch {
+		case apierrors.IsNotFound(err):
+			return true, fmt.Sprintf("Kustomization pending: source %s not found", name)
+		case apierrors.IsForbidden(err):
+			return true, fmt.Sprintf("Kustomization pending: cannot read source %s: forbidden", name)
+		case meta.IsNoMatchError(err):
+			return true, fmt.Sprintf("Kustomization pending: cannot read source %s: kind is not installed (%s)", name, gv.String())
+		default:
+			return true, fmt.Sprintf("Kustomization pending: cannot read source %s: %v", name, err)
+		}
+	}
+
+	var conditions []metav1.Condition
+	if raw, found, _ := unstructured.NestedSlice(src.Object, "status", "conditions"); found {
+		for _, c := range raw {
+			m, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			cond := metav1.Condition{}
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(m, &cond); err == nil {
+				conditions = append(conditions, cond)
+			}
+		}
+	}
+	revision, _, _ := unstructured.NestedString(src.Object, "status", "artifact", "revision")
+
+	ready := meta.FindStatusCondition(conditions, fluxmeta.ReadyCondition)
+	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration < src.GetGeneration() || revision == "" {
+		return true, fmt.Sprintf("Kustomization pending: source %s is not ready for its current spec", name)
+	}
+	if ks.Status.LastAppliedRevision != revision {
+		return true, fmt.Sprintf("Kustomization pending: has not applied source revision %s yet (last applied %s)", revision, ks.Status.LastAppliedRevision)
+	}
+	return false, ""
 }
 
 // KustomizationReference represents a reference to a kustomization
@@ -367,7 +443,7 @@ func readyObservations(kustomization *kustomizev1.Kustomization, health rolloutv
 	}
 	ready := meta.FindStatusCondition(kustomization.Status.Conditions, fluxmeta.ReadyCondition)
 	if ready == nil || ready.Status == metav1.ConditionTrue ||
-		(ready.ObservedGeneration != 0 && ready.ObservedGeneration < kustomization.Generation) {
+		ready.ObservedGeneration < kustomization.Generation {
 		return nil
 	}
 	o := observation.State("Kustomization "+kustomization.Namespace+"/"+kustomization.Name, false, now)
@@ -387,7 +463,7 @@ func checkKustomizationReadyHealth(kustomization *kustomizev1.Kustomization) (ro
 	if ready == nil {
 		return rolloutv1alpha1.HealthStatusPending, "Kustomization pending: no Ready condition", nil
 	}
-	if ready.ObservedGeneration != 0 && ready.ObservedGeneration < kustomization.Generation {
+	if ready.ObservedGeneration < kustomization.Generation {
 		return rolloutv1alpha1.HealthStatusPending, fmt.Sprintf("Kustomization pending: generation %d not yet observed", kustomization.Generation), nil
 	}
 

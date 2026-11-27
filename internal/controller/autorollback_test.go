@@ -646,9 +646,11 @@ var _ = Describe("HealthCheck failures", func() {
 		ks := &kustomizev1.Kustomization{
 			ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: ns},
 			Spec: kustomizev1.KustomizationSpec{Path: "./", Wait: true,
-				SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "OCIRepository", Name: "src"}},
+				SourceRef: kustomizev1.CrossNamespaceSourceReference{Kind: "GitRepository", Name: "src"}},
 		}
 		Expect(k8sClient.Create(ctx, ks)).To(Succeed())
+		// A served source revision the Kustomization has applied, so recovery can read Healthy.
+		createReadyGitSource(ctx, ns, "src", "main@sha1:abc")
 		class := healthCheckClassKustomization
 		hc := &rolloutv1alpha1.HealthCheck{
 			ObjectMeta: metav1.ObjectMeta{Name: "hc", Namespace: ns, Annotations: map[string]string{"healthcheck.kuberik.com/kustomization": "ks"}},
@@ -661,6 +663,7 @@ var _ = Describe("HealthCheck failures", func() {
 			ks.Status.Conditions = []metav1.Condition{{Type: fluxmeta.ReadyCondition, Status: status, Reason: reason, Message: "msg",
 				ObservedGeneration: ks.Generation, LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))}}
 			ks.Status.ObservedGeneration = ks.Generation
+			ks.Status.LastAppliedRevision = "main@sha1:abc"
 			Expect(k8sClient.Status().Update(ctx, ks)).To(Succeed())
 		}
 		health := &KustomizationHealthReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: &RealClock{}}

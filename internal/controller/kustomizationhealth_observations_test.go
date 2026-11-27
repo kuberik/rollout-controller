@@ -26,6 +26,7 @@ import (
 	"github.com/fluxcd/cli-utils/pkg/object"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -47,6 +48,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 	var kustomization *kustomizev1.Kustomization
 	var hcKey types.NamespacedName
 	var healthCheck *rolloutv1alpha1.HealthCheck
+	const appliedRevision = "v1@sha256:abc"
 
 	BeforeEach(func() {
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "kh-obs-ns-"}}
@@ -61,6 +63,20 @@ var _ = Describe("KustomizationHealth observations", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, kustomization)).To(Succeed())
+
+		// A Ready source serving appliedRevision, which every status write below
+		// records as applied, so a healthy Kustomization is not held Pending on its source.
+		source := &sourcev1.OCIRepository{
+			ObjectMeta: metav1.ObjectMeta{Name: "src", Namespace: namespace},
+			Spec:       sourcev1.OCIRepositorySpec{URL: "oci://example.com/app", Interval: &metav1.Duration{Duration: time.Minute}},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+		source.Status.Artifact = &fluxmeta.Artifact{Path: "p", URL: "http://x/p", Revision: appliedRevision, Digest: "sha256:abc", LastUpdateTime: metav1.Now()}
+		source.Status.Conditions = []metav1.Condition{{
+			Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: "Succeeded",
+			ObservedGeneration: source.Generation, LastTransitionTime: metav1.Now(),
+		}}
+		Expect(k8sClient.Status().Update(ctx, source)).To(Succeed())
 
 		healthCheck = &rolloutv1alpha1.HealthCheck{
 			ObjectMeta: metav1.ObjectMeta{
@@ -131,6 +147,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 			inv.Entries = append(inv.Entries, kustomizev1.ResourceRef{ID: e.String(), Version: "v1"})
 		}
 		kustomization.Status.Inventory = inv
+		kustomization.Status.LastAppliedRevision = appliedRevision
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 	}
 	deployID := func(name string) object.ObjMetadata {
@@ -259,6 +276,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 			Type: fluxmeta.ReadyCondition, Status: metav1.ConditionTrue, Reason: fluxmeta.ReconciliationSucceededReason,
 			Message: "Applied revision: v1", LastTransitionTime: metav1.Now(), ObservedGeneration: kustomization.Generation,
 		}}
+		kustomization.Status.LastAppliedRevision = appliedRevision
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 		hc = reconcileHC()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusHealthy))
@@ -283,6 +301,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 			conds[i].LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))
 		}
 		kustomization.Status.Conditions = conds
+		kustomization.Status.LastAppliedRevision = appliedRevision
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 	}
 
@@ -356,6 +375,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 			Type: "Stalled", Status: metav1.ConditionTrue, Reason: "BuildFailed", Message: "stalled without a Ready condition",
 			ObservedGeneration: kustomization.Generation, LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second)),
 		}}
+		kustomization.Status.LastAppliedRevision = appliedRevision
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 		hc := reconcileHC()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))
@@ -411,6 +431,7 @@ var _ = Describe("KustomizationHealth observations", func() {
 			Message: "timeout waiting for: [Deployment/app/web status: 'Failed']", ObservedGeneration: kustomization.Generation,
 			LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second)),
 		}}
+		kustomization.Status.LastAppliedRevision = appliedRevision
 		Expect(k8sClient.Status().Update(ctx, kustomization)).To(Succeed())
 		hc := reconcileHC()
 		Expect(hc.Status.Status).To(Equal(rolloutv1alpha1.HealthStatusUnhealthy))

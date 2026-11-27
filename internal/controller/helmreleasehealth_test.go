@@ -130,6 +130,9 @@ var _ = Describe("helmrelease health class", func() {
 				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(oci), oci)).To(Succeed())
 				oci.Status.ObservedGeneration = observedGen
 				oci.Status.Artifact = &fluxmeta.Artifact{Path: "p", URL: "http://x/p", Revision: revision, Digest: "sha256:aa", LastUpdateTime: metav1.Now()}
+				// source-controller marks a fetched artifact Ready for the generation it observed.
+				meta.SetStatusCondition(&oci.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Succeeded",
+					Message: "stored artifact", ObservedGeneration: observedGen})
 				ExpectWithOffset(1, k8sClient.Status().Update(ctx, oci)).To(Succeed())
 			}
 			setHR := func(attempted, chart string) {
@@ -148,6 +151,8 @@ var _ = Describe("helmrelease health class", func() {
 			setKs := func(attempted string) {
 				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(ks), ks)).To(Succeed())
 				ks.Status.LastAttemptedRevision = attempted
+				// Ready=True after a successful apply: kustomize-controller records it as applied too.
+				ks.Status.LastAppliedRevision = attempted
 				ks.Status.ObservedGeneration = ks.Generation
 				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "ReconciliationSucceeded",
 					Message: "ok", ObservedGeneration: ks.Generation})

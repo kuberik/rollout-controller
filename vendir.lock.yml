@@ -4,6 +4,10 @@ directories:
   - http: {}
     path: ocirepositories
   - http: {}
+    path: gitrepositories
+  - http: {}
+    path: buckets
+  - http: {}
     path: kustomizations
   path: vendir
 kind: LockConfig
