@@ -67,6 +67,26 @@ spec:
           spec:
             description: RolloutSpec defines the desired state of Rollout.
             properties:
+              autoRollback:
+                description: |-
+                  AutoRollback turns on rolling back to the last good build when a build
+                  fails its bake with a failure at or above autoRollback.minSeverity.
+                  Present means on (`autoRollback: {}` rolls back on Critical failures);
+                  absent means off.
+                properties:
+                  minSeverity:
+                    default: Critical
+                    description: |-
+                      MinSeverity is the lowest failure severity that rolls this Rollout back
+                      to the last good build: Critical rolls back on Critical failures, Warning
+                      on Warning and Critical ones. Failures carry their severity from the
+                      kuberik.com/severity annotation or the provider (see
+                      HealthCheckFailure.severity); unmarked is Critical.
+                    enum:
+                    - Critical
+                    - Warning
+                    type: string
+                type: object
               availableReleasesMinCount:
                 default: 30
                 description: |-
@@ -309,6 +329,14 @@ spec:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.
                       type: string
+                    rollbackBarrier:
+                      description: |-
+                        RollbackBarrier is true when this release carries the OCI annotation
+                        "com.kuberik.rollout.rollback-barrier: true" (release-controller publishes it
+                        in the slice release's metadata). Automatic rollback never rolls back past a
+                        barrier: a target is rejected when any release after it, up to and including
+                        the failed one, is a barrier (for example a release that migrated a schema).
+                      type: boolean
                     tag:
                       description: Tag is the image tag (e.g., "v1.2.3", "latest").
                       type: string
@@ -343,6 +371,12 @@ spec:
                       description: Created is the release creation time.
                       format: date-time
                       type: string
+                    failedBake:
+                      description: |-
+                        FailedBake is true when this Rollout's newest deploy of the release failed
+                        its bake. Automatic selection skips it until someone names the build
+                        (spec.wantedVersion, force-deploy or bypass-gates).
+                      type: boolean
                     firstSeen:
                       description: FirstSeen is when the catalogue first admitted
                         this release.
@@ -475,6 +509,14 @@ spec:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.
                       type: string
+                    rollbackBarrier:
+                      description: |-
+                        RollbackBarrier is true when this release carries the OCI annotation
+                        "com.kuberik.rollout.rollback-barrier: true" (release-controller publishes it
+                        in the slice release's metadata). Automatic rollback never rolls back past a
+                        barrier: a target is rejected when any release after it, up to and including
+                        the failed one, is a barrier (for example a release that migrated a schema).
+                      type: boolean
                     tag:
                       description: Tag is the image tag (e.g., "v1.2.3", "latest").
                       type: string
@@ -578,6 +620,18 @@ spec:
                         BakeStatusMessage provides details about the bake state for this deployment
                         This field contains human-readable information about why the bake status is what it is.
                       type: string
+                    deployKind:
+                      description: |-
+                        DeployKind is what caused this deploy. Entries written before it existed
+                        have none and are never rolled back to or from automatically.
+                      enum:
+                      - Automatic
+                      - GateBypass
+                      - Unblock
+                      - Pin
+                      - ForceDeploy
+                      - AutoRollback
+                      type: string
                     failedHealthChecks:
                       description: |-
                         FailedHealthChecks contains all health checks that failed during bake.
@@ -586,6 +640,68 @@ spec:
                         description: FailedHealthCheck represents a health check that
                           failed during bake.
                         properties:
+                          class:
+                            description: Class is the health check's spec.class.
+                            type: string
+                          failures:
+                            description: Failures lists what failed in this check,
+                              each with the decision it led to.
+                            items:
+                              description: FailureVerdict is one failure of a health
+                                check and whether it rolls back.
+                              properties:
+                                kind:
+                                  description: Kind classifies the failure. Display
+                                    only.
+                                  enum:
+                                  - Alert
+                                  - Incident
+                                  - ApplyFailed
+                                  - NotReady
+                                  - TestFailed
+                                  - CheckError
+                                  - Unclassified
+                                  type: string
+                                message:
+                                  description: Message is one line of detail.
+                                  type: string
+                                reason:
+                                  description: Reason is the machine reason.
+                                  type: string
+                                rollsBack:
+                                  description: RollsBack is true when this failure
+                                    triggers an automatic rollback.
+                                  type: boolean
+                                severity:
+                                  description: |-
+                                    Severity is the failure's resolved severity: the source object's
+                                    kuberik.com/severity annotation, else the HealthCheck's, else Critical.
+                                  enum:
+                                  - Critical
+                                  - Warning
+                                  type: string
+                                source:
+                                  description: Source names what failed.
+                                  type: string
+                                why:
+                                  description: |-
+                                    Why is the rule that decided: AtOrAboveThreshold (severity reaches the
+                                    Rollout's autoRollback.severity), BelowThreshold, CheckErrorNever (a check
+                                    that fails to run never rolls back) or PredatesDeploy (first seen before this
+                                    deploy started, so not attributed to it).
+                                  enum:
+                                  - AtOrAboveThreshold
+                                  - BelowThreshold
+                                  - CheckErrorNever
+                                  - PredatesDeploy
+                                  type: string
+                              required:
+                              - rollsBack
+                              - source
+                              - why
+                              type: object
+                            maxItems: 16
+                            type: array
                           message:
                             description: Message is the error message from the health
                               check.
@@ -704,6 +820,11 @@ spec:
                         For manual deployments (when wantedVersion is specified), it can contain a custom message
                         provided via the "rollout.kuberik.com/deploy-message" annotation, or defaults to "Manual deployment".
                       type: string
+                    rollbackOf:
+                      description: RollbackOf is the ID of the history entry this
+                        deploy rolled back.
+                      format: int64
+                      type: integer
                     timestamp:
                       description: Timestamp is the time when the deployment occurred.
                       format: date-time
@@ -775,6 +896,14 @@ spec:
                           description: Revision is the revision information extracted
                             from OCI annotations if available.
                           type: string
+                        rollbackBarrier:
+                          description: |-
+                            RollbackBarrier is true when this release carries the OCI annotation
+                            "com.kuberik.rollout.rollback-barrier: true" (release-controller publishes it
+                            in the slice release's metadata). Automatic rollback never rolls back past a
+                            barrier: a target is rejected when any release after it, up to and including
+                            the failed one, is a barrier (for example a release that migrated a schema).
+                          type: boolean
                         tag:
                           description: Tag is the image tag (e.g., "v1.2.3", "latest").
                           type: string
@@ -838,6 +967,14 @@ spec:
                       description: Revision is the revision information extracted
                         from OCI annotations if available.
                       type: string
+                    rollbackBarrier:
+                      description: |-
+                        RollbackBarrier is true when this release carries the OCI annotation
+                        "com.kuberik.rollout.rollback-barrier: true" (release-controller publishes it
+                        in the slice release's metadata). Automatic rollback never rolls back past a
+                        barrier: a target is rejected when any release after it, up to and including
+                        the failed one, is a barrier (for example a release that migrated a schema).
+                      type: boolean
                     tag:
                       description: Tag is the image tag (e.g., "v1.2.3", "latest").
                       type: string

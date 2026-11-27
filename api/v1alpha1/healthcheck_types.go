@@ -27,6 +27,88 @@ type HealthCheckSpec struct {
 	Class *string `json:"class,omitempty"`
 }
 
+// FailureKind classifies why a health check failed. It is a display hint only:
+// it never decides whether a Rollout rolls back (severity does).
+// +kubebuilder:validation:Enum=Alert;Incident;ApplyFailed;NotReady;TestFailed;CheckError;Unclassified
+type FailureKind string
+
+const (
+	// FailureKindAlert is a monitoring alert firing.
+	FailureKindAlert FailureKind = "Alert"
+	// FailureKindIncident is an open incident.
+	FailureKindIncident FailureKind = "Incident"
+	// FailureKindApplyFailed is a manifest that could not be built or applied.
+	FailureKindApplyFailed FailureKind = "ApplyFailed"
+	// FailureKindNotReady is a workload that did not become ready.
+	FailureKindNotReady FailureKind = "NotReady"
+	// FailureKindTestFailed is a test (RolloutTest, Job) that failed.
+	FailureKindTestFailed FailureKind = "TestFailed"
+	// FailureKindCheckError is the check itself failing to run. It never rolls back.
+	FailureKindCheckError FailureKind = "CheckError"
+	// FailureKindUnclassified is a failure the provider could not classify.
+	FailureKindUnclassified FailureKind = "Unclassified"
+)
+
+// SeverityAnnotation sets how severe a failure is. On an object a check walks
+// (a RolloutTest, a Job, a Deployment, any kind in a Kustomization's inventory) it
+// is the severity of that object's failure. On a HealthCheck it is the default for
+// that check's failures. The object's annotation wins over the HealthCheck's;
+// unmarked is Critical. Values are Critical and Warning; anything else is
+// treated as Critical.
+const SeverityAnnotation = "kuberik.com/severity"
+
+// FailureSeverity is how severe a failure is. A Rollout's
+// spec.autoRollback.severity is the lowest severity that rolls it back.
+// +kubebuilder:validation:Enum=Critical;Warning
+type FailureSeverity string
+
+const (
+	// FailureSeverityCritical is a failure that always warrants a rollback when
+	// automatic rollback is on.
+	FailureSeverityCritical FailureSeverity = "Critical"
+	// FailureSeverityWarning is a failure that rolls back only when the Rollout
+	// asks for Warning.
+	FailureSeverityWarning FailureSeverity = "Warning"
+)
+
+// HealthCheckFailure is one thing that failed, with its kind. Like
+// lastErrorTime it is a witness: it stays after the source recovers and is
+// cleared only by the reset at the next deploy or retry.
+type HealthCheckFailure struct {
+	// Source names what failed, e.g. "RolloutTest ns/name" or "Kustomization ns/name".
+	// +kubebuilder:validation:MaxLength=256
+	Source string `json:"source"`
+
+	// Kind classifies the failure. Display only; it does not decide rollbacks.
+	// +optional
+	Kind FailureKind `json:"kind,omitempty"`
+
+	// Severity is how severe this failure is: Critical or Warning. Providers that
+	// are not the kustomization check fill it from their own signal: the
+	// Prometheus alert's "severity" label (warning = Warning; critical, missing
+	// or anything else = Critical), Datadog monitor priority and incident
+	// severity (P1/P2 and SEV-1/SEV-2 = Critical, P3-P5 and SEV-3-SEV-5 =
+	// Warning, unset = Critical). A kuberik.com/severity annotation on the
+	// HealthCheck overrides the provider's value. Empty means unmarked: the
+	// HealthCheck's annotation applies, else Critical.
+	// +optional
+	Severity FailureSeverity `json:"severity,omitempty"`
+
+	// Reason is the machine reason (RolloutTestFailed, JobFailed,
+	// ProgressDeadlineExceeded, BuildFailed, ...).
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Reason string `json:"reason,omitempty"`
+
+	// Message is one line of detail.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Message string `json:"message,omitempty"`
+
+	// FirstSeenTime is when this source and kind were first recorded as failing.
+	FirstSeenTime metav1.Time `json:"firstSeenTime"`
+}
+
 type HealthStatus string
 
 const (
@@ -59,6 +141,23 @@ type HealthCheckStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=16
 	Observations []HealthCheckObservation `json:"observations,omitempty"`
+
+	// Failures is the witness of what failed, by source and kind. Entries are
+	// added when a source fails and kept after it recovers; the reset at a new
+	// deploy or retry clears them together with lastErrorTime.
+	// +optional
+	// +kubebuilder:validation:MaxItems=16
+	Failures []HealthCheckFailure `json:"failures,omitempty"`
+
+	// FailuresDeferred says the check is Unhealthy for a reason other sources
+	// report (for example a Kruise Rollout left to its RolloutTests), so an empty
+	// failures list does not yet mean the failure is unclassified. A Rollout with
+	// automatic rollback enabled waits up to 2 minutes, from when it starts
+	// waiting, for those sources to report before it treats the failure as
+	// unclassified. Like failures it is a witness: set by the check, cleared only
+	// by the reset at a new deploy or retry.
+	// +optional
+	FailuresDeferred bool `json:"failuresDeferred,omitempty"`
 }
 
 // HealthCheckObservationKind selects how an observation is drawn.

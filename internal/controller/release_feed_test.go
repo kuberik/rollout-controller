@@ -82,8 +82,13 @@ func (f *testFeed) PublishInfo(infos ...rolloutv1alpha1.VersionInfo) {
 		if v.Created != nil {
 			created = v.Created.Time
 		}
+		var md map[string]string
+		if v.RollbackBarrier {
+			md = map[string]string{rollbackBarrierKey: "true"}
+		}
 		rels = append(rels, releasecatalogue.Release{
-			Tag: v.Tag, Digest: v.Digest, Version: v.Version, Revision: v.Revision,
+			Metadata: md,
+			Tag:      v.Tag, Digest: v.Digest, Version: v.Version, Revision: v.Revision,
 			Sequence: int64(i + 1), Created: metav1.NewTime(created), CreatedObserved: observed,
 			FirstSeen: metav1.NewTime(created), Requires: v.Requires, MetadataUnresolved: v.MetadataUnresolved,
 		})
