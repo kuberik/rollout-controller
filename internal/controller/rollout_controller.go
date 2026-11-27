@@ -998,7 +998,10 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	rollback := opt.rollback != nil
 
 	// Refuse the whole deploy, before any write or in-memory status change, when a
-	// Kustomization or OCIRepository cannot be written (field conflict).
+	// HelmRelease, Kustomization or OCIRepository cannot be written (field conflict, bad annotation).
+	if err := r.checkHelmReleaseConflicts(ctx, rollout, wantedRelease); err != nil {
+		return err
+	}
 	if err := r.checkKustomizationConflicts(ctx, rollout, wantedRelease); err != nil {
 		return err
 	}
@@ -1073,6 +1076,12 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 	// Find and patch Kustomizations
 	if err := r.patchKustomizations(ctx, rollout, wantedRelease); err != nil {
 		log.Error(err, "Failed to patch Kustomizations")
+		return err
+	}
+
+	// Find and patch HelmReleases
+	if err := r.patchHelmReleases(ctx, rollout, wantedRelease); err != nil {
+		log.Error(err, "Failed to patch HelmReleases")
 		return err
 	}
 
