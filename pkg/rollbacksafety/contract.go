@@ -132,3 +132,27 @@ func DeployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 	}
 	return nil
 }
+
+// RunningRelease returns the provider's newest history entry — what the
+// provider is actually running — when it is NOT the entry DeployedRelease
+// returns, i.e. when the provider has moved on to a release that is still
+// baking, failed, or was cancelled. It returns nil when History[0] is itself the
+// newest succeeded entry (nothing extra to check) or the history is empty.
+//
+// The second return value is that entry's contract version, "" when it carries
+// no parseable one.
+func RunningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.DeploymentHistoryEntry, string) {
+	if len(rollout.Status.History) == 0 {
+		return nil, ""
+	}
+	newestEntry := &rollout.Status.History[0]
+	if deployed := DeployedRelease(rollout); deployed == newestEntry {
+		return nil, ""
+	}
+	if newestEntry.Version.Version != nil {
+		if triple, err := ContractTriple(*newestEntry.Version.Version); err == nil {
+			return newestEntry, triple.String()
+		}
+	}
+	return newestEntry, ""
+}

@@ -265,6 +265,93 @@ var _ = Describe("RolloutDependency helpers", func() {
 		})
 	})
 
+	Describe("running provider release", func() {
+		ver := func(v string) *string { return &v }
+		entry := func(tag, version string, bake string) kuberikcomv1alpha1.DeploymentHistoryEntry {
+			e := kuberikcomv1alpha1.DeploymentHistoryEntry{Version: kuberikcomv1alpha1.VersionInfo{Tag: tag}}
+			if version != "" {
+				e.Version.Version = ver(version)
+			}
+			if bake != "" {
+				e.BakeStatus = &bake
+			}
+			return e
+		}
+		rollout := func(entries ...kuberikcomv1alpha1.DeploymentHistoryEntry) *kuberikcomv1alpha1.Rollout {
+			return &kuberikcomv1alpha1.Rollout{Status: kuberikcomv1alpha1.RolloutStatus{History: entries}}
+		}
+		consumers := []kuberikcomv1alpha1.VersionInfo{
+			{Tag: "c-old", Requires: map[string]string{"db": "^1.0.0"}},
+			{Tag: "c-new", Requires: map[string]string{"db": "^2.0.0"}},
+			{Tag: "c-free"},
+		}
+		// evaluate mirrors what the reconciler does with a provider Rollout.
+		evaluate := func(p *kuberikcomv1alpha1.Rollout) ([]string, []kuberikcomv1alpha1.BlockedRelease) {
+			provided := ""
+			if d := deployedRelease(p); d != nil && d.Version.Version != nil {
+				provided = *d.Version.Version
+			}
+			var running *string
+			if r, v := runningRelease(p); r != nil {
+				running = &v
+			}
+			return evaluateDependency(consumers, "db", provided, running)
+		}
+
+		It("has no running release for an empty history or when History[0] succeeded", func() {
+			r, _ := runningRelease(rollout())
+			Expect(r).To(BeNil())
+			r, _ = runningRelease(rollout(entry("v2", "2.0.0", "Succeeded"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(r).To(BeNil())
+		})
+
+		It("reports History[0] when it is still baking", func() {
+			r, v := runningRelease(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(r.Version.Tag).To(Equal("v2"))
+			Expect(v).To(Equal("2.0.0"))
+		})
+
+		It("does not admit a consumer that only the old succeeded version satisfies while v2 bakes", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked).To(HaveLen(2))
+			Expect(blocked[0].Tag).To(Equal("c-old"))
+			Expect(blocked[0].Reason).To(Equal("RunningVersionNotSatisfied"))
+			Expect(blocked[1].Tag).To(Equal("c-new"))
+			Expect(blocked[1].Reason).To(Equal("ConstraintNotSatisfied"))
+		})
+
+		It("does not admit a consumer that only the baking version satisfies", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "2.0.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).NotTo(ContainElement("c-new"))
+			Expect(blocked[1].Tag).To(Equal("c-new"))
+		})
+
+		It("admits when both the running and the succeeded entry satisfy", func() {
+			admitted, blocked := evaluate(rollout(entry("v1b", "1.5.0", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(ConsistOf("c-old", "c-free"))
+			Expect(blocked).To(HaveLen(1))
+			Expect(blocked[0].Tag).To(Equal("c-new"))
+		})
+
+		It("blocks against a failed History[0] that fails the constraint", func() {
+			admitted, _ := evaluate(rollout(entry("v2", "2.0.0", "Failed"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+		})
+
+		It("blocks consumers when the running entry has no readable contract version", func() {
+			admitted, blocked := evaluate(rollout(entry("v2", "", "InProgress"), entry("v1", "1.0.0", "Succeeded")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked[0].Reason).To(Equal("RunningVersionUnknown"))
+		})
+
+		It("keeps blocking everything requiring the contract when nothing ever succeeded", func() {
+			admitted, blocked := evaluate(rollout(entry("v1", "1.0.0", "InProgress")))
+			Expect(admitted).To(Equal([]string{"c-free"}))
+			Expect(blocked[0].Reason).To(Equal("ProviderVersionUnknown"))
+		})
+	})
+
 	Describe("evaluateDependency", func() {
 		release := func(tag string, requires map[string]string) kuberikcomv1alpha1.VersionInfo {
 			return kuberikcomv1alpha1.VersionInfo{Tag: tag, Requires: requires}
@@ -274,6 +361,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", nil), release("v2", map[string]string{"other": "9.9.9"})},
 				"db", "",
+				nil,
 			)
 			Expect(admitted).To(ConsistOf("v1", "v2"))
 			Expect(blocked).To(BeEmpty())
@@ -283,6 +371,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", map[string]string{"db": "1.0.0"})},
 				"db", "",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked).To(HaveLen(1))
@@ -298,6 +387,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 					release("v3", map[string]string{"db": "^2.0.0"}),
 				},
 				"db", "1.178.0",
+				nil,
 			)
 			Expect(admitted).To(Equal([]string{"v1", "v2"}))
 			Expect(blocked).To(HaveLen(1))
@@ -310,6 +400,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{{Tag: "v1", MetadataUnresolved: true}},
 				"db", "1.0.0",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked).To(HaveLen(1))
@@ -321,7 +412,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			for i := 0; i < maxPublishedReleases+10; i++ {
 				releases = append(releases, release(fmt.Sprintf("v%d", i), nil))
 			}
-			admitted, _ := evaluateDependency(releases, "db", "1.0.0")
+			admitted, _ := evaluateDependency(releases, "db", "1.0.0", nil)
 			Expect(admitted).To(HaveLen(maxPublishedReleases))
 			Expect(admitted[len(admitted)-1]).To(Equal(fmt.Sprintf("v%d", maxPublishedReleases+9)))
 		})
@@ -330,6 +421,7 @@ var _ = Describe("RolloutDependency helpers", func() {
 			admitted, blocked := evaluateDependency(
 				[]kuberikcomv1alpha1.VersionInfo{release("v1", map[string]string{"db": "latest"})},
 				"db", "1.0.0",
+				nil,
 			)
 			Expect(admitted).To(BeEmpty())
 			Expect(blocked[0].Reason).To(Equal("InvalidVersion"))
@@ -467,6 +559,78 @@ var _ = Describe("RolloutDependency Controller", func() {
 		status = getDependency(dependency).Status
 		Expect(status.BlockedReleases).To(BeEmpty())
 		Expect(meta.IsStatusConditionTrue(status.Conditions, kuberikcomv1alpha1.RolloutDependencySatisfied)).To(BeTrue())
+	})
+
+	Describe("with a provider release that is running but not yet succeeded", func() {
+		setProviderHistory := func(entries ...kuberikcomv1alpha1.DeploymentHistoryEntry) {
+			provider := &kuberikcomv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "provider", Namespace: namespace}, provider)).To(Succeed())
+			provider.Status.History = entries
+			Expect(k8sClient.Status().Update(ctx, provider)).To(Succeed())
+		}
+		historyEntry := func(tag, version, bake string) kuberikcomv1alpha1.DeploymentHistoryEntry {
+			e := kuberikcomv1alpha1.DeploymentHistoryEntry{
+				Version:    kuberikcomv1alpha1.VersionInfo{Tag: tag},
+				Timestamp:  metav1.Now(),
+				BakeStatus: &bake,
+			}
+			if version != "" {
+				e.Version.Version = ptrTo(version)
+			}
+			return e
+		}
+
+		It("names the running tag and the releases it blocks, then reports satisfied once nothing waits", func() {
+			newRollout("provider", nil, nil)
+			setProviderHistory(
+				historyEntry("provider-v2", "2.0.0-1", kuberikcomv1alpha1.BakeStatusInProgress),
+				historyEntry("provider-v1", "1.0.0-1", kuberikcomv1alpha1.BakeStatusSucceeded),
+			)
+			newRollout("consumer", []kuberikcomv1alpha1.VersionInfo{
+				{Tag: "consumer-1", Requires: map[string]string{"db": "^1.0.0"}},
+			}, nil)
+			dependency := newDependency("consumer-needs-db", "consumer", "provider", "db")
+			reconcileDependency(dependency)
+
+			Expect(*getGate(dependency).Spec.AllowedVersions).To(BeEmpty())
+			status := getDependency(dependency).Status
+			Expect(status.BlockedReleases[0].Reason).To(Equal("RunningVersionNotSatisfied"))
+			Expect(*status.ProvidedTag).To(Equal("provider-v1"))
+			condition := meta.FindStatusCondition(status.Conditions, kuberikcomv1alpha1.RolloutDependencySatisfied)
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal("WaitingForProvider"))
+			Expect(condition.Message).To(ContainSubstring("running release provider-v2 (contract version 2.0.0)"))
+			Expect(condition.Message).To(ContainSubstring("blocked by it: [consumer-1]"))
+
+			By("the running release succeeding at a version the consumer accepts")
+			setProviderHistory(
+				historyEntry("provider-v1b", "1.5.0-1", kuberikcomv1alpha1.BakeStatusSucceeded),
+				historyEntry("provider-v1", "1.0.0-1", kuberikcomv1alpha1.BakeStatusSucceeded),
+			)
+			reconcileDependency(dependency)
+			Expect(*getGate(dependency).Spec.AllowedVersions).To(Equal([]string{"consumer-1"}))
+			condition = meta.FindStatusCondition(getDependency(dependency).Status.Conditions, kuberikcomv1alpha1.RolloutDependencySatisfied)
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(condition.Reason).To(Equal("DependencySatisfied"))
+			Expect(condition.Message).To(ContainSubstring(`No release is waiting on contract "db"`))
+		})
+
+		It("says the running tag has no readable contract version when it carries none", func() {
+			newRollout("provider", nil, nil)
+			setProviderHistory(
+				historyEntry("provider-v2", "", kuberikcomv1alpha1.BakeStatusInProgress),
+				historyEntry("provider-v1", "1.0.0-1", kuberikcomv1alpha1.BakeStatusSucceeded),
+			)
+			newRollout("consumer", []kuberikcomv1alpha1.VersionInfo{
+				{Tag: "consumer-1", Requires: map[string]string{"db": "^1.0.0"}},
+			}, nil)
+			dependency := newDependency("consumer-needs-db", "consumer", "provider", "db")
+			reconcileDependency(dependency)
+
+			condition := meta.FindStatusCondition(getDependency(dependency).Status.Conditions, kuberikcomv1alpha1.RolloutDependencySatisfied)
+			Expect(condition.Message).To(ContainSubstring("running release provider-v2 has no readable contract version"))
+			Expect(condition.Message).NotTo(ContainSubstring("contract version none"))
+		})
 	})
 
 	It("publishes an empty allow list when the provider has deployed nothing", func() {

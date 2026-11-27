@@ -47,6 +47,10 @@ func deployedRelease(rollout *rolloutv1alpha1.Rollout) *rolloutv1alpha1.Deployme
 	return rollbacksafety.DeployedRelease(rollout)
 }
 
+func runningRelease(rollout *rolloutv1alpha1.Rollout) (*rolloutv1alpha1.DeploymentHistoryEntry, string) {
+	return rollbacksafety.RunningRelease(rollout)
+}
+
 // maxPublishedReleases bounds the admitted and blocked lists this dependency
 // publishes.
 //
@@ -62,16 +66,24 @@ const maxPublishedReleases = 50
 // this dependency and those blocked by it.
 //
 // A release is admitted when it declares no requirement on the contract, or
-// when the provider's deployed contract version satisfies the constraint the
-// release places on it. When the provider has no known contract version yet,
-// every release that requires the contract is blocked.
+// when the provider's contract version satisfies the constraint the release
+// places on it. When the provider has no known contract version yet, every
+// release that requires the contract is blocked.
 //
-// providedVersion is the provider's deployed contract version, or "" when it is
-// not known.
+// providedVersion is the contract version of the provider's newest succeeded
+// entry, or "" when it is not known. runningVersion is nil when History[0] is
+// that entry; otherwise it points at History[0]'s contract version ("" when
+// unknown: blocked, unknown is not evidence). A release must satisfy both, so a
+// provider that deployed a newer, still-baking (or failed) version does not
+// admit consumers against a contract version that is not serving traffic.
+//
+// This only narrows the admitted list; it never touches the consumer's image
+// stream or candidate resolution.
 func evaluateDependency(
 	releases []rolloutv1alpha1.VersionInfo,
 	contract string,
 	providedVersion string,
+	runningVersion *string,
 ) (admitted []string, blocked []rolloutv1alpha1.BlockedRelease) {
 	for _, release := range releases {
 		// A release whose manifest could not be read has no annotations to
@@ -109,6 +121,26 @@ func evaluateDependency(
 				Reason:          "InvalidVersion",
 			})
 			continue
+		}
+
+		if satisfied && runningVersion != nil {
+			if *runningVersion == "" {
+				blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
+					Tag:             release.Tag,
+					RequiredVersion: &required,
+					Reason:          "RunningVersionUnknown",
+				})
+				continue
+			}
+			runningOK, rerr := providerSatisfies(*runningVersion, required)
+			if rerr != nil || !runningOK {
+				blocked = append(blocked, rolloutv1alpha1.BlockedRelease{
+					Tag:             release.Tag,
+					RequiredVersion: &required,
+					Reason:          "RunningVersionNotSatisfied",
+				})
+				continue
+			}
 		}
 
 		if satisfied {
