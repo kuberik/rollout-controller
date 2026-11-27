@@ -94,7 +94,7 @@ func classify(ks *kustomizev1.Kustomization, objs ...*unstructured.Unstructured)
 }
 
 func kindsOf(fs []rolloutv1alpha1.HealthCheckFailure) []string {
-	out := []string{}
+	out := make([]string, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, fmt.Sprintf("%s|%s|%s", f.Source, f.Kind, f.Reason))
 	}

@@ -958,7 +958,7 @@ func TestTrimHistoryKeepsTheEntriesThatHoldABuild(t *testing.T) {
 		return rolloutv1alpha1.DeploymentHistoryEntry{Version: rolloutv1alpha1.VersionInfo{Tag: tag}, BakeStatus: &s2}
 	}
 	tags := func(h []rolloutv1alpha1.DeploymentHistoryEntry) []string {
-		out := []string{}
+		out := make([]string, 0, len(h))
 		for _, x := range h {
 			out = append(out, x.Version.Tag)
 		}
