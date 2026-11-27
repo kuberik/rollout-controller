@@ -476,7 +476,19 @@ func (r *RolloutReconciler) listGatesFor(ctx context.Context, namespace string) 
 	if err := r.List(ctx, gateList, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
-	return gateList.Items, nil
+	return deployGates(gateList.Items), nil
+}
+
+// deployGates keeps the gates that decide a forward deploy. A gate whose
+// appliesTo leaves Deploy out only speaks for rollbacks.
+func deployGates(in []rolloutv1alpha1.RolloutGate) []rolloutv1alpha1.RolloutGate {
+	out := make([]rolloutv1alpha1.RolloutGate, 0, len(in))
+	for _, g := range in {
+		if g.Spec.AppliesToDirection(rolloutv1alpha1.GateDirectionDeploy) {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // versionInfoForDeploy resolves the VersionInfo recorded in history: catalogue,

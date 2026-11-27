@@ -44,6 +44,7 @@ type arOpts struct {
 	severity      rolloutv1alpha1.RollbackSeverity // default Critical
 	class         string
 	hcAnnotations map[string]string
+	semver        bool // v1 and v2 carry versions 1.0.0 and 2.0.0
 	barrierV2     bool // v2 carries the rollback-barrier annotation
 	deployTimeout *time.Duration
 	noPrevious    bool
@@ -55,7 +56,11 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 	ExpectWithOffset(1, k8sClient.Create(ctx, ns)).To(Succeed())
 	e.ns = ns.Name
 	e.feed = newTestFeed(e.ns, "feed")
-	e.feed.PublishInfo(rolloutv1alpha1.VersionInfo{Tag: "v1"}, rolloutv1alpha1.VersionInfo{Tag: "v2", RollbackBarrier: o.barrierV2})
+	v1, v2 := rolloutv1alpha1.VersionInfo{Tag: "v1"}, rolloutv1alpha1.VersionInfo{Tag: "v2", RollbackBarrier: o.barrierV2}
+	if o.semver {
+		v1.Version, v2.Version = k8sptr.To("1.0.0"), k8sptr.To("2.0.0")
+	}
+	e.feed.PublishInfo(v1, v2)
 
 	spec := rolloutv1alpha1.RolloutSpec{
 		ReleaseSourceRef: &corev1.LocalObjectReference{Name: "feed"},
@@ -75,7 +80,7 @@ func newArEnv(ctx context.Context, o arOpts) *arEnv {
 	e.key = types.NamespacedName{Name: "app", Namespace: e.ns}
 	if !o.noPrevious {
 		ro.Status.History = []rolloutv1alpha1.DeploymentHistoryEntry{{
-			ID: k8sptr.To(int64(1)), Version: rolloutv1alpha1.VersionInfo{Tag: "v1"},
+			ID: k8sptr.To(int64(1)), Version: v1,
 			Timestamp:  metav1.NewTime(e.clock.Now().Add(-time.Hour)),
 			BakeStatus: k8sptr.To(rolloutv1alpha1.BakeStatusSucceeded), DeployKind: rolloutv1alpha1.DeployKindAutomatic,
 		}}
@@ -346,7 +351,7 @@ var _ = Describe("Automatic rollback", func() {
 		Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 		cat, _, _, err := e.r.resolveReleases(ctx, ro, logf.FromContext(ctx))
 		Expect(err).NotTo(HaveOccurred())
-		rolled, err := e.r.autoRollbackAfterFailedBake(ctx, ro, cat)
+		rolled, _, err := e.r.autoRollbackAfterFailedBake(ctx, ro, cat)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolled).To(BeFalse())
 		Expect(e.get(ctx).Status.History).To(HaveLen(3))
@@ -546,7 +551,7 @@ var _ = Describe("Automatic rollback", func() {
 			Expect(k8sClient.Status().Update(ctx, ro)).To(Succeed())
 			cat, _, _, err := e.r.resolveReleases(ctx, ro, logf.FromContext(ctx))
 			Expect(err).NotTo(HaveOccurred())
-			rolled, err := e.r.autoRollbackAfterFailedBake(ctx, ro, cat)
+			rolled, _, err := e.r.autoRollbackAfterFailedBake(ctx, ro, cat)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rolled).To(BeFalse())
 			Expect(e.condition(ctx).Reason).To(Equal(autoRollbackManualIntent))

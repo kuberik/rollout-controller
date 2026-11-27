@@ -171,12 +171,15 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				// rollback decision runs on.
 				if len(rollout.Status.History) > 0 && rollout.Status.History[0].BakeStatus != nil &&
 					*rollout.Status.History[0].BakeStatus == rolloutv1alpha1.BakeStatusFailed {
-					rolledBack, err := r.autoRollbackAfterFailedBake(ctx, &rollout, cat)
+					rolledBack, wait, err := r.autoRollbackAfterFailedBake(ctx, &rollout, cat)
 					if err != nil {
 						return ctrl.Result{}, err
 					}
 					if rolledBack {
 						return ctrl.Result{RequeueAfter: time.Second}, nil
+					}
+					if wait > 0 {
+						return ctrl.Result{RequeueAfter: wait}, nil
 					}
 				}
 				// Refetch the rollout to get the updated status after handleBakeTime
@@ -221,12 +224,15 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 						return ctrl.Result{}, err
 					}
 					if pendingAutoRollback(&fresh) {
-						rolledBack, err := r.autoRollbackAfterFailedBake(ctx, &fresh, cat)
+						rolledBack, wait, err := r.autoRollbackAfterFailedBake(ctx, &fresh, cat)
 						if err != nil {
 							return ctrl.Result{}, err
 						}
 						if rolledBack {
 							return ctrl.Result{RequeueAfter: time.Second}, nil
+						}
+						if wait > 0 {
+							return ctrl.Result{RequeueAfter: wait}, nil
 						}
 					}
 					if err := r.Client.Get(ctx, req.NamespacedName, &rollout); err != nil {
@@ -509,6 +515,7 @@ func (r *RolloutReconciler) evaluateGates(ctx context.Context, namespace string,
 		return nil, false, errors.Join(err, r.updateRolloutStatusOnError(ctx, rollout, "GateListFailed", err.Error()))
 	}
 
+	gateList.Items = deployGates(gateList.Items)
 	requested := gateBypassOf(rollout)
 	var gatedReleaseCandidates []rolloutv1alpha1.VersionInfo
 	var gatesPassing bool
@@ -990,7 +997,7 @@ func (r *RolloutReconciler) deployRelease(ctx context.Context, rollout *rolloutv
 		if err := r.List(ctx, gates, client.InNamespace(rollout.Namespace)); err != nil {
 			log.Error(err, "Failed to list RolloutGates for the bypass record")
 		} else {
-			bypassDesc = bypassDescription(gates.Items, rollout.Name, bypass)
+			bypassDesc = bypassDescription(deployGates(gates.Items), rollout.Name, bypass)
 		}
 		log.Info("Deployment using gate bypass", "bypassVersion", bypass.version, "bypass", bypassDesc)
 	}
